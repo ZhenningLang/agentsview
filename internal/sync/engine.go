@@ -459,6 +459,9 @@ func (e *Engine) classifyOnePath(
 	); ok {
 		return df, true
 	}
+	if df, ok := e.classifyKiloSQLitePath(path); ok {
+		return df, true
+	}
 	if df, ok := e.classifyKiroSQLitePath(path); ok {
 		return df, true
 	}
@@ -1363,6 +1366,42 @@ func (e *Engine) classifyOpenCodePath(
 	return parser.DiscoveredFile{}, false
 }
 
+func (e *Engine) classifyKiloSQLitePath(
+	path string,
+) (parser.DiscoveredFile, bool) {
+	if dbPath, _, ok := parser.ParseKiloSQLiteVirtualPath(path); ok {
+		for _, kiloDir := range e.agentDirs[parser.AgentKilo] {
+			if _, under := isUnder(kiloDir, dbPath); under {
+				return parser.DiscoveredFile{
+					Path:  path,
+					Agent: parser.AgentKilo,
+				}, true
+			}
+		}
+	}
+	for _, kiloDir := range e.agentDirs[parser.AgentKilo] {
+		if kiloDir == "" {
+			continue
+		}
+		rel, ok := isUnder(kiloDir, path)
+		if !ok {
+			continue
+		}
+		base := filepath.Base(rel)
+		if rel != "kilo.db" && !strings.HasPrefix(base, "kilo.db-") {
+			continue
+		}
+		dbPath := filepath.Join(kiloDir, "kilo.db")
+		if info, err := os.Stat(dbPath); err == nil && !info.IsDir() {
+			return parser.DiscoveredFile{
+				Path:  dbPath,
+				Agent: parser.AgentKilo,
+			}, true
+		}
+	}
+	return parser.DiscoveredFile{}, false
+}
+
 func (e *Engine) classifyKiroSQLitePath(
 	path string,
 ) (parser.DiscoveredFile, bool) {
@@ -1492,6 +1531,7 @@ func (e *Engine) ResyncAll(
 		oldFileSessions = 1
 	} else {
 		oldFileSessions -= e.countRootOpenCodeSessions(origDB)
+		oldFileSessions -= e.countRootKiloSessions(origDB)
 		oldFileSessions -= e.countRootKiroSQLiteSessions(origDB)
 		if oldFileSessions < 0 {
 			oldFileSessions = 0
@@ -1857,6 +1897,23 @@ func (e *Engine) countRootOpenCodeSessions(
 	return count
 }
 
+func (e *Engine) countRootKiloSessions(
+	database *db.DB,
+) int {
+	var count int
+	err := database.Reader().QueryRow(`
+		SELECT COUNT(*) FROM sessions
+		WHERE agent = ?
+		  AND message_count > 0
+		  AND relationship_type NOT IN ('subagent', 'fork')
+		  AND deleted_at IS NULL
+	`, string(parser.AgentKilo)).Scan(&count)
+	if err != nil {
+		log.Printf("count root kilo sessions: %v", err)
+	}
+	return count
+}
+
 func (e *Engine) countRootKiroSQLiteSessions(
 	database *db.DB,
 ) int {
@@ -1977,7 +2034,7 @@ func (e *Engine) syncAllLocked(
 
 	if verbose {
 		log.Printf(
-			"discovered %d files (%d claude, %d codex, %d copilot, %d gemini, %d cursor, %d amp, %d zencoder, %d iflow, %d vscode-copilot, %d pi, %d kiro, %d zed) in %s",
+			"discovered %d files (%d claude, %d codex, %d copilot, %d gemini, %d cursor, %d amp, %d zencoder, %d iflow, %d vscode-copilot, %d pi, %d kilo, %d kiro, %d zed) in %s",
 			len(all),
 			counts[parser.AgentClaude],
 			counts[parser.AgentCodex],
@@ -1989,6 +2046,7 @@ func (e *Engine) syncAllLocked(
 			counts[parser.AgentIflow],
 			counts[parser.AgentVSCodeCopilot],
 			counts[parser.AgentPi],
+			counts[parser.AgentKilo],
 			counts[parser.AgentKiro],
 			counts[parser.AgentZed],
 			time.Since(t0).Round(time.Millisecond),
@@ -2096,6 +2154,61 @@ func (e *Engine) syncAllLocked(
 		)
 	}
 	advanceDBProgress(e.countDBBackedProgressTotal(parser.AgentKiro), kiroPending)
+
+	if ctx.Err() != nil {
+		stats.Aborted = true
+		return stats
+	}
+
+	// Sync Kilo sessions (DB-backed, not regular file discovery).
+	tKilo := time.Now()
+	kiloPending := e.syncKilo(ctx)
+	if len(kiloPending) > 0 {
+		stats.TotalSessions += len(kiloPending)
+		tWrite := time.Now()
+		var kiloWritten int
+		if writeMode == syncWriteBulk {
+			var failedWrites int
+			kiloWritten, _, failedWrites = e.writeBatch(
+				kiloPending, writeMode, true,
+			)
+			for range failedWrites {
+				stats.RecordFailed()
+			}
+		} else {
+			resolveWorktreeProject := e.loadWorktreeProjectResolver()
+			for _, pw := range kiloPending {
+				if ctx.Err() != nil {
+					break
+				}
+				switch err := e.writeSessionFullWithResolver(
+					pw, resolveWorktreeProject,
+				); {
+				case err == nil:
+					kiloWritten++
+				case isIntentionalSessionSkip(err),
+					errors.Is(err, errSessionPreserved):
+				default:
+					stats.RecordFailed()
+				}
+			}
+		}
+		stats.RecordSynced(kiloWritten)
+		if verbose {
+			log.Printf(
+				"kilo write: %d sessions in %s",
+				len(kiloPending),
+				time.Since(tWrite).Round(time.Millisecond),
+			)
+		}
+	}
+	if verbose {
+		log.Printf(
+			"kilo sync: %s",
+			time.Since(tKilo).Round(time.Millisecond),
+		)
+	}
+	advanceDBProgress(e.countDBBackedProgressTotal(parser.AgentKilo), kiloPending)
 
 	if ctx.Err() != nil {
 		stats.Aborted = true
@@ -2425,6 +2538,11 @@ func discoveredFileMtime(
 			return parser.OpenCodeSourceMtime(file.Path)
 		}
 	}
+	if file.Agent == parser.AgentKilo {
+		if _, _, ok := parser.ParseKiloSQLiteVirtualPath(file.Path); ok {
+			return parser.KiloSourceMtime(file.Path)
+		}
+	}
 	if file.Agent == parser.AgentZed {
 		dbPath := file.Path
 		if p, _, ok := parser.ParseZedSQLiteVirtualPath(file.Path); ok {
@@ -2537,6 +2655,42 @@ func (e *Engine) countOneOpenCodeSessions(dir string) int {
 	return count
 }
 
+func (e *Engine) kiloPendingSessionIDs(dir string) []string {
+	dbPath := filepath.Join(dir, "kilo.db")
+	if info, err := os.Stat(dbPath); err != nil || info.IsDir() {
+		return nil
+	}
+
+	metas, err := parser.ListKiloSessionMeta(dbPath)
+	if err != nil {
+		log.Printf("sync kilo: %v", err)
+		return nil
+	}
+	var changed []string
+	for _, m := range metas {
+		_, storedMtime, ok := e.db.GetFileInfoByPath(m.VirtualPath)
+		if ok && storedMtime == m.FileMtime &&
+			e.db.GetDataVersionByPath(m.VirtualPath) >= db.CurrentDataVersion() {
+			continue
+		}
+		changed = append(changed, m.SessionID)
+	}
+	return changed
+}
+
+func (e *Engine) countOneKiloSessions(dir string) int {
+	dbPath := filepath.Join(dir, "kilo.db")
+	if info, err := os.Stat(dbPath); err != nil || info.IsDir() {
+		return 0
+	}
+	metas, err := parser.ListKiloSessionMeta(dbPath)
+	if err != nil {
+		log.Printf("sync kilo: %v", err)
+		return 0
+	}
+	return len(metas)
+}
+
 func (e *Engine) countDBBackedProgressTotal(agent parser.AgentType) int {
 	total := 0
 	for _, dir := range e.agentDirs[agent] {
@@ -2546,6 +2700,8 @@ func (e *Engine) countDBBackedProgressTotal(agent parser.AgentType) int {
 		switch agent {
 		case parser.AgentKiro:
 			total += e.countOneKiroSQLiteSessions(dir)
+		case parser.AgentKilo:
+			total += e.countOneKiloSessions(dir)
 		case parser.AgentOpenCode:
 			total += e.countOneOpenCodeSessions(dir)
 		case parser.AgentWarp:
@@ -2575,6 +2731,12 @@ func (e *Engine) countDBBackedSessions(ctx context.Context) int {
 			continue
 		}
 		total += e.countOneOpenCodeSessions(dir)
+	}
+	for _, dir := range e.agentDirs[parser.AgentKilo] {
+		if dir == "" {
+			continue
+		}
+		total += e.countOneKiloSessions(dir)
 	}
 	for _, dir := range e.agentDirs[parser.AgentWarp] {
 		if dir == "" {
@@ -2740,6 +2902,55 @@ func (e *Engine) syncOneKiroSQLite(
 			msgs: msgs,
 		})
 	}
+	return pending
+}
+
+func (e *Engine) syncKilo(
+	ctx context.Context,
+) []pendingWrite {
+	var allPending []pendingWrite
+	for _, dir := range e.agentDirs[parser.AgentKilo] {
+		if ctx.Err() != nil {
+			break
+		}
+		if dir == "" {
+			continue
+		}
+		allPending = append(allPending, e.syncOneKilo(ctx, dir)...)
+	}
+	return allPending
+}
+
+func (e *Engine) syncOneKilo(
+	ctx context.Context, dir string,
+) []pendingWrite {
+	dbPath := filepath.Join(dir, "kilo.db")
+	changed := e.kiloPendingSessionIDs(dir)
+	if len(changed) == 0 {
+		return nil
+	}
+
+	var pending []pendingWrite
+	for _, sid := range changed {
+		if ctx.Err() != nil {
+			break
+		}
+		sess, msgs, err := parser.ParseKiloSession(
+			dbPath, sid, e.machine,
+		)
+		if err != nil {
+			log.Printf("kilo session %s: %v", sid, err)
+			continue
+		}
+		if sess == nil {
+			continue
+		}
+		pending = append(pending, pendingWrite{
+			sess: *sess,
+			msgs: msgs,
+		})
+	}
+
 	return pending
 }
 
@@ -3065,6 +3276,8 @@ func (e *Engine) processFile(
 		statPath := file.Path
 		if dbPath, _, ok := parser.ParseKiroSQLiteVirtualPath(file.Path); ok {
 			statPath = dbPath
+		} else if dbPath, _, ok := parser.ParseKiloSQLiteVirtualPath(file.Path); ok {
+			statPath = dbPath
 		} else if dbPath, _, ok := parser.ParseZedSQLiteVirtualPath(file.Path); ok {
 			statPath = dbPath
 		}
@@ -3120,6 +3333,8 @@ func (e *Engine) processFile(
 		res = e.processGemini(file, info)
 	case parser.AgentOpenCode:
 		res = e.processOpenCode(file, info)
+	case parser.AgentKilo:
+		res = e.processKilo(file, info)
 	case parser.AgentOpenHands:
 		res = e.processOpenHands(file, info)
 	case parser.AgentCursor:
@@ -3190,6 +3405,14 @@ func (e *Engine) shouldCacheSkip(
 			return false
 		}
 		if _, _, ok := parser.ParseZedSQLiteVirtualPath(file.Path); ok {
+			return false
+		}
+	}
+	if file.Agent == parser.AgentKilo {
+		if filepath.Base(file.Path) == "kilo.db" {
+			return false
+		}
+		if _, _, ok := parser.ParseKiloSQLiteVirtualPath(file.Path); ok {
 			return false
 		}
 	}
@@ -3756,6 +3979,62 @@ func (e *Engine) processOpenCode(
 			{Session: *sess, Messages: msgs},
 		},
 	}
+}
+
+func (e *Engine) processKilo(
+	file parser.DiscoveredFile, info os.FileInfo,
+) processResult {
+	if dbPath, sessionID, ok := parser.ParseKiloSQLiteVirtualPath(file.Path); ok {
+		sess, msgs, err := parser.ParseKiloSession(
+			dbPath, sessionID, e.machine,
+		)
+		if err != nil {
+			return processResult{err: err}
+		}
+		if sess == nil {
+			return processResult{}
+		}
+		return processResult{
+			results: []parser.ParseResult{
+				{Session: *sess, Messages: msgs},
+			},
+			forceReplace: true,
+		}
+	}
+	if filepath.Base(file.Path) != "kilo.db" {
+		return processResult{skip: true}
+	}
+	metas, err := parser.ListKiloSessionMeta(file.Path)
+	if err != nil {
+		return processResult{err: err}
+	}
+	var results []parser.ParseResult
+	for _, meta := range metas {
+		_, storedMtime, ok := e.db.GetFileInfoByPath(meta.VirtualPath)
+		if ok && storedMtime == meta.FileMtime &&
+			e.db.GetDataVersionByPath(meta.VirtualPath) >=
+				db.CurrentDataVersion() {
+			continue
+		}
+		sess, msgs, err := parser.ParseKiloSession(
+			file.Path, meta.SessionID, e.machine,
+		)
+		if err != nil {
+			log.Printf(
+				"kilo sqlite watch session %s: %v",
+				meta.SessionID, err,
+			)
+			continue
+		}
+		if sess == nil {
+			continue
+		}
+		results = append(results, parser.ParseResult{
+			Session:  *sess,
+			Messages: msgs,
+		})
+	}
+	return processResult{results: results, forceReplace: true}
 }
 
 func (e *Engine) shouldSkipOpenCodeByPath(path string) bool {
@@ -5016,6 +5295,7 @@ func (e *Engine) writeBatchBulk(
 		}
 		replaceMessages := forceReplace || pw.forceReplace || pw.needsRetry ||
 			pw.sess.Agent == parser.AgentOpenCode ||
+			pw.sess.Agent == parser.AgentKilo ||
 			pw.sess.Agent == parser.AgentAntigravity ||
 			pw.sess.Agent == parser.AgentAntigravityCLI
 		tScan := time.Now()
@@ -5661,6 +5941,15 @@ func (e *Engine) FindSourceFile(sessionID string) string {
 			)
 		}
 	}
+	if def.Type == parser.AgentKilo {
+		for _, dir := range e.agentDirs[parser.AgentKilo] {
+			dbPath := filepath.Join(dir, "kilo.db")
+			if !parser.KiloSQLiteSessionExists(dbPath, rawSessionID) {
+				continue
+			}
+			return parser.KiloSQLiteVirtualPath(dbPath, rawSessionID)
+		}
+	}
 
 	// Prefer stored file_path — it's authoritative and handles
 	// cases where the session ID doesn't match the filename.
@@ -5770,6 +6059,13 @@ func (e *Engine) SourceMtime(sessionID string) int64 {
 
 	if def.Type == parser.AgentOpenCode {
 		mtime, err := parser.OpenCodeSourceMtime(path)
+		if err != nil {
+			return 0
+		}
+		return mtime
+	}
+	if def.Type == parser.AgentKilo {
+		mtime, err := parser.KiloSourceMtime(path)
 		if err != nil {
 			return 0
 		}
@@ -5892,6 +6188,15 @@ func (e *Engine) SyncSingleSessionContext(
 	if def.Type == parser.AgentOpenCode &&
 		isOpenCodeSQLiteVirtualPath(path) {
 		err = e.syncSingleOpenCode(sessionID)
+		if errors.Is(err, errSessionPreserved) {
+			preserved = true
+			return nil
+		}
+		return err
+	}
+	if def.Type == parser.AgentKilo &&
+		isKiloSQLiteVirtualPath(path) {
+		err = e.syncSingleKilo(sessionID)
 		if errors.Is(err, errSessionPreserved) {
 			preserved = true
 			return nil
@@ -6171,6 +6476,54 @@ func (e *Engine) syncSingleOpenCode(
 	return fmt.Errorf("opencode session %s not found", sessionID)
 }
 
+func (e *Engine) syncSingleKilo(
+	sessionID string,
+) error {
+	rawID := strings.TrimPrefix(sessionID, "kilo:")
+
+	var lastErr error
+	for _, dir := range e.agentDirs[parser.AgentKilo] {
+		if dir == "" {
+			continue
+		}
+		dbPath := filepath.Join(dir, "kilo.db")
+		if info, err := os.Stat(dbPath); err != nil || info.IsDir() {
+			continue
+		}
+		sess, msgs, err := parser.ParseKiloSession(
+			dbPath, rawID, e.machine,
+		)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if sess == nil {
+			continue
+		}
+		if err := e.writeSessionFull(
+			pendingWrite{sess: *sess, msgs: msgs},
+		); err != nil &&
+			!isIntentionalSessionSkip(err) &&
+			!errors.Is(err, errSessionPreserved) {
+			return fmt.Errorf("write session %s: %w",
+				sess.ID, err)
+		} else if errors.Is(err, errSessionPreserved) {
+			return err
+		}
+		return nil
+	}
+
+	if len(e.agentDirs[parser.AgentKilo]) == 0 {
+		return fmt.Errorf("kilo dir not configured")
+	}
+	if lastErr != nil {
+		return fmt.Errorf(
+			"kilo session %s: %w", sessionID, lastErr,
+		)
+	}
+	return fmt.Errorf("kilo session %s not found", sessionID)
+}
+
 func (e *Engine) syncSingleKiroSQLite(
 	sessionID string,
 ) error {
@@ -6277,6 +6630,11 @@ func (e *Engine) syncSingleZed(sessionID string) error {
 
 func isKiroSQLiteVirtualPath(path string) bool {
 	_, _, ok := parser.ParseKiroSQLiteVirtualPath(path)
+	return ok
+}
+
+func isKiloSQLiteVirtualPath(path string) bool {
+	_, _, ok := parser.ParseKiloSQLiteVirtualPath(path)
 	return ok
 }
 

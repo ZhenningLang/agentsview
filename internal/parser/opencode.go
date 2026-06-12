@@ -18,6 +18,28 @@ import (
 
 const openCodeStorageFingerprintPrefix = "opencode-storage:v1:"
 
+type openCodeFamilyConfig struct {
+	agent    AgentType
+	idPrefix string
+	label    string
+	dbName   string
+}
+
+var (
+	openCodeFamilyOpenCode = openCodeFamilyConfig{
+		agent:    AgentOpenCode,
+		idPrefix: "opencode:",
+		label:    "opencode",
+		dbName:   "opencode.db",
+	}
+	openCodeFamilyKilo = openCodeFamilyConfig{
+		agent:    AgentKilo,
+		idPrefix: "kilo:",
+		label:    "kilo",
+		dbName:   "kilo.db",
+	}
+)
+
 // OpenCodeSession bundles a parsed session with its messages.
 type OpenCodeSession struct {
 	Session  ParsedSession
@@ -40,6 +62,20 @@ type OpenCodeSessionMeta struct {
 // "this DB exists but doesn't have it" — the latter must let
 // resolution continue to other configured roots.
 func OpenCodeSQLiteSessionExists(dbPath, sessionID string) bool {
+	return openCodeFamilySQLiteSessionExists(
+		openCodeFamilyOpenCode, dbPath, sessionID,
+	)
+}
+
+func KiloSQLiteSessionExists(dbPath, sessionID string) bool {
+	return openCodeFamilySQLiteSessionExists(
+		openCodeFamilyKilo, dbPath, sessionID,
+	)
+}
+
+func openCodeFamilySQLiteSessionExists(
+	cfg openCodeFamilyConfig, dbPath, sessionID string,
+) bool {
 	if dbPath == "" || sessionID == "" {
 		return false
 	}
@@ -47,7 +83,7 @@ func OpenCodeSQLiteSessionExists(dbPath, sessionID string) bool {
 	if err != nil || info.IsDir() {
 		return false
 	}
-	db, err := openOpenCodeDB(dbPath)
+	db, err := openOpenCodeFamilyDB(cfg, dbPath)
 	if err != nil {
 		return false
 	}
@@ -66,11 +102,23 @@ func OpenCodeSQLiteSessionExists(dbPath, sessionID string) bool {
 func ListOpenCodeSessionMeta(
 	dbPath string,
 ) ([]OpenCodeSessionMeta, error) {
+	return listOpenCodeFamilySessionMeta(openCodeFamilyOpenCode, dbPath)
+}
+
+func ListKiloSessionMeta(
+	dbPath string,
+) ([]OpenCodeSessionMeta, error) {
+	return listOpenCodeFamilySessionMeta(openCodeFamilyKilo, dbPath)
+}
+
+func listOpenCodeFamilySessionMeta(
+	cfg openCodeFamilyConfig, dbPath string,
+) ([]OpenCodeSessionMeta, error) {
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return nil, nil
 	}
 
-	db, err := openOpenCodeDB(dbPath)
+	db, err := openOpenCodeFamilyDB(cfg, dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +129,7 @@ func ListOpenCodeSessionMeta(
 	)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"listing opencode sessions: %w", err,
+			"listing %s sessions: %w", cfg.label, err,
 		)
 	}
 	defer rows.Close()
@@ -94,12 +142,16 @@ func ListOpenCodeSessionMeta(
 			&id, &timeUpdated,
 		); err != nil {
 			return nil, fmt.Errorf(
-				"scanning opencode session meta: %w", err,
+				"scanning %s session meta: %w", cfg.label, err,
 			)
+		}
+		virtualPath := OpenCodeSQLiteVirtualPath(dbPath, id)
+		if cfg.agent == AgentKilo {
+			virtualPath = KiloSQLiteVirtualPath(dbPath, id)
 		}
 		metas = append(metas, OpenCodeSessionMeta{
 			SessionID:   id,
-			VirtualPath: dbPath + "#" + id,
+			VirtualPath: virtualPath,
 			FileMtime:   timeUpdated * 1_000_000,
 		})
 	}
@@ -111,11 +163,23 @@ func ListOpenCodeSessionMeta(
 func ParseOpenCodeDB(
 	dbPath, machine string,
 ) ([]OpenCodeSession, error) {
+	return parseOpenCodeFamilyDB(openCodeFamilyOpenCode, dbPath, machine)
+}
+
+func ParseKiloDB(
+	dbPath, machine string,
+) ([]OpenCodeSession, error) {
+	return parseOpenCodeFamilyDB(openCodeFamilyKilo, dbPath, machine)
+}
+
+func parseOpenCodeFamilyDB(
+	cfg openCodeFamilyConfig, dbPath, machine string,
+) ([]OpenCodeSession, error) {
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return nil, nil
 	}
 
-	db, err := openOpenCodeDB(dbPath)
+	db, err := openOpenCodeFamilyDB(cfg, dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -124,14 +188,14 @@ func ParseOpenCodeDB(
 	projects, err := loadOpenCodeProjects(db)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"loading opencode projects: %w", err,
+			"loading %s projects: %w", cfg.label, err,
 		)
 	}
 
 	sessions, err := loadOpenCodeSessions(db)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"loading opencode sessions: %w", err,
+			"loading %s sessions: %w", cfg.label, err,
 		)
 	}
 
@@ -139,11 +203,11 @@ func ParseOpenCodeDB(
 	for _, s := range sessions {
 		worktree := projects[s.projectID]
 		parsed, msgs, err := buildOpenCodeSession(
-			db, s, worktree, dbPath, machine,
+			cfg, db, s, worktree, dbPath, machine,
 		)
 		if err != nil {
 			log.Printf(
-				"opencode session %s: %v", s.id, err,
+				"%s session %s: %v", cfg.label, s.id, err,
 			)
 			continue
 		}
@@ -163,13 +227,30 @@ func ParseOpenCodeDB(
 func ParseOpenCodeSession(
 	dbPath, sessionID, machine string,
 ) (*ParsedSession, []ParsedMessage, error) {
+	return parseOpenCodeFamilySession(
+		openCodeFamilyOpenCode, dbPath, sessionID, machine,
+	)
+}
+
+func ParseKiloSession(
+	dbPath, sessionID, machine string,
+) (*ParsedSession, []ParsedMessage, error) {
+	return parseOpenCodeFamilySession(
+		openCodeFamilyKilo, dbPath, sessionID, machine,
+	)
+}
+
+func parseOpenCodeFamilySession(
+	cfg openCodeFamilyConfig,
+	dbPath, sessionID, machine string,
+) (*ParsedSession, []ParsedMessage, error) {
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return nil, nil, fmt.Errorf(
-			"opencode db not found: %s", dbPath,
+			"%s db not found: %s", cfg.label, dbPath,
 		)
 	}
 
-	db, err := openOpenCodeDB(dbPath)
+	db, err := openOpenCodeFamilyDB(cfg, dbPath)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -178,21 +259,21 @@ func ParseOpenCodeSession(
 	projects, err := loadOpenCodeProjects(db)
 	if err != nil {
 		return nil, nil, fmt.Errorf(
-			"loading opencode projects: %w", err,
+			"loading %s projects: %w", cfg.label, err,
 		)
 	}
 
 	s, err := loadOneOpenCodeSession(db, sessionID)
 	if err != nil {
 		return nil, nil, fmt.Errorf(
-			"loading opencode session %s: %w",
-			sessionID, err,
+			"loading %s session %s: %w",
+			cfg.label, sessionID, err,
 		)
 	}
 
 	worktree := projects[s.projectID]
 	return buildOpenCodeSession(
-		db, s, worktree, dbPath, machine,
+		cfg, db, s, worktree, dbPath, machine,
 	)
 }
 
@@ -244,6 +325,7 @@ func ParseOpenCodeFile(
 	}
 
 	sess, parsed, err := buildOpenCodeParsedSession(
+		openCodeFamilyOpenCode,
 		openCodeSessionRow{
 			id:          sf.ID,
 			parentID:    sf.ParentID,
@@ -268,12 +350,18 @@ func ParseOpenCodeFile(
 }
 
 func openOpenCodeDB(dbPath string) (*sql.DB, error) {
+	return openOpenCodeFamilyDB(openCodeFamilyOpenCode, dbPath)
+}
+
+func openOpenCodeFamilyDB(
+	cfg openCodeFamilyConfig, dbPath string,
+) (*sql.DB, error) {
 	dsn := dbPath +
 		"?mode=ro&_journal_mode=WAL&_busy_timeout=3000"
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"opening opencode db %s: %w", dbPath, err,
+			"opening %s db %s: %w", cfg.label, dbPath, err,
 		)
 	}
 	return db, nil
@@ -477,6 +565,7 @@ func loadOpenCodeParts(
 }
 
 func buildOpenCodeSession(
+	cfg openCodeFamilyConfig,
 	db *sql.DB,
 	s openCodeSessionRow,
 	worktree, dbPath, machine string,
@@ -496,9 +585,10 @@ func buildOpenCodeSession(
 	}
 
 	return buildOpenCodeParsedSession(
+		cfg,
 		s,
 		worktree,
-		dbPath+"#"+s.id,
+		openCodeFamilyVirtualPath(cfg, dbPath, s.id),
 		s.timeUpdated*1_000_000,
 		machine,
 		msgs,
@@ -507,6 +597,7 @@ func buildOpenCodeSession(
 }
 
 func buildOpenCodeParsedSession(
+	cfg openCodeFamilyConfig,
 	s openCodeSessionRow,
 	worktree, filePath string,
 	fileMtime int64,
@@ -582,7 +673,7 @@ func buildOpenCodeParsedSession(
 
 	parentID := ""
 	if s.parentID != "" {
-		parentID = "opencode:" + s.parentID
+		parentID = cfg.idPrefix + s.parentID
 	}
 
 	startedAt := millisToTime(s.timeCreated)
@@ -596,10 +687,10 @@ func buildOpenCodeParsedSession(
 	}
 
 	sess := &ParsedSession{
-		ID:               "opencode:" + s.id,
+		ID:               cfg.idPrefix + s.id,
 		Project:          project,
 		Machine:          machine,
-		Agent:            AgentOpenCode,
+		Agent:            cfg.agent,
 		ParentSessionID:  parentID,
 		FirstMessage:     firstMsg,
 		StartedAt:        startedAt,
@@ -1043,9 +1134,19 @@ func OpenCodeSourceMtime(sourcePath string) (int64, error) {
 		return 0, nil
 	}
 	if dbPath, sessionID, ok := ParseOpenCodeSQLiteVirtualPath(sourcePath); ok {
-		return openCodeSQLiteSessionMtime(dbPath, sessionID)
+		return openCodeSQLiteSessionMtime(openCodeFamilyOpenCode, dbPath, sessionID)
 	}
 	return openCodeStorageSessionMtime(sourcePath)
+}
+
+func KiloSourceMtime(sourcePath string) (int64, error) {
+	if sourcePath == "" {
+		return 0, nil
+	}
+	if dbPath, sessionID, ok := ParseKiloSQLiteVirtualPath(sourcePath); ok {
+		return openCodeSQLiteSessionMtime(openCodeFamilyKilo, dbPath, sessionID)
+	}
+	return 0, nil
 }
 
 func OpenCodeStorageFingerprintMissing(
@@ -1150,6 +1251,7 @@ func openCodeStorageFingerprintHash(raw string) string {
 }
 
 func openCodeSQLiteSessionMtime(
+	cfg openCodeFamilyConfig,
 	dbPath, sessionID string,
 ) (int64, error) {
 	if _, err := os.Stat(dbPath); err != nil {
@@ -1157,11 +1259,11 @@ func openCodeSQLiteSessionMtime(
 			return 0, nil
 		}
 		return 0, fmt.Errorf(
-			"stat opencode db %s: %w", dbPath, err,
+			"stat %s db %s: %w", cfg.label, dbPath, err,
 		)
 	}
 
-	db, err := openOpenCodeDB(dbPath)
+	db, err := openOpenCodeFamilyDB(cfg, dbPath)
 	if err != nil {
 		return 0, err
 	}
@@ -1177,11 +1279,20 @@ func openCodeSQLiteSessionMtime(
 			return 0, nil
 		}
 		return 0, fmt.Errorf(
-			"loading opencode session mtime %s#%s: %w",
-			dbPath, sessionID, err,
+			"loading %s session mtime %s#%s: %w",
+			cfg.label, dbPath, sessionID, err,
 		)
 	}
 	return timeUpdated * 1_000_000, nil
+}
+
+func openCodeFamilyVirtualPath(
+	cfg openCodeFamilyConfig, dbPath, sessionID string,
+) string {
+	if cfg.agent == AgentKilo {
+		return KiloSQLiteVirtualPath(dbPath, sessionID)
+	}
+	return OpenCodeSQLiteVirtualPath(dbPath, sessionID)
 }
 
 func openCodeStorageSessionMtime(

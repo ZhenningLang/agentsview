@@ -178,9 +178,19 @@ type kiroSQLiteTestDB struct {
 // tables). Returns a handle for inserting test data.
 func createOpenCodeDB(t *testing.T, dir string) *openCodeTestDB {
 	t.Helper()
-	path := filepath.Join(dir, "opencode.db")
+	return createOpenCodeFamilyDB(t, dir, "opencode.db")
+}
+
+func createKiloDB(t *testing.T, dir string) *openCodeTestDB {
+	t.Helper()
+	return createOpenCodeFamilyDB(t, dir, "kilo.db")
+}
+
+func createOpenCodeFamilyDB(t *testing.T, dir, dbName string) *openCodeTestDB {
+	t.Helper()
+	path := filepath.Join(dir, dbName)
 	d, err := sql.Open("sqlite3", path)
-	require.NoError(t, err, "opening opencode test db")
+	require.NoError(t, err, "opening %s test db", dbName)
 	t.Cleanup(func() { d.Close() })
 
 	schema := `
@@ -211,7 +221,7 @@ func createOpenCodeDB(t *testing.T, dir string) *openCodeTestDB {
 		);
 	`
 	_, err = d.Exec(schema)
-	require.NoError(t, err, "creating opencode schema")
+	require.NoError(t, err, "creating %s schema", dbName)
 	return &openCodeTestDB{path: path, db: d}
 }
 
