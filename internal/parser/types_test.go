@@ -138,6 +138,7 @@ func TestAgentByType(t *testing.T) {
 		{AgentCodex, true},
 		{AgentCopilot, true},
 		{AgentGemini, true},
+		{AgentKilo, true},
 		{AgentOpenCode, true},
 		{AgentOpenHands, true},
 		{AgentCursor, true},
@@ -184,6 +185,24 @@ func TestAgentByPrefix(t *testing.T) {
 			"gemini prefix",
 			"gemini:sess-id",
 			AgentGemini,
+			true,
+		},
+		{
+			"kilo prefix",
+			"kilo:sess-id",
+			AgentKilo,
+			true,
+		},
+		{
+			"kiro prefix stays separate from kilo",
+			"kiro:sess-id",
+			AgentKiro,
+			true,
+		},
+		{
+			"kiro ide prefix stays separate from kilo",
+			"kiro-ide:sess-id",
+			AgentKiroIDE,
 			true,
 		},
 		{
@@ -259,6 +278,7 @@ func TestRegistryCompleteness(t *testing.T) {
 		AgentCodex,
 		AgentCopilot,
 		AgentGemini,
+		AgentKilo,
 		AgentOpenCode,
 		AgentOpenHands,
 		AgentCursor,
@@ -431,6 +451,20 @@ func TestOpenCodeRegistryEntry(t *testing.T) {
 		"OpenCode WatchSubdirs = %v, want %v", def.WatchSubdirs, want)
 }
 
+func TestKiloRegistryEntry(t *testing.T) {
+	def, ok := AgentByType(AgentKilo)
+	require.True(t, ok, "AgentKilo missing from Registry")
+	require.True(t, def.FileBased, "Kilo FileBased")
+	require.NotNil(t, def.DiscoverFunc, "Kilo DiscoverFunc")
+	require.NotNil(t, def.FindSourceFunc, "Kilo FindSourceFunc")
+	assert.Equal(t, "Kilo", def.DisplayName)
+	assert.Equal(t, "KILO_DIR", def.EnvVar)
+	assert.Equal(t, "kilo_dirs", def.ConfigKey)
+	assert.Equal(t, []string{".local/share/kilo"}, def.DefaultDirs)
+	assert.Equal(t, "kilo:", def.IDPrefix)
+	assert.Empty(t, def.WatchSubdirs)
+}
+
 func TestCommandCodeRegistryEntry(t *testing.T) {
 	def, ok := AgentByType(AgentCommandCode)
 	require.True(t, ok, "AgentCommandCode missing from Registry")
@@ -571,6 +605,26 @@ func TestFindOpenCodeSourceFilePureSQLiteOnlyForExistingSession(t *testing.T) {
 		got, "FindOpenCodeSourceFile(present)")
 	got = FindOpenCodeSourceFile(root, "ses_absent")
 	assert.Empty(t, got, "FindOpenCodeSourceFile(absent)")
+}
+
+func TestKiloSQLiteVirtualPathAndSourceFile(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "kilo.db")
+	seedHybridSQLiteDB(t, dbPath, "ses_kilo")
+
+	virtual := KiloSQLiteVirtualPath(dbPath, "ses_kilo")
+	gotDB, gotID, ok := ParseKiloSQLiteVirtualPath(virtual)
+	require.True(t, ok, "ParseKiloSQLiteVirtualPath ok")
+	assert.Equal(t, dbPath, gotDB)
+	assert.Equal(t, "ses_kilo", gotID)
+
+	_, _, ok = ParseKiloSQLiteVirtualPath(OpenCodeSQLiteVirtualPath(
+		filepath.Join(root, "opencode.db"), "ses_kilo",
+	))
+	assert.False(t, ok, "Kilo parser must reject opencode.db virtual paths")
+
+	assert.Equal(t, virtual, FindKiloSourceFile(root, "ses_kilo"))
+	assert.Empty(t, FindKiloSourceFile(root, "ses_missing"))
 }
 
 func TestOpenCodeStorageSessionIDsCollectsJSONFiles(t *testing.T) {

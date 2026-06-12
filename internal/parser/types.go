@@ -14,6 +14,7 @@ const (
 	AgentCodex          AgentType = "codex"
 	AgentCopilot        AgentType = "copilot"
 	AgentGemini         AgentType = "gemini"
+	AgentKilo           AgentType = "kilo"
 	AgentOpenCode       AgentType = "opencode"
 	AgentOpenHands      AgentType = "openhands"
 	AgentCursor         AgentType = "cursor"
@@ -117,6 +118,17 @@ var Registry = []AgentDef{
 		FileBased:      true,
 		DiscoverFunc:   DiscoverGeminiSessions,
 		FindSourceFunc: FindGeminiSourceFile,
+	},
+	{
+		Type:           AgentKilo,
+		DisplayName:    "Kilo",
+		EnvVar:         "KILO_DIR",
+		ConfigKey:      "kilo_dirs",
+		DefaultDirs:    []string{".local/share/kilo"},
+		IDPrefix:       "kilo:",
+		FileBased:      true,
+		DiscoverFunc:   DiscoverKiloSessions,
+		FindSourceFunc: FindKiloSourceFile,
 	},
 	{
 		Type:        AgentOpenCode,

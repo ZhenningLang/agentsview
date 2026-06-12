@@ -100,7 +100,19 @@ func (s *OpenCodeSeeder) AddPart(id, messageID, sessionID string, timeCreated, t
 
 func newTestDB(t *testing.T) (string, *OpenCodeSeeder, *sql.DB) {
 	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "opencode.db")
+	return newOpenCodeFamilyTestDB(t, "opencode.db")
+}
+
+func newKiloTestDB(t *testing.T) (string, *OpenCodeSeeder, *sql.DB) {
+	t.Helper()
+	return newOpenCodeFamilyTestDB(t, "kilo.db")
+}
+
+func newOpenCodeFamilyTestDB(
+	t *testing.T, dbName string,
+) (string, *OpenCodeSeeder, *sql.DB) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), dbName)
 	db, err := sql.Open("sqlite3", dbPath)
 	require.NoError(t, err, "open test db")
 
@@ -189,6 +201,49 @@ func TestParseOpenCodeDB_StandardSession(t *testing.T) {
 	assertEq(t, "msg[0].Role", s.Messages[0].Role, RoleUser)
 	assertEq(t, "msg[1].Role", s.Messages[1].Role, RoleAssistant)
 	assertEq(t, "msg[1].Content", s.Messages[1].Content, "Sure, I can help with Go.")
+}
+
+func TestParseKiloDB_StandardSession(t *testing.T) {
+	dbPath, seeder, db := newKiloTestDB(t)
+	defer db.Close()
+	seeder.AddProject("prj_1", "/home/user/code/kiloapp")
+	seeder.AddSession("ses_parent", "prj_1", "", "Parent", 1699999990000, 1699999995000)
+	seeder.AddSession("ses_kilo", "prj_1", "ses_parent", "Kilo Session", 1700000000000, 1700000060000)
+	seeder.AddMessage("msg_1", "ses_kilo", 1700000000000, 1700000000000, `{"role":"user"}`)
+	seeder.AddPart("prt_1", "msg_1", "ses_kilo", 1700000000000, 1700000000000, `{"type":"text","text":"Hello from Kilo"}`)
+	seeder.AddMessage("msg_2", "ses_kilo", 1700000010000, 1700000010000, `{"role":"assistant","modelID":"gpt-5.5"}`)
+	seeder.AddPart("prt_2", "msg_2", "ses_kilo", 1700000010000, 1700000010000, `{"type":"reasoning","text":"think first"}`)
+	seeder.AddPart("prt_3", "msg_2", "ses_kilo", 1700000011000, 1700000011000, `{"type":"tool","tool":"read","callID":"call_kilo","state":{"input":{"file_path":"main.go"}}}`)
+	seeder.AddPart("prt_4", "msg_2", "ses_kilo", 1700000012000, 1700000012000, `{"type":"text","text":"Kilo answer"}`)
+
+	sessions, err := ParseKiloDB(dbPath, "testmachine")
+	require.NoError(t, err, "ParseKiloDB")
+	require.Len(t, sessions, 1, "sessions len")
+
+	var got *OpenCodeSession
+	for i := range sessions {
+		if sessions[i].Session.ID == "kilo:ses_kilo" {
+			got = &sessions[i]
+		}
+	}
+	require.NotNil(t, got, "missing Kilo session")
+	assertEq(t, "Agent", got.Session.Agent, AgentKilo)
+	assertEq(t, "ParentSessionID", got.Session.ParentSessionID, "kilo:ses_parent")
+	assertEq(t, "Machine", got.Session.Machine, "testmachine")
+	assertEq(t, "Project", got.Session.Project, "kiloapp")
+	assertEq(t, "MessageCount", got.Session.MessageCount, 2)
+	assertEq(t, "FirstMessage", got.Session.FirstMessage, "Kilo Session")
+	assertEq(t, "File.Path", got.Session.File.Path, KiloSQLiteVirtualPath(dbPath, "ses_kilo"))
+	assertEq(t, "File.Mtime", got.Session.File.Mtime, int64(1700000060000)*1_000_000)
+	require.Len(t, got.Messages, 2, "messages len")
+	assertEq(t, "msg[0].Content", got.Messages[0].Content, "Hello from Kilo")
+	assertEq(t, "msg[1].Content", got.Messages[1].Content, "[Thinking]\nthink first\n[/Thinking]\nKilo answer")
+	assertToolCalls(t, got.Messages[1].ToolCalls, []ParsedToolCall{{
+		ToolName:  "read",
+		Category:  "Read",
+		ToolUseID: "call_kilo",
+		InputJSON: `{"file_path":"main.go"}`,
+	}})
 }
 
 func TestParseOpenCodeFile_StorageSession(t *testing.T) {

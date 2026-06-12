@@ -29,6 +29,7 @@ type testEnv struct {
 	cursorDir         string
 	geminiDir         string
 	opencodeDir       string
+	kiloDir           string
 	forgeDir          string
 	piebaldDir        string
 	iflowDir          string
@@ -45,6 +46,7 @@ type testEnvOpts struct {
 	codexDirs    []string
 	cursorDirs   []string
 	opencodeDirs []string
+	kiloDirs     []string
 	kiroDirs     []string
 	emitter      sync.Emitter
 }
@@ -72,6 +74,12 @@ func WithCursorDirs(dirs []string) TestEnvOption {
 func WithOpenCodeDirs(dirs []string) TestEnvOption {
 	return func(o *testEnvOpts) {
 		o.opencodeDirs = dirs
+	}
+}
+
+func WithKiloDirs(dirs []string) TestEnvOption {
+	return func(o *testEnvOpts) {
+		o.kiloDirs = dirs
 	}
 }
 
@@ -141,6 +149,14 @@ func setupTestEnv(t *testing.T, opts ...TestEnvOption) *testEnv {
 		env.opencodeDir = opencodeDirs[0]
 	}
 
+	kiloDirs := options.kiloDirs
+	if len(kiloDirs) == 0 {
+		env.kiloDir = t.TempDir()
+		kiloDirs = []string{env.kiloDir}
+	} else {
+		env.kiloDir = kiloDirs[0]
+	}
+
 	kiroDirs := options.kiroDirs
 	if len(kiroDirs) == 0 {
 		env.kiroDir = t.TempDir()
@@ -155,6 +171,7 @@ func setupTestEnv(t *testing.T, opts ...TestEnvOption) *testEnv {
 			parser.AgentCodex:          codexDirs,
 			parser.AgentCursor:         cursorDirs,
 			parser.AgentGemini:         {env.geminiDir},
+			parser.AgentKilo:           kiloDirs,
 			parser.AgentOpenCode:       opencodeDirs,
 			parser.AgentForge:          {env.forgeDir},
 			parser.AgentPiebald:        {env.piebaldDir},
@@ -168,6 +185,52 @@ func setupTestEnv(t *testing.T, opts ...TestEnvOption) *testEnv {
 		Emitter: options.emitter,
 	})
 	return env
+}
+
+func TestSyncEngineKiloSQLiteCurrentStore(t *testing.T) {
+	env := setupTestEnv(t)
+	kiloDB := createKiloDB(t, env.kiloDir)
+	kiloDB.addProject(t, "prj_kilo", "/home/user/code/kilo-app")
+	kiloDB.addSession(t, "kilo-session", "prj_kilo", 1779012000000, 1779012030000)
+	kiloDB.addMessage(t, "msg_user", "kilo-session", "user", 1779012000000)
+	kiloDB.addTextPart(t, "part_user", "kilo-session", "msg_user", "Build Kilo support", 1779012000000)
+	kiloDB.addMessage(t, "msg_assistant", "kilo-session", "assistant", 1779012010000)
+	kiloDB.addTextPart(t, "part_assistant", "kilo-session", "msg_assistant", "Kilo support added", 1779012010000)
+	kiloDB.addToolPart(t, "part_tool", "kilo-session", "msg_assistant", "read", "call_kilo", 1779012011000)
+
+	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1, Synced: 1, Skipped: 0})
+	assertSessionProject(t, env.db, "kilo:kilo-session", "kilo_app")
+	assertSessionMessageCount(t, env.db, "kilo:kilo-session", 2)
+	assertMessageContent(t, env.db, "kilo:kilo-session", "Build Kilo support", "Kilo support added")
+	assertToolCallCount(t, env.db, "kilo:kilo-session", 1)
+
+	sess, err := env.db.GetSessionFull(context.Background(), "kilo:kilo-session")
+	require.NoError(t, err, "GetSessionFull")
+	require.NotNil(t, sess, "expected Kilo session")
+	assert.Equal(t, "kilo", sess.Agent)
+	require.NotNil(t, sess.FilePath, "FilePath")
+	assert.Equal(t, parser.KiloSQLiteVirtualPath(kiloDB.path, "kilo-session"), *sess.FilePath)
+	assert.Equal(t, parser.KiloSQLiteVirtualPath(kiloDB.path, "kilo-session"), env.engine.FindSourceFile("kilo:kilo-session"))
+	assert.Equal(t, int64(1779012030000)*1_000_000, env.engine.SourceMtime("kilo:kilo-session"))
+}
+
+func TestSyncSingleSessionKiloSQLite(t *testing.T) {
+	env := setupTestEnv(t)
+	kiloDB := createKiloDB(t, env.kiloDir)
+	kiloDB.addProject(t, "prj_kilo", "/home/user/code/kilo-single")
+	kiloDB.addSession(t, "single-session", "prj_kilo", 1779013000000, 1779013030000)
+	kiloDB.addMessage(t, "msg_user", "single-session", "user", 1779013000000)
+	kiloDB.addTextPart(t, "part_user", "single-session", "msg_user", "Sync one Kilo session", 1779013000000)
+	kiloDB.addMessage(t, "msg_assistant", "single-session", "assistant", 1779013010000)
+	kiloDB.addTextPart(t, "part_assistant", "single-session", "msg_assistant", "Synced one Kilo session", 1779013010000)
+
+	require.NoError(t, env.engine.SyncSingleSession("kilo:single-session"))
+	assertSessionProject(t, env.db, "kilo:single-session", "kilo_single")
+	assertMessageContent(t, env.db, "kilo:single-session", "Sync one Kilo session", "Synced one Kilo session")
+
+	kiroSession, err := env.db.GetSessionFull(context.Background(), "kiro:single-session")
+	require.NoError(t, err, "GetSessionFull kiro")
+	assert.Nil(t, kiroSession, "Kilo sync must not create Kiro session")
 }
 
 func TestSyncEngineKiroSQLiteCurrentStore(t *testing.T) {

@@ -277,13 +277,47 @@ func OpenCodeSQLiteVirtualPath(
 func ParseOpenCodeSQLiteVirtualPath(
 	sourcePath string,
 ) (dbPath, sessionID string, ok bool) {
+	return parseSQLiteVirtualPath(sourcePath, "opencode.db")
+}
+
+// DiscoverKiloSessions is present for registry compatibility.
+// Kilo currently stores sessions in kilo.db, so bulk discovery is
+// handled by the sync engine's DB-backed path rather than file walk.
+func DiscoverKiloSessions(root string) []DiscoveredFile {
+	return nil
+}
+
+func FindKiloSourceFile(root, sessionID string) string {
+	if !IsValidSessionID(sessionID) {
+		return ""
+	}
+	dbPath := filepath.Join(root, "kilo.db")
+	if KiloSQLiteSessionExists(dbPath, sessionID) {
+		return KiloSQLiteVirtualPath(dbPath, sessionID)
+	}
+	return ""
+}
+
+func KiloSQLiteVirtualPath(dbPath, sessionID string) string {
+	return dbPath + "#" + sessionID
+}
+
+func ParseKiloSQLiteVirtualPath(
+	sourcePath string,
+) (dbPath, sessionID string, ok bool) {
+	return parseSQLiteVirtualPath(sourcePath, "kilo.db")
+}
+
+func parseSQLiteVirtualPath(
+	sourcePath, dbName string,
+) (dbPath, sessionID string, ok bool) {
 	idx := strings.LastIndex(sourcePath, "#")
 	if idx <= 0 || idx >= len(sourcePath)-1 {
 		return "", "", false
 	}
 	dbPath = sourcePath[:idx]
 	sessionID = sourcePath[idx+1:]
-	if filepath.Base(dbPath) != "opencode.db" {
+	if filepath.Base(dbPath) != dbName {
 		return "", "", false
 	}
 	return dbPath, sessionID, true
