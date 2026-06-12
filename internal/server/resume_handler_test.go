@@ -3,6 +3,7 @@ package server_test
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -134,6 +135,46 @@ func TestResumeSession(t *testing.T) {
 			assertSamePath(t, "command cwd", commandCwd, projectDir)
 		}
 		assertSamePath(t, "cwd", resp.Cwd, projectDir)
+	})
+
+	t.Run("kilo command only", func(t *testing.T) {
+		projectDir := t.TempDir()
+		te.seedSession(t, "kilo:ses_kilo", projectDir, 3, func(s *db.Session) {
+			s.Agent = "kilo"
+		})
+		w := te.post(t,
+			"/api/v1/sessions/kilo:ses_kilo/resume",
+			`{"command_only":true}`,
+		)
+		assertStatus(t, w, http.StatusOK)
+		var resp struct {
+			Launched bool   `json:"launched"`
+			Command  string `json:"command"`
+			Cwd      string `json:"cwd"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.False(t, resp.Launched, "expected launched=false for command_only")
+		assert.Equal(t, "kilo --session ses_kilo", resp.Command)
+		assertSamePath(t, "cwd", resp.Cwd, projectDir)
+	})
+
+	t.Run("kilo command only quotes raw id", func(t *testing.T) {
+		id := "kilo:$(whoami)"
+		te.seedSession(t, id, t.TempDir(), 3, func(s *db.Session) {
+			s.Agent = "kilo"
+		})
+		w := te.post(t,
+			"/api/v1/sessions/"+url.PathEscape(id)+"/resume",
+			`{"command_only":true}`,
+		)
+		assertStatus(t, w, http.StatusOK)
+		var resp struct {
+			Launched bool   `json:"launched"`
+			Command  string `json:"command"`
+		}
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.False(t, resp.Launched, "expected launched=false for command_only")
+		assert.Equal(t, "kilo --session '$(whoami)'", resp.Command)
 	})
 
 	t.Run("claude desktop rejects non-claude agent", func(t *testing.T) {
