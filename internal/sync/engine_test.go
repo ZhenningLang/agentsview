@@ -261,6 +261,56 @@ func TestPostFilterCounts(t *testing.T) {
 	}
 }
 
+func TestProcessDroidWritesSettingsUsageEvents(t *testing.T) {
+	database := openTestDB(t)
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "-Users-alice-Projects-my-app")
+	path := filepath.Join(projectDir, "ses_droid.jsonl")
+	require.NoError(t, os.MkdirAll(projectDir, 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(`{"type":"session_start","id":"ses_droid","sessionTitle":"Droid Usage","cwd":"/Users/alice/Projects/my-app"}
+{"type":"message","id":"msg_user","timestamp":"2026-04-08T07:25:24.897Z","message":{"role":"user","content":[{"type":"text","text":"count usage"}]}}
+{"type":"message","id":"msg_assistant","timestamp":"2026-04-08T07:26:24.897Z","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(projectDir, "ses_droid.settings.json"), []byte(`{
+  "model": "custom:GPT-5.4-1",
+  "tokenUsage": {
+    "inputTokens": 1000,
+    "outputTokens": 200,
+    "cacheCreationTokens": 30,
+    "cacheReadTokens": 400,
+    "thinkingTokens": 50
+  }
+}`), 0o644))
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+
+	engine := &Engine{db: database, machine: "test-machine"}
+	res := engine.processDroid(parser.DiscoveredFile{
+		Path:    path,
+		Project: "my_app",
+		Agent:   parser.AgentDroid,
+	}, info)
+	require.NoError(t, res.err)
+	require.Len(t, res.results, 1)
+	require.NoError(t, engine.writeSessionFull(pendingWrite{
+		sess:        res.results[0].Session,
+		msgs:        res.results[0].Messages,
+		usageEvents: res.results[0].UsageEvents,
+	}))
+
+	usage, err := database.GetSessionUsage(context.Background(), "droid:ses_droid")
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	assert.Equal(t, "droid", usage.Agent)
+	assert.Equal(t, "my_app", usage.Project)
+	assert.True(t, usage.HasTokenData)
+	assert.False(t, usage.HasCost)
+	assert.Equal(t, 200, usage.TotalOutputTokens)
+	assert.Equal(t, 1430, usage.PeakContextTokens)
+	assert.Equal(t, []string{"custom:GPT-5.4-1"}, usage.Models)
+	assert.Equal(t, []string{"custom:GPT-5.4-1"}, usage.UnpricedModels)
+}
+
 func TestPairToolResults(t *testing.T) {
 	tests := []struct {
 		name string

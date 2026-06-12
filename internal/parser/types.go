@@ -14,6 +14,7 @@ const (
 	AgentCodex          AgentType = "codex"
 	AgentCopilot        AgentType = "copilot"
 	AgentGemini         AgentType = "gemini"
+	AgentDroid          AgentType = "droid"
 	AgentKilo           AgentType = "kilo"
 	AgentOpenCode       AgentType = "opencode"
 	AgentOpenHands      AgentType = "openhands"
@@ -129,6 +130,17 @@ var Registry = []AgentDef{
 		FileBased:      true,
 		DiscoverFunc:   DiscoverKiloSessions,
 		FindSourceFunc: FindKiloSourceFile,
+	},
+	{
+		Type:           AgentDroid,
+		DisplayName:    "Droid",
+		EnvVar:         "DROID_SESSIONS_DIR",
+		ConfigKey:      "droid_sessions_dirs",
+		DefaultDirs:    []string{".factory/sessions"},
+		IDPrefix:       "droid:",
+		FileBased:      true,
+		DiscoverFunc:   DiscoverDroidSessions,
+		FindSourceFunc: FindDroidSourceFile,
 	},
 	{
 		Type:        AgentOpenCode,

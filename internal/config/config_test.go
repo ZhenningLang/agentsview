@@ -104,6 +104,57 @@ func TestDefault_IncludesCodexArchivedSessionsDir(t *testing.T) {
 	assert.True(t, strings.HasSuffix(dirs[1], filepath.Join(".codex", "archived_sessions")), "dirs[1] = %q", dirs[1])
 }
 
+func TestDefault_IncludesKiloDirDistinctFromKiro(t *testing.T) {
+	cfg, err := Default()
+	require.NoError(t, err)
+
+	kiloDirs := cfg.ResolveDirs(parser.AgentKilo)
+	require.Len(t, kiloDirs, 1)
+	assert.True(t, strings.HasSuffix(kiloDirs[0], filepath.Join(".local", "share", "kilo")), "kilo dir = %q", kiloDirs[0])
+	assert.NotEqual(t, cfg.ResolveDirs(parser.AgentKiro), kiloDirs)
+	assert.NotEqual(t, cfg.ResolveDirs(parser.AgentKiroIDE), kiloDirs)
+}
+
+func TestDefault_IncludesDroidSessionsDir(t *testing.T) {
+	cfg, err := Default()
+	require.NoError(t, err)
+
+	dirs := cfg.ResolveDirs(parser.AgentDroid)
+	require.Len(t, dirs, 1)
+	assert.True(t, strings.HasSuffix(dirs[0], filepath.Join(".factory", "sessions")), "droid dir = %q", dirs[0])
+}
+
+func TestLoadEnv_DroidSessionsDirOverridesOnlyDroid(t *testing.T) {
+	t.Setenv("DROID_SESSIONS_DIR", filepath.Join(t.TempDir(), "droid-sessions"))
+
+	cfg, err := Default()
+	require.NoError(t, err)
+	beforeClaude := append([]string(nil), cfg.ResolveDirs(parser.AgentClaude)...)
+	cfg.loadEnv()
+
+	assert.Equal(t, []string{os.Getenv("DROID_SESSIONS_DIR")}, cfg.ResolveDirs(parser.AgentDroid))
+	assert.Equal(t, beforeClaude, cfg.ResolveDirs(parser.AgentClaude))
+	assert.True(t, cfg.IsUserConfigured(parser.AgentDroid))
+	assert.False(t, cfg.IsUserConfigured(parser.AgentClaude))
+}
+
+func TestLoadEnv_KiloDirOverridesOnlyKilo(t *testing.T) {
+	t.Setenv("KILO_DIR", filepath.Join(t.TempDir(), "kilo-custom"))
+
+	cfg, err := Default()
+	require.NoError(t, err)
+	beforeKiro := append([]string(nil), cfg.ResolveDirs(parser.AgentKiro)...)
+	beforeKiroIDE := append([]string(nil), cfg.ResolveDirs(parser.AgentKiroIDE)...)
+	cfg.loadEnv()
+
+	assert.Equal(t, []string{os.Getenv("KILO_DIR")}, cfg.ResolveDirs(parser.AgentKilo))
+	assert.Equal(t, beforeKiro, cfg.ResolveDirs(parser.AgentKiro))
+	assert.Equal(t, beforeKiroIDE, cfg.ResolveDirs(parser.AgentKiroIDE))
+	assert.True(t, cfg.IsUserConfigured(parser.AgentKilo))
+	assert.False(t, cfg.IsUserConfigured(parser.AgentKiro))
+	assert.False(t, cfg.IsUserConfigured(parser.AgentKiroIDE))
+}
+
 func TestLoadEnv_OverridesDataDir(t *testing.T) {
 	custom := setupTestEnv(t)
 

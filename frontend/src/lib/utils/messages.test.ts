@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
+  contextEventSubtype,
+  isContextEventMessage,
   isSystemMessage,
   normalizeMessagePreview,
   previewMessage,
@@ -91,6 +93,42 @@ describe("isSystemMessage", () => {
         msg({ is_system: true, source_subtype: "future_subtype" }),
       ),
     ).toBe(true);
+  });
+});
+
+describe("isContextEventMessage", () => {
+  it("shows is_system messages as context events", () => {
+    expect(isContextEventMessage(msg({ is_system: true }))).toBe(true);
+  });
+
+  it("shows prefix-detected hook and command messages", () => {
+    expect(
+      isContextEventMessage(
+        msg({ content: "Stop hook feedback: blocked" }),
+      ),
+    ).toBe(true);
+    expect(
+      contextEventSubtype(
+        msg({ content: "Stop hook feedback: blocked" }),
+      ),
+    ).toBe("stop_hook");
+    expect(
+      contextEventSubtype(msg({ content: "<command-name>/foo</command-name>" })),
+    ).toBe("command_name");
+  });
+
+  it("does not classify normal user/assistant messages as context events", () => {
+    expect(isContextEventMessage(msg({ role: "user", content: "fix bug" }))).toBe(false);
+    expect(isContextEventMessage(msg({ role: "assistant", content: "done" }))).toBe(false);
+  });
+
+  it("uses source metadata as the displayed subtype", () => {
+    const m = msg({
+      is_system: true,
+      source_subtype: "session_start_hook",
+    });
+    expect(isContextEventMessage(m)).toBe(true);
+    expect(contextEventSubtype(m)).toBe("session_start_hook");
   });
 });
 

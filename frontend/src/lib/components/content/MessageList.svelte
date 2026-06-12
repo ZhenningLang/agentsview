@@ -19,7 +19,10 @@
   import {
     hasVisibleSegments,
   } from "../../utils/content-parser.js";
-  import { isSystemMessage } from "../../utils/messages.js";
+  import {
+    contextEventSubtype,
+    isContextEventMessage,
+  } from "../../utils/messages.js";
   import { inSessionSearch } from "../../stores/inSessionSearch.svelte.js";
   import { sessionActivity } from "../../stores/sessionActivity.svelte.js";
   import SessionFindBar from "./SessionFindBar.svelte";
@@ -38,9 +41,7 @@
     | ReturnType<typeof setTimeout>
     | null = null;
 
-  let baseMessages: Message[] = $derived.by(() =>
-    messages.messages.filter((m) => !isSystemMessage(m)),
-  );
+  let baseMessages: Message[] = $derived.by(() => messages.messages);
 
   let baseDisplayItemsAsc = $derived(
     buildDisplayItems(baseMessages),
@@ -54,6 +55,9 @@
 
   function isItemVisible(item: DisplayItem): boolean {
     if (item.kind === "tool-group") {
+      return true;
+    }
+    if (isContextEventMessage(item.message)) {
       return true;
     }
     return hasVisibleSegments(item.message, (type) =>
@@ -573,9 +577,9 @@
               />
             {:else if item.message.is_compact_boundary}
               <CompactBoundaryDivider message={item.message} />
-            {:else if item.message.is_system && item.message.source_subtype && item.message.source_subtype !== 'compact_boundary'}
+            {:else if isContextEventMessage(item.message)}
               <SystemBoundaryCard
-                subtype={item.message.source_subtype}
+                subtype={contextEventSubtype(item.message)}
                 content={item.message.content}
                 timestamp={item.message.timestamp}
               />
