@@ -169,11 +169,17 @@ Features:
 
 - Automatic pricing via LiteLLM rates (with offline fallback)
 - Prompt-caching-aware cost calculation (cache creation / read tokens)
+- Droid token ingestion from each session's optional `.settings.json`
+  `tokenUsage` block
 - Per-model breakdown with `--breakdown`
 - Date filtering (`--since`, `--until`, `--all`), agent filtering (`--agent`)
 - JSON output (`--json`) for scripting
 - Timezone-aware date bucketing (`--timezone`)
 - Works standalone -- no server required, just run the command
+
+Droid sessions can report token totals even when pricing is unavailable for a
+custom model name. In that case the token counts still appear in usage output,
+while cost fields remain unset or the model is listed under `unpriced_models`.
 
 ## Per-Session Details
 
@@ -206,6 +212,10 @@ HTTP responses also include `server_running: true`. Existing sessions return
 
 The deprecated alias `agentsview token-use <id>` remains available for
 compatibility and now also reports cost estimates.
+
+Droid archive session IDs use the `droid:` prefix. For example, a Droid source
+file named `abc123.jsonl` is stored as `droid:abc123`, and per-session commands
+accept that prefixed ID.
 
 ## Session Stats
 
@@ -256,6 +266,36 @@ agentsview stats --include-git-outcomes
   shortcuts)
 - **Export** sessions as HTML or publish to GitHub Gist
 
+### System and Context Events
+
+Session transcripts show persisted system/context events that agentsview can
+parse from source data, including stored system messages, resume/interruption
+markers, command messages, stop-hook feedback, and parser-provided context
+events such as Droid `session_start` metadata. These events render as compact,
+expandable context cards so they stay visible without being confused with normal
+user or assistant turns.
+
+agentsview only displays context surfaces that are present in the original agent
+data or already stored in the local archive. Runtime prompts, hooks, or injected
+instructions that an agent does not persist cannot be reconstructed by
+agentsview.
+
+### Resume Commands
+
+The browser presents copyable terminal commands for supported agents; it does not
+execute local commands, attach to terminals, or resume interactive sessions
+directly. Run the copied command in your own terminal.
+
+For Kilo, stored session IDs use the `kilo:` archive prefix, but the resume
+command uses the raw session ID after that prefix is stripped:
+
+```bash
+kilo --session <session-id>
+```
+
+Agents with unknown or unsupported resume behavior are shown as unsupported or
+unknown instead of receiving a fabricated command.
+
 ## Supported Agents
 
 agentsview auto-discovers sessions from all of these:
@@ -266,6 +306,8 @@ agentsview auto-discovers sessions from all of these:
 | Codex              | `~/.codex/sessions/`                                   |
 | Copilot CLI        | `~/.copilot/`                                          |
 | Gemini CLI         | `~/.gemini/`                                           |
+| Droid              | `~/.factory/sessions/`                                 |
+| Kilo               | `~/.local/share/kilo/`                                 |
 | OpenCode           | `~/.local/share/opencode/`                             |
 | OpenHands CLI      | `~/.openhands/conversations/`                          |
 | Cursor             | `~/.cursor/projects/`                                  |
@@ -291,8 +333,25 @@ agentsview auto-discovers sessions from all of these:
 | Antigravity        | `~/.gemini/antigravity/`                               |
 | Antigravity CLI    | `~/.gemini/antigravity-cli/` (see note below)          |
 
-Each directory can be overridden with an environment variable. See the
-[configuration docs](https://agentsview.io/configuration/) for details.
+Each directory can be overridden with an environment variable. Droid uses
+`DROID_SESSIONS_DIR` with config key `droid_sessions_dirs`. Kilo uses `KILO_DIR`,
+and the config key follows the existing multi-directory convention as
+`kilo_dirs`. See the [configuration docs](https://agentsview.io/configuration/)
+for details. Droid, Kilo, Kiro CLI, and Kiro IDE are distinct agents with
+separate directory defaults and configuration keys.
+
+Example multi-directory configuration:
+
+```toml
+droid_sessions_dirs = ["/factory/sessions/a", "/factory/sessions/b"]
+kilo_dirs = ["/Users/me/.local/share/kilo", "/Volumes/work/kilo"]
+```
+
+Droid parsing reads the JSONL transcript and, when present, the sibling
+`<session-id>.settings.json` file for usage totals. The settings file may provide
+`inputTokens`, `outputTokens`, cache creation/read tokens, and thinking tokens.
+The source files are read-only inputs; agentsview stores parsed records in its
+own local archive and does not write changes back to Droid or Kilo data stores.
 
 ### Antigravity CLI: high-resolution transcripts
 

@@ -3,6 +3,7 @@ import type {
   MessageItem,
 } from "./display-items.js";
 import type { Message } from "../api/types.js";
+import { isContextEventMessage } from "./messages.js";
 
 export function filterDisplayItemsByTranscriptMode(
   items: DisplayItem[],
@@ -34,6 +35,16 @@ export function filterDisplayItemsByTranscriptMode(
     // assistant first so it lands chronologically before the
     // divider, then push the divider itself.
     if (item.message.is_compact_boundary) {
+      if (pendingAssistant && !toolAfterPendingAssistant) {
+        filtered.push(pendingAssistant);
+      }
+      pendingAssistant = null;
+      toolAfterPendingAssistant = false;
+      filtered.push(item);
+      continue;
+    }
+
+    if (isContextEventMessage(item.message)) {
       if (pendingAssistant && !toolAfterPendingAssistant) {
         filtered.push(pendingAssistant);
       }

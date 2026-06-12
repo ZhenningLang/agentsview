@@ -14,6 +14,12 @@
     interrupted: "Request interrupted",
     task_notification: "Task notification",
     stop_hook: "Stop hook feedback",
+    command_message: "Command message",
+    command_name: "Command name",
+    local_command: "Local command output",
+    system: "System message",
+    context: "Context injection",
+    system_context: "System/context event",
   };
 
   let label = $derived(LABELS[subtype] ?? subtype);

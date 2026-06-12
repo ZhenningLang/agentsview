@@ -3331,6 +3331,8 @@ func (e *Engine) processFile(
 		res = e.processCopilot(file, info)
 	case parser.AgentGemini:
 		res = e.processGemini(file, info)
+	case parser.AgentDroid:
+		res = e.processDroid(file, info)
 	case parser.AgentOpenCode:
 		res = e.processOpenCode(file, info)
 	case parser.AgentKilo:
@@ -4060,6 +4062,45 @@ func (e *Engine) shouldSkipOpenCodeByPath(path string) bool {
 		return false
 	}
 	return true
+}
+
+func (e *Engine) processDroid(
+	file parser.DiscoveredFile, info os.FileInfo,
+) processResult {
+	effectiveInfo := droidEffectiveInfo(file.Path, info)
+	if e.shouldSkipByPath(file.Path, effectiveInfo) {
+		return processResult{skip: true}
+	}
+	result, err := parser.ParseDroidSession(
+		file.Path, file.Project, e.machine,
+	)
+	if err != nil {
+		return processResult{err: err}
+	}
+	if result == nil {
+		return processResult{skip: true}
+	}
+	hash, err := ComputeFileHash(file.Path)
+	if err == nil && result.Session.File.Hash == "" {
+		result.Session.File.Hash = hash
+	}
+	result.Session.File.Inode, result.Session.File.Device = getFileIdentity(info)
+	result.Session.File.Size = effectiveInfo.Size()
+	result.Session.File.Mtime = effectiveInfo.ModTime().UnixNano()
+	return processResult{results: []parser.ParseResult{*result}}
+}
+
+func droidEffectiveInfo(path string, info os.FileInfo) os.FileInfo {
+	size := info.Size()
+	mtime := info.ModTime().UnixNano()
+	settingsPath := strings.TrimSuffix(path, ".jsonl") + ".settings.json"
+	if metaInfo, err := os.Stat(settingsPath); err == nil {
+		size += metaInfo.Size()
+		if metaMtime := metaInfo.ModTime().UnixNano(); metaMtime > mtime {
+			mtime = metaMtime
+		}
+	}
+	return fakeSnapshotInfo{fSize: size, fMtime: mtime}
 }
 
 func (e *Engine) processCopilot(
@@ -6289,6 +6330,9 @@ func (e *Engine) SyncSingleSessionContext(
 		file.Project = parser.GetProjectName(
 			filepath.Base(filepath.Dir(filepath.Dir(path))),
 		)
+	case parser.AgentDroid:
+		// path is <droidSessionsDir>/<encoded-project>/<session>.jsonl
+		file.Project = parser.GetProjectName(filepath.Base(filepath.Dir(path)))
 	case parser.AgentWorkBuddy:
 		for _, workBuddyDir := range e.agentDirs[parser.AgentWorkBuddy] {
 			rel, ok := isUnder(workBuddyDir, path)

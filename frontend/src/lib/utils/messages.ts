@@ -43,6 +43,35 @@ export function isSystemMessage(m: Message): boolean {
 }
 
 /**
+ * Returns true when a message is an observable runtime/context event.
+ * Unlike isSystemMessage, this is a render classification rather than
+ * a hide predicate: callers can use it to show parsed system prompts,
+ * hook feedback, resume/interruption notices, and other persisted
+ * context-surface records.
+ */
+export function isContextEventMessage(m: Message): boolean {
+  if (m.is_compact_boundary) return false;
+  if (m.is_system) return true;
+  if (m.source_subtype) return true;
+  if (m.role !== "user") return false;
+  const trimmed = m.content.trim();
+  return SYSTEM_MSG_PREFIXES.some((p) => trimmed.startsWith(p));
+}
+
+export function contextEventSubtype(m: Message): string {
+  if (m.source_subtype) return m.source_subtype;
+  const trimmed = m.content.trim();
+  if (trimmed.startsWith("Stop hook feedback:")) return "stop_hook";
+  if (trimmed.startsWith("[Request interrupted")) return "interrupted";
+  if (trimmed.startsWith("This session is being continued")) return "continuation";
+  if (trimmed.startsWith("<task-notification>")) return "task_notification";
+  if (trimmed.startsWith("<command-message>")) return "command_message";
+  if (trimmed.startsWith("<command-name>")) return "command_name";
+  if (trimmed.startsWith("<local-command-")) return "local_command";
+  return "system_context";
+}
+
+/**
  * Returns true when a message represents an explicit compact
  * boundary inserted by the agent runtime.
  */

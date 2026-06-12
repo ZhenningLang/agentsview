@@ -138,6 +138,7 @@ func TestAgentByType(t *testing.T) {
 		{AgentCodex, true},
 		{AgentCopilot, true},
 		{AgentGemini, true},
+		{AgentDroid, true},
 		{AgentKilo, true},
 		{AgentOpenCode, true},
 		{AgentOpenHands, true},
@@ -185,6 +186,12 @@ func TestAgentByPrefix(t *testing.T) {
 			"gemini prefix",
 			"gemini:sess-id",
 			AgentGemini,
+			true,
+		},
+		{
+			"droid prefix",
+			"droid:sess-id",
+			AgentDroid,
 			true,
 		},
 		{

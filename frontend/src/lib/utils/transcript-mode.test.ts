@@ -140,6 +140,24 @@ describe("filterDisplayItemsByTranscriptMode", () => {
     ).toEqual([0, 1, 2, 3]);
   });
 
+  it("keeps context events as independent focused transcript items", () => {
+    const context = msg({
+      ordinal: 2,
+      role: "assistant",
+      content: "runtime context",
+      is_system: true,
+      source_subtype: "session_start",
+    });
+    expect(
+      ordinalsOf([
+        userMsg(0),
+        assistantMsg(1, "answer before context"),
+        context,
+        assistantMsg(3, "answer after context"),
+      ]),
+    ).toEqual([0, 1, 2, 3]);
+  });
+
   it("can pick the last assistant that still has visible segments", () => {
     const items = buildDisplayItems([
       userMsg(0),
