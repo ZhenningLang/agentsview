@@ -14,6 +14,7 @@ describe("supportsResume", () => {
     expect(supportsResume("gemini")).toBe(true);
     expect(supportsResume("opencode")).toBe(true);
     expect(supportsResume("amp")).toBe(true);
+    expect(supportsResume("kilo")).toBe(true);
   });
 
   it("returns false for unsupported agents", () => {
@@ -63,6 +64,12 @@ describe("buildResumeCommand", () => {
     expect(
       buildResumeCommand("amp", "amp:t-1"),
     ).toBe("amp --resume t-1");
+  });
+
+  it("generates kilo resume command", () => {
+    expect(
+      buildResumeCommand("kilo", "kilo:ses_kilo"),
+    ).toBe("kilo --session ses_kilo");
   });
 
   it("strips agent prefix from compound IDs", () => {
@@ -175,6 +182,14 @@ describe("buildResumeCommand", () => {
       "amp:$HOME/evil",
     );
     expect(cmd).toBe("amp --resume '$HOME/evil'");
+  });
+
+  it("quotes kilo shell metacharacters after stripping prefix", () => {
+    const cmd = buildResumeCommand(
+      "kilo",
+      "kilo:$(whoami)",
+    );
+    expect(cmd).toBe("kilo --session '$(whoami)'");
   });
 });
 

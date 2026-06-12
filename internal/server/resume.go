@@ -44,6 +44,7 @@ var resumeAgents = map[string]string{
 	"gemini":   "gemini --resume %s",
 	"opencode": "opencode --session %s",
 	"amp":      "amp --resume %s",
+	"kilo":     "kilo --session %s",
 	"kiro":     "kiro-cli chat --resume-id %s",
 }
 
