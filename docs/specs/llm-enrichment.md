@@ -44,13 +44,13 @@ OpenAI 兼容 ≠ 一定有 embeddings 端点。
 
 → 默认按"解耦 + 语义搜索可独立开关"设计，P3 实现前用 **spike-1** 验证实际端点。
 
-### D2【影响 P1 措辞】reasoning 等级如何传递？
+### D2【已验证】reasoning 等级如何传递？
 
-`[未验证]` `reasoning_effort` 是 OpenAI o-系列字段；Kimi/moonshot 是否接受、字段名是否一致未确认。
+`[已验证 2026-06-23]` 选定 provider = **DeepSeek**。spike 实测 `deepseek-chat` 接受
+`reasoning_effort` 字段并返回 http=200（容忍/忽略，不报错）。
 
-- **推荐**：config 存 `reasoning_effort`（low/medium/high），client 作为 pass-through
-  字段注入请求；provider 不认时**容错**（捕获 4xx、去掉该字段重试一次或记 log 降级），
-  不让富化整体失败。→ 实现前 **spike-2** 验证。
+- config 存 `reasoning_effort`（low/medium/high）作为 pass-through 注入请求；保留容错
+  （4xx → 去字段重试一次）以兼容其他 provider。DeepSeek 下无需降级。
 
 ### D3【可自由裁量，给出推荐】文本检索如何接入？
 
@@ -253,9 +253,9 @@ flowchart LR
 ```toml
 [llm]
 enabled = false                          # master switch（默认 OFF）
-base_url = "https://api.moonshot.cn/v1"
-api_key = ""
-model = ""                               # chat model（title/keywords）
+base_url = "https://api.deepseek.com"    # 选定 DeepSeek；chat 在 /chat/completions
+api_key = ""                             # 也可经 AGENTSVIEW_LLM_API_KEY 注入
+model = "deepseek-chat"                  # chat model（title/keywords）
 reasoning_effort = "medium"              # low/medium/high，pass-through+容错
 min_user_messages = 3                    # 下限门槛
 reenrich_msg_delta = 20                  # 增量阈值
@@ -291,7 +291,10 @@ model = ""                               # 为空 → 语义搜索禁用
 ### S8 — 余额端点
 
 - `GET /llm/balance`（local-only）：provider-aware。
-  - base_url 含 `moonshot` → `GET {base_url}/users/me/balance`，解析其结构 `[未验证]`（spike-3）。
+  - base_url 含 `deepseek` → `GET {scheme}://{host}/user/balance`（**根域，非 /v1**）；
+    `[已验证 2026-06-23]` 返回 `{is_available, balance_infos:[{currency, total_balance,
+    granted_balance, topped_up_balance}]}`；取 `balance_infos[0]`（currency + total_balance）。
+  - base_url 含 `moonshot` → `GET {base_url}/users/me/balance`（`[未验证]`，按需适配）。
   - 否则若配 `balance_url` → 用之。
   - 否则 → 返回 `{supported:false}`。
 - 失败/不支持 → `{supported:false}` + 后台 log，前端静默隐藏（R4/S-E）。
@@ -317,12 +320,14 @@ Premise collapse 声明：
 
 Spikes（实现前必须把假设变事实；需用户提供 endpoint/apikey 后由用户或在其授权下执行）：
 
-| spike | 类型 | 唯一问题 | 方法 | status |
+Provider 选定：**DeepSeek**（base_url `https://api.deepseek.com`，model `deepseek-chat`）。
+
+| spike | 类型 | 唯一问题 | 结果 | status |
 |---|---|---|---|---|
-| spike-1 | 2 | embed 端点是否存在、维度多少 | 用真实 apikey curl `/v1/embeddings` | spike-before-implement(P3) |
-| spike-2 | 2 | chat 是否接受 reasoning_effort + 能否返回可解析 JSON | curl `/chat/completions` 实测 | spike-before-implement(P1) |
-| spike-3 | 2 | moonshot 余额端点路径/返回结构 | curl `/users/me/balance` | spike-before-implement(P2 余额部分) |
-| spike-4 | 1 | 批量并发下 rate limit 行为 | 小批(20)实跑观察 429/限速 | deferred(用低并发默认兜底) |
+| spike-1 | 2 | DeepSeek embed 端点是否存在 | ❌ `/embeddings` http=404，DeepSeek 无 embeddings | **verified**：P3 需另配 embed（ollama/openai），deepseek-only 时语义搜索禁用 |
+| spike-2 | 2 | chat 是否接受 reasoning_effort + 返回可解析 JSON | ✅ `response_format:json_object` 返回干净 `{title,keywords}`；`reasoning_effort` 容忍 http=200 | **verified**（P1 可建） |
+| spike-3 | 2 | DeepSeek 余额端点路径/结构 | ✅ `GET /user/balance`（根域）→ `{is_available,balance_infos:[{currency:"CNY",total_balance}]}` | **verified**（P2 余额可建，deepseek 适配） |
+| spike-4 | 1 | 批量并发下 rate limit 行为 | 未压测 | deferred（低并发默认 + 退避兜底） |
 
 ## 风险与验证
 
