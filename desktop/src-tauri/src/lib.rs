@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use tauri::async_runtime::Receiver;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::plugin::Builder as PluginBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, Emitter, Manager, RunEvent, Url, WebviewWindow};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_opener::OpenerExt;
@@ -80,6 +81,7 @@ pub fn run() {
         .setup(|app| {
             launch_backend(app)?;
             setup_menu(app)?;
+            setup_tray(app)?;
             schedule_auto_update_check(app.handle().clone());
             Ok(())
         })
@@ -125,6 +127,14 @@ fn launch_backend(app: &mut App) -> Result<(), DynError> {
             if let Some(port) = port {
                 recover_webview(&focus_window, port);
             }
+        }
+        // Closing the window hides it to the menu-bar tray instead of
+        // quitting, so the tray stays a persistent quick-access entry.
+        // Real exit goes through the tray "Quit" item or Cmd+Q, which
+        // raise an app-level Exit event and stop the backend.
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = focus_window.hide();
         }
     });
 
@@ -990,6 +1000,59 @@ fn setup_menu(app: &mut App) -> Result<(), DynError> {
         .build()?;
     app.set_menu(menu)?;
     Ok(())
+}
+
+/// setup_tray adds a macOS menu-bar (status bar) icon that acts as a
+/// quick-access launcher: left-click shows the window, right-click opens
+/// a menu with Open / Quit. Combined with the close-to-hide behavior in
+/// launch_backend, the app keeps running in the menu bar after the
+/// window is closed.
+fn setup_tray(app: &mut App) -> Result<(), DynError> {
+    let show = MenuItemBuilder::with_id("tray_show", "Open AgentsView").build(app)?;
+    let quit = MenuItemBuilder::with_id("tray_quit", "Quit AgentsView").build(app)?;
+    let menu = MenuBuilder::new(app)
+        .item(&show)
+        .separator()
+        .item(&quit)
+        .build()?;
+
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| io::Error::other("missing default window icon"))?;
+
+    TrayIconBuilder::with_id("main-tray")
+        .icon(icon)
+        .tooltip("AgentsView")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray_show" => show_main_window(app),
+            "tray_quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
+/// show_main_window reveals and focuses the main window, restoring it
+/// from a hidden (menu-bar-only) or minimized state.
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
 }
 
 /// Restore input focus to the main webview after a native GTK dialog

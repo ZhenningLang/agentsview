@@ -8,6 +8,7 @@ The wrapper does not reimplement the web app. Instead, it:
 1. Packages it as a Tauri sidecar.
 1. Starts it with `serve --no-browser` on a local port.
 1. Loads the local URL in a native webview.
+1. Adds a macOS menu-bar (tray) icon as a quick-access entry point.
 
 ## Requirements
 
@@ -28,6 +29,21 @@ npm run tauri:build:windows
 The `prepare-sidecar` step runs automatically for `tauri:dev` and `tauri:build`.
 It builds `agentsview` and copies it to
 `src-tauri/binaries/agentsview-<target-triple>`.
+
+The macOS `.app` bundle is written to
+`src-tauri/target/release/bundle/macos/AgentsView.app`.
+
+## Menu Bar (macOS)
+
+The app installs a menu-bar (status bar) icon that acts as a persistent
+quick-access entry point:
+
+- Left-click the icon to open/focus the AgentsView window.
+- Right-click for a menu: `Open AgentsView` / `Quit AgentsView`.
+- Clicking the window's red close button **hides the window to the menu
+  bar** instead of quitting — the app and its local backend keep running.
+- To fully quit (and stop the backend), use the tray's `Quit AgentsView`
+  item or `Cmd+Q`.
 
 ## Environment Notes (Desktop)
 
