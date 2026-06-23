@@ -1086,10 +1086,14 @@ impl Drop for UpdateGuard {
 }
 
 fn schedule_auto_update_check(handle: AppHandle) {
-    let disabled = std::env::var("AGENTSVIEW_DESKTOP_AUTOUPDATE")
-        .map(|v| v == "0")
+    // Auto-update is OFF by default in this build. It points at the
+    // upstream release feed, so a check would offer to replace this local
+    // fork (Skills/C4/tray features) with an official build that lacks
+    // them. Opt in explicitly with AGENTSVIEW_DESKTOP_AUTOUPDATE=1.
+    let enabled = std::env::var("AGENTSVIEW_DESKTOP_AUTOUPDATE")
+        .map(|v| v == "1")
         .unwrap_or(false);
-    if disabled {
+    if !enabled {
         return;
     }
 
