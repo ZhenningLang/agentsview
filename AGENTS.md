@@ -22,6 +22,22 @@ Instructions for autonomous coding agents working in this repository.
 - Do not include generated-with lines, attribution blocks, validation footers, or
   command transcripts in commit messages.
 
+## Requirements Tracking
+
+- This repo tracks every requirement / initiative as one markdown file under
+  `requirements/`, with status encoded in the filename. See
+  `requirements/README.md` for the `<YYYY-MM-DD>_<slug>_<STATUS>.md`
+  convention and the status lifecycle.
+- When you plan a new initiative or write a spec (for example under
+  `docs/specs/`), create or update the matching `requirements/` entry in the
+  same turn. The entry is a short pointer to the spec SSOT plus goal, locked
+  decisions, open decisions, and acceptance criteria; it is not a duplicate
+  of the full spec.
+- When work changes lifecycle state, rename the file to update its `STATUS`
+  (`git mv`, keeping date and slug stable) rather than editing prose. Do not
+  let the directory drift out of sync with what is actually planned, in
+  progress, or done.
+
 ## Validation
 
 - Run relevant tests before committing when practical.
