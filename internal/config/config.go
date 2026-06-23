@@ -159,6 +159,12 @@ type Config struct {
 	// Used to prevent auto-bind to 0.0.0.0 when the user
 	// explicitly requested a specific host.
 	HostExplicit bool `json:"-" toml:"-"`
+
+	// SkillsCatalogDir is the coding-skills catalog directory (the one
+	// containing catalog.json) used by the skill-governance views. When
+	// empty, New() probes the default ~/.dotfiles/coding-skills; when
+	// nothing is found the skills feature stays empty and fail-open.
+	SkillsCatalogDir string `json:"skills_catalog_dir,omitempty" toml:"skills_catalog_dir"`
 }
 
 type dirSource int
@@ -458,6 +464,7 @@ func (c *Config) loadFile() error {
 		EventsCoalesceInterval         time.Duration              `toml:"events_coalesce_interval"`
 		CustomModelPricing             map[string]CustomModelRate `toml:"custom_model_pricing"`
 		RemoteHosts                    []RemoteHost               `toml:"remote_hosts"`
+		SkillsCatalogDir               string                     `toml:"skills_catalog_dir"`
 	}
 	meta, err := toml.DecodeFile(path, &file)
 	if err != nil {
@@ -495,6 +502,11 @@ func (c *Config) loadFile() error {
 	}
 	c.RequireAuth = file.RequireAuth || file.RemoteAccess
 	c.DisableUpdateCheck = file.DisableUpdateCheck
+	// env (loadEnv, AGENTSVIEW_SKILLS_DIR) runs first and wins; the
+	// config file only fills the value when env left it unset.
+	if file.SkillsCatalogDir != "" && c.SkillsCatalogDir == "" {
+		c.SkillsCatalogDir = file.SkillsCatalogDir
+	}
 	// Merge pg field-by-field so env vars override only
 	// the fields they set, preserving config-file settings.
 	if file.PG.URL != "" && c.PG.URL == "" {
@@ -719,6 +731,30 @@ func (c *Config) loadEnv() {
 	if v := os.Getenv("AGENTSVIEW_DISABLE_UPDATE_CHECK"); v != "" {
 		c.DisableUpdateCheck = v == "1" || v == "true"
 	}
+	if v := os.Getenv("AGENTSVIEW_SKILLS_DIR"); v != "" {
+		c.SkillsCatalogDir = v
+	}
+}
+
+// ResolveSkillsCatalogDir returns the effective coding-skills catalog
+// directory. It prefers an explicit config/env value, then probes the
+// default ~/.dotfiles/coding-skills. It returns "" (fail-open: skills
+// feature disabled) when no directory with a catalog.json is found.
+func (c *Config) ResolveSkillsCatalogDir() string {
+	candidates := make([]string, 0, 2)
+	if c.SkillsCatalogDir != "" {
+		candidates = append(candidates, c.SkillsCatalogDir)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".dotfiles", "coding-skills"))
+	}
+	for _, dir := range candidates {
+		if _, err := os.Stat(filepath.Join(dir, "catalog.json")); err == nil {
+			return dir
+		}
+	}
+	return ""
 }
 
 type stringListFlag []string

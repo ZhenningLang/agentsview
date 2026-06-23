@@ -31,6 +31,7 @@ export { default as LinkIcon } from "@lucide/svelte/icons/link";
 export { default as ListCollapseIcon } from "@lucide/svelte/icons/list-collapse";
 export { default as LockIcon } from "@lucide/svelte/icons/lock";
 export { default as LogsIcon } from "@lucide/svelte/icons/logs";
+export { default as WrenchIcon } from "@lucide/svelte/icons/wrench";
 export { default as MenuIcon } from "@lucide/svelte/icons/menu";
 export { default as MessageSquareIcon } from "@lucide/svelte/icons/message-square";
 export { default as MessageSquareTextIcon } from "@lucide/svelte/icons/message-square-text";

@@ -20,6 +20,7 @@
   import UsagePage from "./lib/components/usage/UsagePage.svelte";
   import TrendsPage from "./lib/components/trends/TrendsPage.svelte";
   import InsightsPage from "./lib/components/insights/InsightsPage.svelte";
+  import SkillsPage from "./lib/components/skills/SkillsPage.svelte";
   import PinnedPage from "./lib/components/pinned/PinnedPage.svelte";
   import TrashPage from "./lib/components/trash/TrashPage.svelte";
   import SettingsPage from "./lib/components/settings/SettingsPage.svelte";
@@ -418,6 +419,10 @@
 {:else if router.route === "insights"}
   <div class="page-scroll">
     <InsightsPage />
+  </div>
+{:else if router.route === "skills"}
+  <div class="page-scroll">
+    <SkillsPage />
   </div>
 {:else if router.route === "pinned"}
   <div class="page-scroll">

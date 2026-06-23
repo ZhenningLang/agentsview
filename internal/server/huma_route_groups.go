@@ -12,6 +12,7 @@ func (s *Server) registerTypedAPIRoutes() {
 	s.registerTrendsRoutes()
 	s.registerUsageRoutes()
 	s.registerInsightsRoutes()
+	s.registerSkillRoutes()
 	s.registerSearchRoutes()
 	s.registerSecretsRoutes()
 	s.registerMetadataRoutes()

@@ -379,3 +379,50 @@ CREATE INDEX IF NOT EXISTS idx_secret_findings_session
     ON secret_findings(session_id);
 CREATE INDEX IF NOT EXISTS idx_secret_findings_rule
     ON secret_findings(rule_name);
+
+-- Skills dimension table: slowly-changing reference data synced from
+-- the coding-skills catalog (catalog.json + per-skill SKILL.md
+-- frontmatter). This is NOT session/message data: it is populated by a
+-- dedicated SkillSyncer that runs independently of the session sync
+-- engine, so it never touches the sessions/messages/tool_calls fact
+-- domain or the stats triggers above. Full-replace semantics on sync.
+CREATE TABLE IF NOT EXISTS skills (
+    name                 TEXT PRIMARY KEY,
+    catalog_path         TEXT NOT NULL DEFAULT '',
+    resolved_path        TEXT NOT NULL DEFAULT '',
+    domain               TEXT NOT NULL DEFAULT '',
+    role                 TEXT NOT NULL DEFAULT '',
+    migration_state      TEXT NOT NULL DEFAULT '',
+    migration_canonical  TEXT NOT NULL DEFAULT '',
+    description          TEXT NOT NULL DEFAULT '',
+    frontmatter_name     TEXT NOT NULL DEFAULT '',
+    description_tokens   INTEGER NOT NULL DEFAULT 0,
+    tokenizer            TEXT NOT NULL DEFAULT '',
+    catalog_present      INTEGER NOT NULL DEFAULT 0,
+    file_present         INTEGER NOT NULL DEFAULT 0,
+    health_error_count   INTEGER NOT NULL DEFAULT 0,
+    source_mtime         INTEGER NOT NULL DEFAULT 0,
+    synced_at            TEXT NOT NULL
+        DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_skills_domain ON skills(domain);
+CREATE INDEX IF NOT EXISTS idx_skills_role ON skills(role);
+
+-- Skill health findings: one row per detected issue. skill_name is
+-- nullable for catalog-level findings (e.g. orphaned directories).
+CREATE TABLE IF NOT EXISTS skill_health (
+    id          INTEGER PRIMARY KEY,
+    skill_name  TEXT,
+    check_type  TEXT NOT NULL,
+    severity    TEXT NOT NULL DEFAULT 'warn',
+    message     TEXT NOT NULL DEFAULT '',
+    detail      TEXT NOT NULL DEFAULT '',
+    detected_at TEXT NOT NULL
+        DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_health_skill
+    ON skill_health(skill_name);
+CREATE INDEX IF NOT EXISTS idx_skill_health_type
+    ON skill_health(check_type);

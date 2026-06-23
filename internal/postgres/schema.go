@@ -255,6 +255,43 @@ CREATE INDEX IF NOT EXISTS idx_secret_findings_session
 
 CREATE INDEX IF NOT EXISTS idx_secret_findings_rule
     ON secret_findings (rule_name);
+
+CREATE TABLE IF NOT EXISTS skills (
+    name                 TEXT PRIMARY KEY,
+    catalog_path         TEXT NOT NULL DEFAULT '',
+    resolved_path        TEXT NOT NULL DEFAULT '',
+    domain               TEXT NOT NULL DEFAULT '',
+    role                 TEXT NOT NULL DEFAULT '',
+    migration_state      TEXT NOT NULL DEFAULT '',
+    migration_canonical  TEXT NOT NULL DEFAULT '',
+    description          TEXT NOT NULL DEFAULT '',
+    frontmatter_name     TEXT NOT NULL DEFAULT '',
+    description_tokens   INTEGER NOT NULL DEFAULT 0,
+    tokenizer            TEXT NOT NULL DEFAULT '',
+    catalog_present      INTEGER NOT NULL DEFAULT 0,
+    file_present         INTEGER NOT NULL DEFAULT 0,
+    health_error_count   INTEGER NOT NULL DEFAULT 0,
+    source_mtime         BIGINT NOT NULL DEFAULT 0,
+    synced_at            TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_skills_domain ON skills (domain);
+CREATE INDEX IF NOT EXISTS idx_skills_role ON skills (role);
+
+CREATE TABLE IF NOT EXISTS skill_health (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    skill_name  TEXT,
+    check_type  TEXT NOT NULL,
+    severity    TEXT NOT NULL DEFAULT 'warn',
+    message     TEXT NOT NULL DEFAULT '',
+    detail      TEXT NOT NULL DEFAULT '',
+    detected_at TEXT NOT NULL DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_skill_health_skill
+    ON skill_health (skill_name);
+CREATE INDEX IF NOT EXISTS idx_skill_health_type
+    ON skill_health (check_type);
 `
 
 // EnsureSchema creates the schema (if needed), then runs
@@ -1412,6 +1449,24 @@ func CheckSchemaCompat(
 		 FROM secret_findings LIMIT 0`)
 	if err != nil {
 		return fmt.Errorf("secret_findings table missing required columns: %w", err)
+	}
+	rows.Close()
+
+	rows, err = db.QueryContext(ctx,
+		`SELECT name, domain, role, description_tokens, tokenizer,
+			catalog_present, file_present, health_error_count
+		 FROM skills LIMIT 0`)
+	if err != nil {
+		return fmt.Errorf("skills table missing required columns: %w", err)
+	}
+	rows.Close()
+
+	rows, err = db.QueryContext(ctx,
+		`SELECT id, skill_name, check_type, severity, message,
+			detail, detected_at
+		 FROM skill_health LIMIT 0`)
+	if err != nil {
+		return fmt.Errorf("skill_health table missing required columns: %w", err)
 	}
 	rows.Close()
 	return nil

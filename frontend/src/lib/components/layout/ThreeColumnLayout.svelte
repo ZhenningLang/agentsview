@@ -19,6 +19,7 @@
     LogsIcon,
     PinIcon,
     TrashIcon,
+    WrenchIcon,
   } from "../../icons.js";
 
   interface Props {
@@ -339,6 +340,14 @@
       >
         <LogsIcon size="12" strokeWidth="2" aria-hidden="true" />
         Insights
+      </button>
+      <button
+        class="mobile-nav-btn"
+        class:active={router.route === "skills"}
+        onclick={() => mobileNav("skills")}
+      >
+        <WrenchIcon size="12" strokeWidth="2" aria-hidden="true" />
+        Skills
       </button>
       <button
         class="mobile-nav-btn"

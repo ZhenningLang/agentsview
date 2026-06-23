@@ -20,6 +20,7 @@ import (
 	"go.kenn.io/agentsview/internal/secrets"
 	"go.kenn.io/agentsview/internal/server"
 	"go.kenn.io/agentsview/internal/signals"
+	"go.kenn.io/agentsview/internal/skills"
 	"go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/telemetry"
 )
@@ -204,6 +205,12 @@ func runServe(cfg config.Config) {
 	// usage page load does not observe an empty table;
 	// background LiteLLM refresh follows immediately.
 	seedPricing(database)
+
+	// Skill-governance views: sync the coding-skills catalog into the
+	// skills/skill_health dimension tables. Independent of session sync
+	// and fail-open: a missing catalog directory or a write-only PG/
+	// DuckDB store simply leaves the skills feature empty.
+	startSkillSync(ctx, cfg, database)
 
 	rtOpts := serveRuntimeOptions{
 		Mode:          "serve",
@@ -616,6 +623,41 @@ func startPeriodicSync(
 		engine.SyncAll(context.Background(), nil)
 		recomputePendingSessions(engine, database)
 	}
+}
+
+// startSkillSync runs the coding-skills catalog sync once at startup
+// and then on the periodic interval. It is fail-open: it no-ops when no
+// catalog directory is configured/found, or when the store is not a
+// local writer (PG/DuckDB serve modes receive skills via push sync).
+func startSkillSync(
+	ctx context.Context, cfg config.Config, database db.Store,
+) {
+	dir := cfg.ResolveSkillsCatalogDir()
+	if dir == "" {
+		return
+	}
+	writer, ok := database.(skills.Writer)
+	if !ok {
+		return
+	}
+	syncer := skills.NewSyncer(dir, writer, nil)
+	if err := syncer.Sync(ctx); err != nil {
+		log.Printf("skill sync: %v", err)
+	}
+	go func() {
+		ticker := time.NewTicker(periodicSyncInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := syncer.Sync(ctx); err != nil {
+					log.Printf("skill sync: %v", err)
+				}
+			}
+		}
+	}()
 }
 
 func recomputePendingSessions(

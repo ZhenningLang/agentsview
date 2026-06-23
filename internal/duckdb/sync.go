@@ -163,6 +163,9 @@ func (s *Sync) Push(
 	if err := s.syncModelPricing(ctx); err != nil {
 		return result, err
 	}
+	if err := s.syncSkills(ctx); err != nil {
+		log.Printf("duckdb: skill mirror failed: %v", err)
+	}
 
 	lastPush, err := s.local.GetSyncState(lastPushStateKey)
 	if err != nil {

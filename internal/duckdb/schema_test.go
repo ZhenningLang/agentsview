@@ -48,6 +48,8 @@ func TestEnsureSchemaCreatesRequiredMirrorTables(t *testing.T) {
 		"secret_findings",
 		"starred_sessions",
 		"pinned_messages",
+		"skills",
+		"skill_health",
 	} {
 		assert.True(t, tableExists(t, db, table), "missing table %s", table)
 	}
@@ -57,7 +59,7 @@ func TestEnsureSchemaCreatesRequiredMirrorTables(t *testing.T) {
 		`SELECT value FROM sync_metadata WHERE key = ?`,
 		schemaVersionMetadataKey,
 	).Scan(&version))
-	assert.Equal(t, "1", version)
+	assert.Equal(t, "2", version)
 	var repaired string
 	require.NoError(t, db.QueryRowContext(ctx,
 		`SELECT value FROM sync_metadata WHERE key = ?`,

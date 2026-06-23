@@ -66,6 +66,12 @@ type Store interface {
 	GetAnalyticsSignals(ctx context.Context, f AnalyticsFilter) (SignalsAnalyticsResponse, error)
 	GetTrendsTerms(ctx context.Context, f AnalyticsFilter, terms []TrendTermInput, granularity string) (TrendsTermsResponse, error)
 
+	// Skills (governance: catalog dimension + health + static cost).
+	ListSkills(ctx context.Context, f SkillFilter) ([]Skill, error)
+	GetSkill(ctx context.Context, name string) (*Skill, error)
+	GetSkillHealth(ctx context.Context, f SkillHealthFilter) (SkillHealthReport, error)
+	GetSkillTokenCost(ctx context.Context) (SkillTokenCostReport, error)
+
 	// Usage (token cost).
 	GetDailyUsage(ctx context.Context, f UsageFilter) (DailyUsageResult, error)
 	GetTopSessionsByCost(ctx context.Context, f UsageFilter, limit int) ([]TopSessionEntry, error)

@@ -42,6 +42,82 @@ func (s *Sync) syncModelPricing(ctx context.Context) error {
 	return nil
 }
 
+// syncSkills mirrors the local skills + skill_health dimension tables
+// into the DuckDB export. Like syncModelPricing this is global reference
+// data (not per-session), so it is a full replace. It is skipped when
+// the local catalog has not been synced (empty skills) to avoid wiping a
+// previously populated mirror, matching the PG push guard.
+func (s *Sync) syncSkills(ctx context.Context) error {
+	skills, err := s.local.ListSkills(ctx, db.SkillFilter{})
+	if err != nil {
+		return fmt.Errorf("listing local skills: %w", err)
+	}
+	if len(skills) == 0 {
+		return nil
+	}
+	health, err := s.local.GetSkillHealth(ctx, db.SkillHealthFilter{})
+	if err != nil {
+		return fmt.Errorf("listing local skill health: %w", err)
+	}
+
+	tx, err := s.duck.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin duck skills tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM skill_health"); err != nil {
+		return fmt.Errorf("clearing duck skill_health: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM skills"); err != nil {
+		return fmt.Errorf("clearing duck skills: %w", err)
+	}
+	for _, sk := range skills {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO skills (
+				name, catalog_path, resolved_path, domain, role,
+				migration_state, migration_canonical, description,
+				frontmatter_name, description_tokens, tokenizer,
+				catalog_present, file_present, health_error_count,
+				source_mtime, synced_at
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			sk.Name, sk.CatalogPath, sk.ResolvedPath, sk.Domain, sk.Role,
+			sk.MigrationState, sk.MigrationCanonical, sk.Description,
+			sk.FrontmatterName, sk.DescriptionTokens, sk.Tokenizer,
+			duckBoolToInt(sk.CatalogPresent), duckBoolToInt(sk.FilePresent),
+			sk.HealthErrorCount, sk.SourceMtime, sk.SyncedAt,
+		); err != nil {
+			return fmt.Errorf("inserting duck skill %q: %w", sk.Name, err)
+		}
+	}
+	for i, h := range health.Findings {
+		var skillName any
+		if h.SkillName != "" {
+			skillName = h.SkillName
+		}
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO skill_health (
+				id, skill_name, check_type, severity, message, detail, detected_at
+			) VALUES (?,?,?,?,?,?,?)`,
+			int64(i+1), skillName, h.CheckType, h.Severity, h.Message,
+			h.Detail, h.DetectedAt,
+		); err != nil {
+			return fmt.Errorf("inserting duck skill_health: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit duck skills: %w", err)
+	}
+	return nil
+}
+
+func duckBoolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func duckFallbackPricingRows() []db.ModelPricing {
 	src := pricingpkg.FallbackPricing()
 	out := make([]db.ModelPricing, len(src))

@@ -12,7 +12,7 @@ import (
 
 // SchemaVersion is the version of the DuckDB mirror schema created by
 // EnsureSchema. Increment it when a non-optional DuckDB column/table is added.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 const schemaVersionMetadataKey = "agentsview_schema_version"
 const defaultRepairMetadataKey = "agentsview_default_repair_v1"
@@ -471,6 +471,74 @@ var mirrorTables = []tableSpec{
 			"CREATE INDEX IF NOT EXISTS idx_pinned_session ON pinned_messages(session_id)",
 			"CREATE INDEX IF NOT EXISTS idx_pinned_message ON pinned_messages(message_id)",
 			"CREATE INDEX IF NOT EXISTS idx_pinned_created ON pinned_messages(created_at)",
+		},
+	},
+	{
+		name: "skills",
+		create: `CREATE TABLE IF NOT EXISTS skills (
+			name TEXT PRIMARY KEY,
+			catalog_path TEXT NOT NULL DEFAULT '',
+			resolved_path TEXT NOT NULL DEFAULT '',
+			domain TEXT NOT NULL DEFAULT '',
+			role TEXT NOT NULL DEFAULT '',
+			migration_state TEXT NOT NULL DEFAULT '',
+			migration_canonical TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			frontmatter_name TEXT NOT NULL DEFAULT '',
+			description_tokens INTEGER NOT NULL DEFAULT 0,
+			tokenizer TEXT NOT NULL DEFAULT '',
+			catalog_present INTEGER NOT NULL DEFAULT 0,
+			file_present INTEGER NOT NULL DEFAULT 0,
+			health_error_count INTEGER NOT NULL DEFAULT 0,
+			source_mtime BIGINT NOT NULL DEFAULT 0,
+			synced_at TEXT NOT NULL DEFAULT ''
+		)`,
+		columns: []columnSpec{
+			{"name", "name TEXT"},
+			{"catalog_path", "catalog_path TEXT NOT NULL DEFAULT ''"},
+			{"resolved_path", "resolved_path TEXT NOT NULL DEFAULT ''"},
+			{"domain", "domain TEXT NOT NULL DEFAULT ''"},
+			{"role", "role TEXT NOT NULL DEFAULT ''"},
+			{"migration_state", "migration_state TEXT NOT NULL DEFAULT ''"},
+			{"migration_canonical", "migration_canonical TEXT NOT NULL DEFAULT ''"},
+			{"description", "description TEXT NOT NULL DEFAULT ''"},
+			{"frontmatter_name", "frontmatter_name TEXT NOT NULL DEFAULT ''"},
+			{"description_tokens", "description_tokens INTEGER NOT NULL DEFAULT 0"},
+			{"tokenizer", "tokenizer TEXT NOT NULL DEFAULT ''"},
+			{"catalog_present", "catalog_present INTEGER NOT NULL DEFAULT 0"},
+			{"file_present", "file_present INTEGER NOT NULL DEFAULT 0"},
+			{"health_error_count", "health_error_count INTEGER NOT NULL DEFAULT 0"},
+			{"source_mtime", "source_mtime BIGINT NOT NULL DEFAULT 0"},
+			{"synced_at", "synced_at TEXT NOT NULL DEFAULT ''"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_skills_domain ON skills(domain)",
+			"CREATE INDEX IF NOT EXISTS idx_skills_role ON skills(role)",
+		},
+	},
+	{
+		name: "skill_health",
+		create: `CREATE TABLE IF NOT EXISTS skill_health (
+			id BIGINT,
+			skill_name TEXT,
+			check_type TEXT NOT NULL,
+			severity TEXT NOT NULL DEFAULT 'warn',
+			message TEXT NOT NULL DEFAULT '',
+			detail TEXT NOT NULL DEFAULT '',
+			detected_at TEXT NOT NULL DEFAULT ''
+		)`,
+		columns: []columnSpec{
+			{"id", "id BIGINT"},
+			{"skill_name", "skill_name TEXT"},
+			{"check_type", "check_type TEXT NOT NULL DEFAULT ''"},
+			{"severity", "severity TEXT NOT NULL DEFAULT 'warn'"},
+			{"message", "message TEXT NOT NULL DEFAULT ''"},
+			{"detail", "detail TEXT NOT NULL DEFAULT ''"},
+			{"detected_at", "detected_at TEXT NOT NULL DEFAULT ''"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_skill_health_skill ON skill_health(skill_name)",
+			"CREATE INDEX IF NOT EXISTS idx_skill_health_type ON skill_health(check_type)",
 		},
 	},
 }

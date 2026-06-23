@@ -127,6 +127,12 @@ func (s *Sync) Push(
 	if err := s.syncModelPricing(ctx); err != nil {
 		return result, err
 	}
+	// Skills are global reference data; full-replace them every push so
+	// the PG read side mirrors the local SkillSyncer. Failure here must
+	// not abort the session push, which is the primary payload.
+	if err := s.syncSkills(ctx); err != nil {
+		log.Printf("pgsync: skill push failed: %v", err)
+	}
 
 	cutoff := time.Now().UTC().Format(LocalSyncTimestampLayout)
 
