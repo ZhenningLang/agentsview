@@ -76,6 +76,30 @@ type DuckDBConfig struct {
 	ExcludeProjects []string `toml:"exclude_projects" json:"exclude_projects,omitempty"`
 }
 
+// LLMEmbedConfig holds optional embedding-provider settings.
+type LLMEmbedConfig struct {
+	BaseURL string `toml:"base_url" json:"base_url,omitempty"`
+	APIKey  string `toml:"api_key" json:"-"`
+	Model   string `toml:"model" json:"model,omitempty"`
+}
+
+// LLMConfig holds OpenAI-compatible enrichment settings.
+type LLMConfig struct {
+	Enabled             bool           `toml:"enabled" json:"enabled"`
+	BaseURL             string         `toml:"base_url" json:"base_url,omitempty"`
+	APIKey              string         `toml:"api_key" json:"-"`
+	Model               string         `toml:"model" json:"model,omitempty"`
+	ReasoningEffort     string         `toml:"reasoning_effort" json:"reasoning_effort,omitempty"`
+	MinUserMessages     int            `toml:"min_user_messages" json:"min_user_messages"`
+	ReenrichMsgDelta    int            `toml:"reenrich_msg_delta" json:"reenrich_msg_delta"`
+	ReenrichIdleMinutes int            `toml:"reenrich_idle_minutes" json:"reenrich_idle_minutes"`
+	Concurrency         int            `toml:"concurrency" json:"concurrency"`
+	Periodic            bool           `toml:"periodic" json:"periodic"`
+	BalanceURL          string         `toml:"balance_url" json:"balance_url,omitempty"`
+	Embed               LLMEmbedConfig `toml:"embed" json:"embed,omitempty"`
+	llmEnvEnabledSet    bool
+}
+
 // AutomatedConfig holds user-supplied additions to the
 // automated-session classifier. Parse-only; all semantic
 // normalization (trim, dedupe, length cap, built-in overlap
@@ -125,6 +149,7 @@ type Config struct {
 	NoSync               bool                   `json:"-" toml:"-"`
 	PG                   PGConfig               `json:"pg,omitempty" toml:"pg"`
 	DuckDB               DuckDBConfig           `json:"duckdb,omitempty" toml:"duckdb"`
+	LLM                  LLMConfig              `json:"llm,omitempty" toml:"llm"`
 	Automated            AutomatedConfig        `json:"automated,omitempty" toml:"automated"`
 	Agent                map[string]AgentConfig `json:"agent,omitempty" toml:"agent"`
 	WriteTimeout         time.Duration          `json:"-" toml:"-"`
@@ -264,6 +289,13 @@ func Default() (Config, error) {
 		ResultContentBlockedCategories: []string{"Read", "Glob"},
 		EventsCoalesceInterval:         10 * time.Second,
 		Agent:                          map[string]AgentConfig{},
+		LLM: LLMConfig{
+			ReasoningEffort:     "medium",
+			MinUserMessages:     3,
+			ReenrichMsgDelta:    20,
+			ReenrichIdleMinutes: 30,
+			Concurrency:         3,
+		},
 	}, nil
 }
 
@@ -459,6 +491,7 @@ func (c *Config) loadFile() error {
 		DisableUpdateCheck             bool                       `toml:"disable_update_check"`
 		PG                             PGConfig                   `toml:"pg"`
 		DuckDB                         DuckDBConfig               `toml:"duckdb"`
+		LLM                            LLMConfig                  `toml:"llm"`
 		Automated                      AutomatedConfig            `toml:"automated"`
 		Agent                          map[string]AgentConfig     `toml:"agent"`
 		EventsCoalesceInterval         time.Duration              `toml:"events_coalesce_interval"`
@@ -550,6 +583,7 @@ func (c *Config) loadFile() error {
 	if file.DuckDB.ExcludeProjects != nil && c.DuckDB.ExcludeProjects == nil {
 		c.DuckDB.ExcludeProjects = file.DuckDB.ExcludeProjects
 	}
+	mergeLLMConfig(c, file.LLM, meta)
 	// IsDefined distinguishes "unset" (leave default 10s) from an
 	// explicit "0s" (disable coalescing). Checking != 0 would silently
 	// ignore the latter.
@@ -733,6 +767,64 @@ func (c *Config) loadEnv() {
 	}
 	if v := os.Getenv("AGENTSVIEW_SKILLS_DIR"); v != "" {
 		c.SkillsCatalogDir = v
+	}
+	if v, ok := os.LookupEnv("AGENTSVIEW_LLM_ENABLED"); ok {
+		c.LLM.Enabled = v == "1" || strings.EqualFold(v, "true")
+		c.LLM.llmEnvEnabledSet = true
+	}
+	if v := os.Getenv("AGENTSVIEW_LLM_BASE_URL"); v != "" {
+		c.LLM.BaseURL = v
+	}
+	if v := os.Getenv("AGENTSVIEW_LLM_API_KEY"); v != "" {
+		c.LLM.APIKey = v
+	}
+	if v := os.Getenv("AGENTSVIEW_LLM_MODEL"); v != "" {
+		c.LLM.Model = v
+	}
+}
+
+func mergeLLMConfig(c *Config, file LLMConfig, meta toml.MetaData) {
+	if meta.IsDefined("llm", "enabled") && !c.LLM.llmEnvEnabledSet {
+		c.LLM.Enabled = file.Enabled
+	}
+	if file.BaseURL != "" && c.LLM.BaseURL == "" {
+		c.LLM.BaseURL = file.BaseURL
+	}
+	if file.APIKey != "" && c.LLM.APIKey == "" {
+		c.LLM.APIKey = file.APIKey
+	}
+	if file.Model != "" && c.LLM.Model == "" {
+		c.LLM.Model = file.Model
+	}
+	if meta.IsDefined("llm", "reasoning_effort") {
+		c.LLM.ReasoningEffort = file.ReasoningEffort
+	}
+	if meta.IsDefined("llm", "min_user_messages") {
+		c.LLM.MinUserMessages = file.MinUserMessages
+	}
+	if meta.IsDefined("llm", "reenrich_msg_delta") {
+		c.LLM.ReenrichMsgDelta = file.ReenrichMsgDelta
+	}
+	if meta.IsDefined("llm", "reenrich_idle_minutes") {
+		c.LLM.ReenrichIdleMinutes = file.ReenrichIdleMinutes
+	}
+	if meta.IsDefined("llm", "concurrency") {
+		c.LLM.Concurrency = file.Concurrency
+	}
+	if meta.IsDefined("llm", "periodic") {
+		c.LLM.Periodic = file.Periodic
+	}
+	if file.BalanceURL != "" && c.LLM.BalanceURL == "" {
+		c.LLM.BalanceURL = file.BalanceURL
+	}
+	if file.Embed.BaseURL != "" && c.LLM.Embed.BaseURL == "" {
+		c.LLM.Embed.BaseURL = file.Embed.BaseURL
+	}
+	if file.Embed.APIKey != "" && c.LLM.Embed.APIKey == "" {
+		c.LLM.Embed.APIKey = file.Embed.APIKey
+	}
+	if file.Embed.Model != "" && c.LLM.Embed.Model == "" {
+		c.LLM.Embed.Model = file.Embed.Model
 	}
 }
 
@@ -1314,6 +1406,18 @@ func (c *Config) ResolveDuckDB() (DuckDBConfig, error) {
 		duck.MachineName = h
 	}
 	return duck, nil
+}
+
+// ResolveLLM returns LLM config with derived embedding defaults applied.
+func (c *Config) ResolveLLM() LLMConfig {
+	llm := c.LLM
+	if llm.Embed.BaseURL == "" {
+		llm.Embed.BaseURL = llm.BaseURL
+	}
+	if llm.Embed.APIKey == "" {
+		llm.Embed.APIKey = llm.APIKey
+	}
+	return llm
 }
 
 var (

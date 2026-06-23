@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"flag"
 	"log"
 	"os"
@@ -687,6 +688,127 @@ func TestLoadFile_PGConfig(t *testing.T) {
 			assert.Equal(t, tt.want.MachineName, cfg.PG.MachineName)
 		})
 	}
+}
+
+func TestLLMConfig_Defaults(t *testing.T) {
+	cfg, err := Default()
+	require.NoError(t, err)
+
+	assert.False(t, cfg.LLM.Enabled)
+	assert.Empty(t, cfg.LLM.BaseURL)
+	assert.Empty(t, cfg.LLM.APIKey)
+	assert.Empty(t, cfg.LLM.Model)
+	assert.Equal(t, "medium", cfg.LLM.ReasoningEffort)
+	assert.Equal(t, 3, cfg.LLM.MinUserMessages)
+	assert.Equal(t, 20, cfg.LLM.ReenrichMsgDelta)
+	assert.Equal(t, 30, cfg.LLM.ReenrichIdleMinutes)
+	assert.Equal(t, 3, cfg.LLM.Concurrency)
+	assert.False(t, cfg.LLM.Periodic)
+	assert.Empty(t, cfg.LLM.BalanceURL)
+	assert.Empty(t, cfg.LLM.Embed.Model)
+}
+
+func TestLLMConfig_LoadsFileAndEnv(t *testing.T) {
+	dir := setupTestEnv(t)
+	writeConfig(t, dir, map[string]any{
+		"llm": map[string]any{
+			"enabled":               true,
+			"base_url":              "https://config.example.test/v1",
+			"api_key":               "config-chat-key",
+			"model":                 "config-chat-model",
+			"reasoning_effort":      "high",
+			"min_user_messages":     5,
+			"reenrich_msg_delta":    40,
+			"reenrich_idle_minutes": 45,
+			"concurrency":           2,
+			"periodic":              true,
+			"balance_url":           "https://balance.example.test",
+			"embed": map[string]any{
+				"base_url": "https://embed-config.example.test/v1",
+				"api_key":  "config-embed-key",
+				"model":    "config-embed-model",
+			},
+		},
+	})
+	t.Setenv("AGENTSVIEW_LLM_BASE_URL", "https://env.example.test/v1")
+	t.Setenv("AGENTSVIEW_LLM_API_KEY", "env-chat-key")
+	t.Setenv("AGENTSVIEW_LLM_MODEL", "env-chat-model")
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+
+	assert.True(t, cfg.LLM.Enabled)
+	assert.Equal(t, "https://env.example.test/v1", cfg.LLM.BaseURL)
+	assert.Equal(t, "env-chat-key", cfg.LLM.APIKey)
+	assert.Equal(t, "env-chat-model", cfg.LLM.Model)
+	assert.Equal(t, "high", cfg.LLM.ReasoningEffort)
+	assert.Equal(t, 5, cfg.LLM.MinUserMessages)
+	assert.Equal(t, 40, cfg.LLM.ReenrichMsgDelta)
+	assert.Equal(t, 45, cfg.LLM.ReenrichIdleMinutes)
+	assert.Equal(t, 2, cfg.LLM.Concurrency)
+	assert.True(t, cfg.LLM.Periodic)
+	assert.Equal(t, "https://balance.example.test", cfg.LLM.BalanceURL)
+	assert.Equal(t, "https://embed-config.example.test/v1", cfg.LLM.Embed.BaseURL)
+	assert.Equal(t, "config-embed-key", cfg.LLM.Embed.APIKey)
+	assert.Equal(t, "config-embed-model", cfg.LLM.Embed.Model)
+}
+
+func TestLLMConfig_EnvFalseOverridesFile(t *testing.T) {
+	dir := setupTestEnv(t)
+	writeConfig(t, dir, map[string]any{
+		"llm": map[string]any{
+			"enabled": true,
+		},
+	})
+	t.Setenv("AGENTSVIEW_LLM_ENABLED", "false")
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+
+	assert.False(t, cfg.LLM.Enabled)
+}
+
+func TestLLMConfig_ResolveEmbedFallback(t *testing.T) {
+	cfg := Config{LLM: LLMConfig{
+		BaseURL: "https://chat.example.test/v1",
+		APIKey:  "chat-key",
+		Model:   "chat-model",
+		Embed: LLMEmbedConfig{
+			Model: "embed-model",
+		},
+	}}
+
+	resolved := cfg.ResolveLLM()
+
+	assert.Equal(t, "https://chat.example.test/v1", resolved.Embed.BaseURL)
+	assert.Equal(t, "chat-key", resolved.Embed.APIKey)
+	assert.Equal(t, "embed-model", resolved.Embed.Model)
+	assert.Empty(t, cfg.LLM.Embed.BaseURL, "ResolveLLM must not mutate raw config")
+	assert.Empty(t, cfg.LLM.Embed.APIKey, "ResolveLLM must not mutate raw config")
+
+	cfg.LLM.Embed = LLMEmbedConfig{}
+	resolved = cfg.ResolveLLM()
+	assert.Empty(t, resolved.Embed.Model, "empty embed model remains the disabled signal")
+}
+
+func TestLLMConfig_RedactsSecrets(t *testing.T) {
+	cfg := Config{LLM: LLMConfig{
+		BaseURL: "https://chat.example.test/v1",
+		APIKey:  "chat-secret-key",
+		Model:   "chat-model",
+		Embed: LLMEmbedConfig{
+			BaseURL: "https://embed.example.test/v1",
+			APIKey:  "embed-secret-key",
+			Model:   "embed-model",
+		},
+	}}
+
+	data, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	serialized := string(data)
+
+	assert.NotContains(t, serialized, "chat-secret-key")
+	assert.NotContains(t, serialized, "embed-secret-key")
 }
 
 func TestPGConfig_ProjectFilter(t *testing.T) {
