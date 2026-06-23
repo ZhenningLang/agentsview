@@ -79,13 +79,14 @@ func (s *Sync) syncSkills(ctx context.Context) error {
 				migration_state, migration_canonical, description,
 				frontmatter_name, description_tokens, tokenizer,
 				catalog_present, file_present, health_error_count,
-				source_mtime, synced_at
-			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				source_mtime, synced_at, prompt, prompt_tokens
+			) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			sk.Name, sk.CatalogPath, sk.ResolvedPath, sk.Domain, sk.Role,
 			sk.MigrationState, sk.MigrationCanonical, sk.Description,
 			sk.FrontmatterName, sk.DescriptionTokens, sk.Tokenizer,
 			duckBoolToInt(sk.CatalogPresent), duckBoolToInt(sk.FilePresent),
 			sk.HealthErrorCount, sk.SourceMtime, sk.SyncedAt,
+			sk.Prompt, sk.PromptTokens,
 		); err != nil {
 			return fmt.Errorf("inserting duck skill %q: %w", sk.Name, err)
 		}

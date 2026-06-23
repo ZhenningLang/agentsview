@@ -18,6 +18,7 @@
     LogsIcon,
     MenuIcon,
     MoonIcon,
+    WrenchIcon,
     MoreHorizontalIcon,
     RefreshCwIcon,
     SearchIcon,
@@ -312,10 +313,21 @@
       <span class="nav-label">Usage</span>
     </button>
 
+    <button
+      class="nav-btn"
+      class:active={router.route === "skills"}
+      onclick={() => router.navigate("skills")}
+      title="Skills"
+      aria-label="Skills"
+    >
+      <WrenchIcon size="12" strokeWidth="2" aria-hidden="true" />
+      <span class="nav-label">Skills</span>
+    </button>
+
     <div class="more-wrap">
       <button
         class="nav-btn"
-        class:active={router.route === "trends" || router.route === "pinned" || router.route === "insights" || router.route === "skills" || router.route === "trash" || moreOpen}
+        class:active={router.route === "trends" || router.route === "pinned" || router.route === "insights" || router.route === "trash" || moreOpen}
         bind:this={moreBtnRef}
         onclick={() => { moreOpen = !moreOpen; }}
         title="More navigation"
@@ -341,11 +353,6 @@
             class:active={router.route === "insights"}
             onclick={() => { router.navigate("insights"); moreOpen = false; }}>
             Insights
-          </button>
-          <button class="more-item" role="menuitem"
-            class:active={router.route === "skills"}
-            onclick={() => { router.navigate("skills"); moreOpen = false; }}>
-            Skills
           </button>
           <button class="more-item" role="menuitem"
             class:active={router.route === "trash"}

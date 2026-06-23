@@ -314,6 +314,7 @@ func TestEnsureSchemaGroupsMissingColumnMigrationsByTable(t *testing.T) {
 
 	// Two tables have missing columns (sessions: termination_status;
 	// messages: source_parent_uuid, is_sidechain, is_compact_boundary,
-	// thinking_text). Per-table batching means one ALTER each.
-	assert.Equal(t, 2, state.alterTableExecCount(), "ALTER TABLE execs")
+	// thinking_text; skills: prompt, prompt_tokens). Per-table batching
+	// means one ALTER each.
+	assert.Equal(t, 3, state.alterTableExecCount(), "ALTER TABLE execs")
 }

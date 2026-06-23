@@ -272,6 +272,8 @@ CREATE TABLE IF NOT EXISTS skills (
     file_present         INTEGER NOT NULL DEFAULT 0,
     health_error_count   INTEGER NOT NULL DEFAULT 0,
     source_mtime         BIGINT NOT NULL DEFAULT 0,
+    prompt               TEXT NOT NULL DEFAULT '',
+    prompt_tokens        INTEGER NOT NULL DEFAULT 0,
     synced_at            TEXT NOT NULL DEFAULT ''
 );
 
@@ -578,6 +580,16 @@ func EnsureSchema(
 			"sessions", "session_name",
 			`session_name TEXT`,
 			"adding sessions.session_name",
+		},
+		{
+			"skills", "prompt",
+			`prompt TEXT NOT NULL DEFAULT ''`,
+			"adding skills.prompt",
+		},
+		{
+			"skills", "prompt_tokens",
+			`prompt_tokens INTEGER NOT NULL DEFAULT 0`,
+			"adding skills.prompt_tokens",
 		},
 	}
 	step = time.Now()

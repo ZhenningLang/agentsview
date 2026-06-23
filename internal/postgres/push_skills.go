@@ -53,15 +53,16 @@ func (s *Sync) syncSkills(ctx context.Context) error {
 				migration_state, migration_canonical, description,
 				frontmatter_name, description_tokens, tokenizer,
 				catalog_present, file_present, health_error_count,
-				source_mtime, synced_at
+				source_mtime, synced_at, prompt, prompt_tokens
 			) VALUES (
-				$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
+				$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18
 			)`,
 			sk.Name, sk.CatalogPath, sk.ResolvedPath, sk.Domain, sk.Role,
 			sk.MigrationState, sk.MigrationCanonical, sk.Description,
 			sk.FrontmatterName, sk.DescriptionTokens, sk.Tokenizer,
 			boolToPGInt(sk.CatalogPresent), boolToPGInt(sk.FilePresent),
 			sk.HealthErrorCount, sk.SourceMtime, sk.SyncedAt,
+			sk.Prompt, sk.PromptTokens,
 		); err != nil {
 			return fmt.Errorf("inserting pg skill %q: %w", sk.Name, err)
 		}

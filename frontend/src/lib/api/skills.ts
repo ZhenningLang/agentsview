@@ -17,6 +17,14 @@ export interface Skill {
   health_error_count: number;
   source_mtime: number;
   synced_at: string;
+  prompt?: string;
+  prompt_tokens: number;
+  invocation_count: number;
+  total_prompt_tokens: number;
+}
+
+export function fetchSkill(name: string, signal?: AbortSignal): Promise<Skill> {
+  return getJSON<Skill>(`/skills/${encodeURIComponent(name)}`, signal);
 }
 
 export interface SkillDomainCost {

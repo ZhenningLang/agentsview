@@ -15,7 +15,32 @@ import (
 const duckSkillCols = `name, catalog_path, resolved_path, domain, role,
 	migration_state, migration_canonical, description, frontmatter_name,
 	description_tokens, tokenizer, catalog_present, file_present,
-	health_error_count, source_mtime, synced_at`
+	health_error_count, source_mtime, synced_at, prompt, prompt_tokens`
+
+// duckSkillInvocationCounts returns invocation counts per skill name
+// from tool_calls (the C4 usage join). Mirrors the SQLite/PG versions.
+func (s *Store) duckSkillInvocationCounts(
+	ctx context.Context,
+) (map[string]int, error) {
+	rows, err := s.duck.QueryContext(ctx,
+		`SELECT skill_name, COUNT(*) FROM tool_calls
+		 WHERE skill_name IS NOT NULL AND skill_name != ''
+		 GROUP BY skill_name`)
+	if err != nil {
+		return nil, fmt.Errorf("counting skill invocations: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var name string
+		var n int
+		if err := rows.Scan(&name, &n); err != nil {
+			return nil, err
+		}
+		out[name] = n
+	}
+	return out, rows.Err()
+}
 
 func (s *Store) ListSkills(
 	ctx context.Context, f db.SkillFilter,
@@ -67,6 +92,13 @@ func (s *Store) GetSkill(
 	sk, err := scanDuckSkill(rows)
 	if err != nil {
 		return nil, err
+	}
+	var n int
+	if err := s.duck.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tool_calls WHERE skill_name = ?`, name,
+	).Scan(&n); err == nil {
+		sk.InvocationCount = n
+		sk.TotalPromptTokens = n * sk.PromptTokens
 	}
 	return &sk, nil
 }
@@ -139,9 +171,16 @@ func (s *Store) GetSkillTokenCost(
 	if err != nil {
 		return rep, err
 	}
+	counts, err := s.duckSkillInvocationCounts(ctx)
+	if err != nil {
+		return rep, err
+	}
 	byDomain := map[string]*db.SkillDomainCost{}
 	order := make([]string, 0, 16)
-	for _, sk := range skills {
+	for i := range skills {
+		sk := &skills[i]
+		sk.InvocationCount = counts[sk.Name]
+		sk.TotalPromptTokens = sk.InvocationCount * sk.PromptTokens
 		rep.TotalSkills++
 		rep.TotalTokens += sk.DescriptionTokens
 		if sk.Tokenizer != "" {
@@ -171,7 +210,7 @@ func scanDuckSkill(rows interface{ Scan(...any) error }) (db.Skill, error) {
 		&sk.MigrationState, &sk.MigrationCanonical, &sk.Description,
 		&sk.FrontmatterName, &sk.DescriptionTokens, &sk.Tokenizer,
 		&catalogPresent, &filePresent, &sk.HealthErrorCount,
-		&sk.SourceMtime, &sk.SyncedAt,
+		&sk.SourceMtime, &sk.SyncedAt, &sk.Prompt, &sk.PromptTokens,
 	); err != nil {
 		return db.Skill{}, err
 	}

@@ -28,6 +28,17 @@ type Skill struct {
 	HealthErrorCount   int    `json:"health_error_count"`
 	SourceMtime        int64  `json:"source_mtime"`
 	SyncedAt           string `json:"synced_at"`
+	// Prompt is the full SKILL.md content (for the detail/audit view).
+	// PromptTokens is the approximate token size of the skill body that
+	// loads on each invocation.
+	Prompt       string `json:"prompt,omitempty"`
+	PromptTokens int    `json:"prompt_tokens"`
+	// InvocationCount and TotalPromptTokens are usage-derived (joined
+	// from tool_calls.skill_name at query time, not stored in the
+	// dimension table). TotalPromptTokens = InvocationCount * PromptTokens.
+	// They count only skill-mechanism invocations, not inline use.
+	InvocationCount   int `json:"invocation_count"`
+	TotalPromptTokens int `json:"total_prompt_tokens"`
 }
 
 // SkillHealth is one health-check finding produced by the skill
@@ -89,7 +100,7 @@ type SkillTokenCostReport struct {
 const skillCols = `name, catalog_path, resolved_path, domain, role,
 	migration_state, migration_canonical, description, frontmatter_name,
 	description_tokens, tokenizer, catalog_present, file_present,
-	health_error_count, source_mtime, synced_at`
+	health_error_count, source_mtime, synced_at, prompt, prompt_tokens`
 
 func scanSkill(rows *sql.Rows) (Skill, error) {
 	var s Skill
@@ -99,13 +110,39 @@ func scanSkill(rows *sql.Rows) (Skill, error) {
 		&s.MigrationState, &s.MigrationCanonical, &s.Description,
 		&s.FrontmatterName, &s.DescriptionTokens, &s.Tokenizer,
 		&catalogPresent, &filePresent, &s.HealthErrorCount,
-		&s.SourceMtime, &s.SyncedAt,
+		&s.SourceMtime, &s.SyncedAt, &s.Prompt, &s.PromptTokens,
 	); err != nil {
 		return Skill{}, err
 	}
 	s.CatalogPresent = catalogPresent != 0
 	s.FilePresent = filePresent != 0
 	return s, nil
+}
+
+// skillInvocationCounts returns invocation counts per skill name from
+// tool_calls. This is the C4 usage join: it counts only invocations that
+// went through the Skill tool mechanism (tool_calls.skill_name), not
+// inline use, and does not touch NormalizeToolCategory. Works on all
+// three backends because tool_calls is mirrored everywhere.
+func (db *DB) skillInvocationCounts(ctx context.Context) (map[string]int, error) {
+	rows, err := db.getReader().QueryContext(ctx,
+		`SELECT skill_name, COUNT(*) FROM tool_calls
+		 WHERE skill_name IS NOT NULL AND skill_name != ''
+		 GROUP BY skill_name`)
+	if err != nil {
+		return nil, fmt.Errorf("counting skill invocations: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var name string
+		var n int
+		if err := rows.Scan(&name, &n); err != nil {
+			return nil, err
+		}
+		out[name] = n
+	}
+	return out, rows.Err()
 }
 
 // ListSkills returns catalog skills, optionally filtered by domain or
@@ -161,6 +198,13 @@ func (db *DB) GetSkill(
 	s, err := scanSkill(rows)
 	if err != nil {
 		return nil, fmt.Errorf("scan skill: %w", err)
+	}
+	var n int
+	if err := db.getReader().QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tool_calls WHERE skill_name = ?`, name,
+	).Scan(&n); err == nil {
+		s.InvocationCount = n
+		s.TotalPromptTokens = n * s.PromptTokens
 	}
 	return &s, nil
 }
@@ -239,9 +283,16 @@ func (db *DB) GetSkillTokenCost(
 	if err != nil {
 		return rep, err
 	}
+	counts, err := db.skillInvocationCounts(ctx)
+	if err != nil {
+		return rep, err
+	}
 	byDomain := map[string]*SkillDomainCost{}
 	order := make([]string, 0, 16)
-	for _, s := range skills {
+	for i := range skills {
+		s := &skills[i]
+		s.InvocationCount = counts[s.Name]
+		s.TotalPromptTokens = s.InvocationCount * s.PromptTokens
 		rep.TotalSkills++
 		rep.TotalTokens += s.DescriptionTokens
 		if s.Tokenizer != "" {
@@ -275,7 +326,7 @@ func replaceSkillsTx(ctx context.Context, tx txExec, skills []Skill) error {
 		return fmt.Errorf("clearing skills: %w", err)
 	}
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO skills (`+skillCols+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return fmt.Errorf("prepare skills insert: %w", err)
 	}
@@ -287,6 +338,7 @@ func replaceSkillsTx(ctx context.Context, tx txExec, skills []Skill) error {
 			s.FrontmatterName, s.DescriptionTokens, s.Tokenizer,
 			boolToInt(s.CatalogPresent), boolToInt(s.FilePresent),
 			s.HealthErrorCount, s.SourceMtime, s.SyncedAt,
+			s.Prompt, s.PromptTokens,
 		); err != nil {
 			return fmt.Errorf("insert skill %q: %w", s.Name, err)
 		}

@@ -4,12 +4,19 @@
     fetchSkills,
     fetchSkillCost,
     fetchSkillHealth,
+    fetchSkill,
     type Skill,
     type SkillTokenCostReport,
     type SkillHealthReport,
   } from "../../api/skills";
 
   type Tab = "catalog" | "cost" | "health";
+  type SortKey =
+    | "name"
+    | "domain"
+    | "description_tokens"
+    | "invocation_count"
+    | "total_prompt_tokens";
 
   // Reference context window used to express resident cost as a share.
   const REFERENCE_WINDOW = 200_000;
@@ -49,11 +56,62 @@
   const maxDomainTokens = $derived(
     cost ? Math.max(1, ...(cost.by_domain ?? []).map((d) => d.tokens)) : 1,
   );
+
+  // Sortable per-skill cost table.
+  let sortKey = $state<SortKey>("total_prompt_tokens");
+  let sortDir = $state<"asc" | "desc">("desc");
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      sortDir = sortDir === "asc" ? "desc" : "asc";
+    } else {
+      sortKey = key;
+      sortDir = key === "name" || key === "domain" ? "asc" : "desc";
+    }
+  }
+
   const sortedCostSkills = $derived(
-    [...(cost?.skills ?? [])].sort(
-      (a, b) => b.description_tokens - a.description_tokens,
-    ),
+    [...(cost?.skills ?? [])].sort((a, b) => {
+      const av = a[sortKey];
+      const bv = b[sortKey];
+      let cmp: number;
+      if (typeof av === "string" && typeof bv === "string") {
+        cmp = av.localeCompare(bv);
+      } else {
+        cmp = (av as number) - (bv as number);
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    }),
   );
+
+  function sortIndicator(key: SortKey): string {
+    if (sortKey !== key) return "";
+    return sortDir === "asc" ? " ▲" : " ▼";
+  }
+
+  // Skill detail (prompt audit) modal.
+  let detailSkill = $state<Skill | null>(null);
+  let detailLoading = $state(false);
+  let detailError = $state<string | null>(null);
+
+  async function openDetail(name: string) {
+    detailLoading = true;
+    detailError = null;
+    detailSkill = null;
+    try {
+      detailSkill = await fetchSkill(name);
+    } catch (e) {
+      detailError = e instanceof Error ? e.message : String(e);
+    } finally {
+      detailLoading = false;
+    }
+  }
+
+  function closeDetail() {
+    detailSkill = null;
+    detailError = null;
+    detailLoading = false;
+  }
 
   function severityClass(sev: string): string {
     if (sev === "error") return "sev-error";
@@ -108,7 +166,7 @@
       </thead>
       <tbody>
         {#each skills as s (s.name)}
-          <tr>
+          <tr class="clickable" onclick={() => openDetail(s.name)}>
             <td class="name">{s.name}</td>
             <td>{s.domain}</td>
             <td>{s.role}</td>
@@ -162,17 +220,44 @@
         </div>
       {/each}
     </div>
-    <h3>按 skill（降序）</h3>
-    <table class="grid">
+    <h3>按 skill</h3>
+    <p class="caveat">
+      点击任意 skill 查看提示词。总次数仅统计走 Skill 机制的调用（不含模型
+      inline 完成）；总 token = 总次数 × 提示词 token。
+    </p>
+    <table class="grid sortable">
       <thead>
-        <tr><th>Name</th><th>Domain</th><th class="num">Tokens</th></tr>
+        <tr>
+          <th class="sortable-th" onclick={() => toggleSort("name")}
+            >Name{sortIndicator("name")}</th
+          >
+          <th class="sortable-th" onclick={() => toggleSort("domain")}
+            >Domain{sortIndicator("domain")}</th
+          >
+          <th class="num sortable-th"
+            title="description 常驻 token（近似）"
+            onclick={() => toggleSort("description_tokens")}
+            >描述token{sortIndicator("description_tokens")}</th
+          >
+          <th class="num sortable-th"
+            onclick={() => toggleSort("invocation_count")}
+            >总次数{sortIndicator("invocation_count")}</th
+          >
+          <th class="num sortable-th"
+            title="总次数 × 提示词 token"
+            onclick={() => toggleSort("total_prompt_tokens")}
+            >总token{sortIndicator("total_prompt_tokens")}</th
+          >
+        </tr>
       </thead>
       <tbody>
         {#each sortedCostSkills as s (s.name)}
-          <tr>
+          <tr class="clickable" onclick={() => openDetail(s.name)}>
             <td class="name">{s.name}</td>
             <td>{s.domain}</td>
-            <td class="num">{s.description_tokens}</td>
+            <td class="num">{s.description_tokens.toLocaleString()}</td>
+            <td class="num">{s.invocation_count.toLocaleString()}</td>
+            <td class="num">{s.total_prompt_tokens.toLocaleString()}</td>
           </tr>
         {/each}
       </tbody>
@@ -205,6 +290,63 @@
     {/if}
   {/if}
 </div>
+
+{#if detailSkill || detailLoading || detailError}
+  <div
+    class="modal-backdrop"
+    role="button"
+    tabindex="0"
+    onclick={closeDetail}
+    onkeydown={(e) => e.key === "Escape" && closeDetail()}
+  >
+    <div
+      class="modal"
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={() => {}}
+    >
+      {#if detailLoading}
+        <div class="state">加载中…</div>
+      {:else if detailError}
+        <div class="state error">加载失败：{detailError}</div>
+        <button class="close-btn" onclick={closeDetail}>关闭</button>
+      {:else if detailSkill}
+        <div class="modal-head">
+          <div>
+            <h2>{detailSkill.name}</h2>
+            <div class="modal-meta">
+              {detailSkill.domain} · {detailSkill.role}
+              {#if detailSkill.migration_state}
+                · {detailSkill.migration_state}{detailSkill.migration_canonical
+                  ? ` → ${detailSkill.migration_canonical}`
+                  : ""}
+              {/if}
+            </div>
+          </div>
+          <button class="close-btn" onclick={closeDetail} aria-label="关闭"
+            >✕</button
+          >
+        </div>
+        <div class="modal-stats">
+          <span><b>{detailSkill.invocation_count.toLocaleString()}</b> 总次数</span>
+          <span><b>{detailSkill.prompt_tokens.toLocaleString()}</b> 提示词token</span>
+          <span
+            ><b>{detailSkill.total_prompt_tokens.toLocaleString()}</b> 总token</span
+          >
+          <span
+            ><b>{detailSkill.description_tokens.toLocaleString()}</b> 描述token</span
+          >
+        </div>
+        <p class="modal-desc">{detailSkill.description}</p>
+        <h4>提示词（SKILL.md）</h4>
+        <pre class="prompt">{detailSkill.prompt || "(无正文)"}</pre>
+        <div class="modal-path">{detailSkill.resolved_path}</div>
+      {/if}
+    </div>
+  </div>
+{/if}
 
 <style>
   .skills-page {
@@ -350,5 +492,104 @@
     background: var(--code-bg, #f3f4f6);
     padding: 0.05rem 0.25rem;
     border-radius: 3px;
+  }
+  .sortable-th {
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .sortable-th:hover {
+    color: var(--text-primary, #1a1a1a);
+  }
+  tr.clickable {
+    cursor: pointer;
+  }
+  tr.clickable:hover {
+    background: var(--hover-bg, #f3f4f6);
+  }
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    padding: 1.5rem;
+  }
+  .modal {
+    background: var(--bg, #fff);
+    color: var(--text-primary, #1a1a1a);
+    border-radius: 8px;
+    max-width: 760px;
+    width: 100%;
+    max-height: 85vh;
+    overflow-y: auto;
+    padding: 1.25rem 1.5rem;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+  }
+  .modal-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+  }
+  .modal-head h2 {
+    margin: 0;
+    font-size: 1.2rem;
+  }
+  .modal-meta {
+    font-size: 0.8rem;
+    color: var(--text-secondary, #666);
+    margin-top: 0.15rem;
+  }
+  .close-btn {
+    background: none;
+    border: 1px solid var(--border, #ddd);
+    border-radius: 6px;
+    cursor: pointer;
+    padding: 0.2rem 0.5rem;
+    color: var(--text-secondary, #666);
+    flex-shrink: 0;
+  }
+  .modal-stats {
+    display: flex;
+    gap: 1.25rem;
+    flex-wrap: wrap;
+    margin: 0.75rem 0;
+    font-size: 0.82rem;
+    color: var(--text-secondary, #666);
+  }
+  .modal-stats b {
+    color: var(--text-primary, #1a1a1a);
+    font-size: 1rem;
+  }
+  .modal-desc {
+    font-size: 0.85rem;
+    color: var(--text-secondary, #666);
+    margin: 0.25rem 0 0.75rem;
+  }
+  .modal h4 {
+    margin: 0.5rem 0 0.4rem;
+    font-size: 0.9rem;
+  }
+  pre.prompt {
+    background: var(--hover-bg, #f6f8fa);
+    color: var(--text-primary, #1a1a1a);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 6px;
+    padding: 0.75rem;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+  .modal-path {
+    margin-top: 0.5rem;
+    font-size: 0.72rem;
+    color: var(--text-secondary, #999);
+    word-break: break-all;
   }
 </style>

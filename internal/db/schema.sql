@@ -402,6 +402,8 @@ CREATE TABLE IF NOT EXISTS skills (
     file_present         INTEGER NOT NULL DEFAULT 0,
     health_error_count   INTEGER NOT NULL DEFAULT 0,
     source_mtime         INTEGER NOT NULL DEFAULT 0,
+    prompt               TEXT NOT NULL DEFAULT '',
+    prompt_tokens        INTEGER NOT NULL DEFAULT 0,
     synced_at            TEXT NOT NULL
         DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );

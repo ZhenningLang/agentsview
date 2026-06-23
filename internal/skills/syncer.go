@@ -140,7 +140,7 @@ func (s *Syncer) Sync(ctx context.Context) error {
 		sk.FilePresent = true
 		sk.SourceMtime = info.ModTime().Unix()
 
-		fm, fmErr := readFrontmatter(mdPath)
+		fm, body, raw, fmErr := readSkillMarkdown(mdPath)
 		if fmErr != nil || (fm.Name == "" && fm.Description == "") {
 			findings = append(findings, finding(e.Name,
 				"missing_frontmatter", "error",
@@ -152,6 +152,10 @@ func (s *Syncer) Sync(ctx context.Context) error {
 		sk.FrontmatterName = fm.Name
 		sk.Description = fm.Description
 		sk.DescriptionTokens = s.tokenizer.Count(fm.Description)
+		// Prompt = full SKILL.md (for the audit view); PromptTokens =
+		// the body that loads on each invocation.
+		sk.Prompt = raw
+		sk.PromptTokens = s.tokenizer.Count(body)
 
 		// Wiring: catalog name == frontmatter name == dir basename.
 		if (fm.Name != "" && fm.Name != e.Name) || base != e.Name {
@@ -254,20 +258,44 @@ func (s *Syncer) orphanFiles(known map[string]bool) []db.SkillHealth {
 	return out
 }
 
-func readFrontmatter(path string) (frontmatter, error) {
-	var fm frontmatter
+// readSkillMarkdown reads a SKILL.md file and returns its parsed
+// frontmatter, the body (content after the frontmatter, i.e. the prompt
+// that loads on invocation), and the full raw content (for the audit
+// view).
+func readSkillMarkdown(path string) (fm frontmatter, body, raw string, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fm, err
+		return fm, "", "", err
 	}
-	raw := extractFrontmatterBlock(string(data))
-	if raw == "" {
-		return fm, nil
+	raw = string(data)
+	fmBlock := extractFrontmatterBlock(raw)
+	if fmBlock != "" {
+		if uerr := yaml.Unmarshal([]byte(fmBlock), &fm); uerr != nil {
+			return fm, "", raw, uerr
+		}
 	}
-	if err := yaml.Unmarshal([]byte(raw), &fm); err != nil {
-		return fm, err
+	body = extractBody(raw)
+	return fm, body, raw, nil
+}
+
+// extractBody returns the markdown content after the frontmatter block.
+// When there is no frontmatter, the whole content is the body.
+func extractBody(content string) string {
+	trimmed := strings.TrimLeft(content, "\ufeff \t\r\n")
+	if !strings.HasPrefix(trimmed, "---") {
+		return content
 	}
-	return fm, nil
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
+		return content
+	}
+	for i, ln := range lines[1:] {
+		if strings.TrimSpace(ln) == "---" {
+			return strings.TrimLeft(
+				strings.Join(lines[i+2:], "\n"), "\r\n")
+		}
+	}
+	return content
 }
 
 // extractFrontmatterBlock returns the YAML between the leading --- and

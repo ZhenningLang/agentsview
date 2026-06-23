@@ -12,7 +12,7 @@ import (
 
 // SchemaVersion is the version of the DuckDB mirror schema created by
 // EnsureSchema. Increment it when a non-optional DuckDB column/table is added.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 const schemaVersionMetadataKey = "agentsview_schema_version"
 const defaultRepairMetadataKey = "agentsview_default_repair_v1"
@@ -491,6 +491,8 @@ var mirrorTables = []tableSpec{
 			file_present INTEGER NOT NULL DEFAULT 0,
 			health_error_count INTEGER NOT NULL DEFAULT 0,
 			source_mtime BIGINT NOT NULL DEFAULT 0,
+			prompt TEXT NOT NULL DEFAULT '',
+			prompt_tokens INTEGER NOT NULL DEFAULT 0,
 			synced_at TEXT NOT NULL DEFAULT ''
 		)`,
 		columns: []columnSpec{
@@ -509,6 +511,8 @@ var mirrorTables = []tableSpec{
 			{"file_present", "file_present INTEGER NOT NULL DEFAULT 0"},
 			{"health_error_count", "health_error_count INTEGER NOT NULL DEFAULT 0"},
 			{"source_mtime", "source_mtime BIGINT NOT NULL DEFAULT 0"},
+			{"prompt", "prompt TEXT NOT NULL DEFAULT ''"},
+			{"prompt_tokens", "prompt_tokens INTEGER NOT NULL DEFAULT 0"},
 			{"synced_at", "synced_at TEXT NOT NULL DEFAULT ''"},
 		},
 		indexes: []string{

@@ -486,6 +486,14 @@ func (db *DB) migrateColumns() error {
 			"ALTER TABLE sessions ADD COLUMN display_name TEXT",
 		},
 		{
+			"skills", "prompt",
+			"ALTER TABLE skills ADD COLUMN prompt TEXT NOT NULL DEFAULT ''",
+		},
+		{
+			"skills", "prompt_tokens",
+			"ALTER TABLE skills ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0",
+		},
+		{
 			"sessions", "session_name",
 			"ALTER TABLE sessions ADD COLUMN session_name TEXT",
 		},
