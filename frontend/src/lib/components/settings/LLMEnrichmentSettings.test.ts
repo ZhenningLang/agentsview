@@ -320,6 +320,6 @@ describe("LLMEnrichmentSettings", () => {
     expect(baseUrl.value).toBe("https://api.deepseek.com");
     expect(model.value).toBe("deepseek-chat");
     expect(embedBaseUrl.value).toBe("https://openrouter.ai/api/v1");
-    expect(embedModel.value).toBe("text-embedding-3-large");
+    expect(embedModel.value).toBe("openai/text-embedding-3-large");
   });
 });
