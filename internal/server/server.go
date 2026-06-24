@@ -21,6 +21,7 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/insight"
+	"go.kenn.io/agentsview/internal/llm"
 	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/web"
@@ -42,6 +43,7 @@ type Server struct {
 	mu          gosync.RWMutex
 	cfg         config.Config
 	db          db.Store
+	llmWriter   *db.DB
 	engine      *sync.Engine
 	sessions    service.SessionService
 	broadcaster *Broadcaster
@@ -69,6 +71,7 @@ type Server struct {
 	// updates. Defaults to update.CheckForUpdate; tests
 	// can override it via WithUpdateChecker.
 	updateCheckFn UpdateCheckFunc
+	llmHTTPClient *http.Client
 
 	// basePath is a URL prefix for reverse-proxy deployments
 	// (e.g. "/agentsview"). When set, all routes are served
@@ -93,18 +96,23 @@ func New(
 	// engine when used by a read-only daemon) yields a read-only
 	// backend whose Sync returns db.ErrReadOnly.
 	var sessions service.SessionService
+	var llmWriter *db.DB
 	if local, ok := database.(*db.DB); ok && engine != nil {
 		sessions = service.NewDirectBackend(local, engine)
+		if !local.ReadOnly() {
+			llmWriter = local
+		}
 	} else {
 		sessions = service.NewReadOnlyBackend(database)
 	}
 
 	s := &Server{
-		cfg:      cfg,
-		db:       database,
-		engine:   engine,
-		sessions: sessions,
-		mux:      http.NewServeMux(),
+		cfg:       cfg,
+		db:        database,
+		llmWriter: llmWriter,
+		engine:    engine,
+		sessions:  sessions,
+		mux:       http.NewServeMux(),
 		generateStreamFunc: func(
 			ctx context.Context, agent, prompt string,
 			onLog insight.LogFunc,
@@ -124,6 +132,10 @@ func New(
 	}
 	s.routes()
 	return s
+}
+
+func (s *Server) llmClient(cfg config.LLMConfig) *llm.Client {
+	return llm.NewWithHTTPClient(cfg, s.llmHTTPClient)
 }
 
 // Option configures a Server.
@@ -171,6 +183,11 @@ func WithBroadcaster(b *Broadcaster) Option {
 // allowing tests to substitute a deterministic stub.
 func WithUpdateChecker(f UpdateCheckFunc) Option {
 	return func(s *Server) { s.updateCheckFn = f }
+}
+
+// WithLLMHTTPClient overrides LLM provider HTTP calls for tests.
+func WithLLMHTTPClient(c *http.Client) Option {
+	return func(s *Server) { s.llmHTTPClient = c }
 }
 
 // WithBasePath sets a URL prefix for reverse-proxy deployments.

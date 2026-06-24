@@ -85,6 +85,34 @@ func TestStoreReadsSessionsMessagesAndMetadata(t *testing.T) {
 	assert.Equal(t, []string{"test-machine"}, machines)
 }
 
+func TestStoreGetEnrichmentStatus(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+	fixture := seedDuckDBSyncFixture(t, local)
+	setLocalLLMFields(t, local, fixture.alphaID, llmFixtureValues{
+		Title:            "LLM title",
+		Summary:          "summary",
+		Keywords:         "key",
+		EnrichedAt:       "2026-01-10T01:00:00.000Z",
+		EnrichedMsgCount: 2,
+		Model:            "deepseek-chat",
+		Status:           db.EnrichStatusOK,
+		LocalModifiedAt:  "2026-01-10T01:00:00.000Z",
+	})
+	syncer := newTestSync(t, filepath.Join(t.TempDir(), "mirror.duckdb"), local, SyncOptions{})
+	_, err := syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	store := NewStoreFromDB(syncer.DB())
+
+	status, err := store.GetEnrichmentStatus(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 2, status.Total)
+	assert.Equal(t, 1, status.Enriched)
+	assert.Equal(t, 1, status.Pending)
+	assert.Equal(t, 1, status.ByStatus[db.EnrichStatusOK])
+	assert.Equal(t, 1, status.ByStatus[""])
+}
+
 func TestStoreMessageIDJoinsAreSessionScoped(t *testing.T) {
 	ctx := context.Background()
 	store, fixture := newSyncedStore(t)
