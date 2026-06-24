@@ -603,6 +603,100 @@ func TestPGSearchSnippetMatchingField(t *testing.T) {
 	assert.Equal(t, "snippetfieldterm in first message", r.Snippet)
 }
 
+func TestPGSearchLLMMetadataMatches(t *testing.T) {
+	pgURL := testPGURL(t)
+	ensureStoreSchema(t, pgURL)
+
+	pg, err := Open(pgURL, testSchema, false)
+	require.NoError(t, err, "Open")
+	defer pg.Close()
+
+	_, err = pg.Exec(`
+		INSERT INTO sessions
+			(id, machine, project, agent, first_message,
+			 started_at, message_count, user_message_count,
+			 llm_title, llm_summary, llm_keywords)
+		VALUES
+			('llm-keywords-001', 'test-machine', 'test-project', 'claude',
+			 'login token first', '2026-03-17T10:00:00Z'::timestamptz, 1, 1,
+			 '', '', '鉴权,登录,token'),
+			('llm-title-001', 'test-machine', 'test-project', 'claude',
+			 'plain first title', '2026-03-17T11:00:00Z'::timestamptz, 1, 1,
+			 'Authz rollout title', '', ''),
+			('llm-summary-001', 'test-machine', 'test-project', 'claude',
+			 'plain first summary', '2026-03-17T12:00:00Z'::timestamptz, 1, 1,
+			 '', 'Summarizes refreshtoken debugging', ''),
+			('llm-system-only-001', 'test-machine', 'test-project', 'claude',
+			 'plain first guard', '2026-03-17T13:00:00Z'::timestamptz, 1, 0,
+			 '', '', 'pgllmguardonly'),
+			('llm-doublehit-001', 'test-machine', 'test-project', 'claude',
+			 'plain first double', '2026-03-17T14:00:00Z'::timestamptz, 1, 1,
+			 '', '', 'pgllmdoublehit')
+		ON CONFLICT (id) DO NOTHING`)
+	require.NoError(t, err, "insert llm sessions")
+	_, err = pg.Exec(`
+		INSERT INTO messages
+			(session_id, ordinal, role, content, timestamp, content_length, is_system)
+		VALUES
+			('llm-keywords-001', 0, 'user', 'login token flow only',
+			 '2026-03-17T10:00:00Z'::timestamptz, 21, FALSE),
+			('llm-title-001', 0, 'user', 'plain body title',
+			 '2026-03-17T11:00:00Z'::timestamptz, 16, FALSE),
+			('llm-summary-001', 0, 'user', 'plain body summary',
+			 '2026-03-17T12:00:00Z'::timestamptz, 18, FALSE),
+			('llm-system-only-001', 0, 'user', 'plain body guard',
+			 '2026-03-17T13:00:00Z'::timestamptz, 16, TRUE),
+			('llm-doublehit-001', 0, 'user', 'pgllmdoublehit in message',
+			 '2026-03-17T14:00:00Z'::timestamptz, 25, FALSE)
+		ON CONFLICT DO NOTHING`)
+	require.NoError(t, err, "insert llm messages")
+
+	store, err := NewStore(pgURL, testSchema, true)
+	require.NoError(t, err, "NewStore")
+	defer store.Close()
+	ctx := context.Background()
+
+	t.Run("keywords", func(t *testing.T) {
+		page, err := store.Search(ctx, db.SearchFilter{Query: "鉴权", Limit: 10})
+		require.NoError(t, err, "Search")
+		require.Len(t, page.Results, 1)
+		assert.Equal(t, "llm-keywords-001", page.Results[0].SessionID)
+		assert.Equal(t, -1, page.Results[0].Ordinal)
+		assert.Equal(t, "鉴权,登录,token", page.Results[0].Snippet)
+	})
+	t.Run("title", func(t *testing.T) {
+		page, err := store.Search(ctx, db.SearchFilter{Query: "authz", Limit: 10})
+		require.NoError(t, err, "Search")
+		require.Len(t, page.Results, 1)
+		assert.Equal(t, "llm-title-001", page.Results[0].SessionID)
+		assert.Equal(t, "Authz rollout title", page.Results[0].Snippet)
+	})
+	t.Run("summary", func(t *testing.T) {
+		page, err := store.Search(ctx, db.SearchFilter{Query: "refreshtoken", Limit: 10})
+		require.NoError(t, err, "Search")
+		require.Len(t, page.Results, 1)
+		assert.Equal(t, "llm-summary-001", page.Results[0].SessionID)
+		assert.Equal(t, "Summarizes refreshtoken debugging", page.Results[0].Snippet)
+	})
+	t.Run("system only excluded", func(t *testing.T) {
+		page, err := store.Search(ctx, db.SearchFilter{Query: "pgllmguardonly", Limit: 10})
+		require.NoError(t, err, "Search")
+		assert.Empty(t, page.Results)
+	})
+	t.Run("message branch wins", func(t *testing.T) {
+		page, err := store.Search(ctx, db.SearchFilter{Query: "pgllmdoublehit", Limit: 10})
+		require.NoError(t, err, "Search")
+		seen := 0
+		for _, r := range page.Results {
+			if r.SessionID == "llm-doublehit-001" {
+				seen++
+				assert.NotEqual(t, -1, r.Ordinal)
+			}
+		}
+		assert.Equal(t, 1, seen)
+	})
+}
+
 // TestGetMessagesIsSystemField verifies that GetMessages and GetAllMessages
 // correctly populate db.Message.IsSystem from the is_system column.
 func TestGetMessagesIsSystemField(t *testing.T) {

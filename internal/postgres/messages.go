@@ -160,7 +160,7 @@ func stripFTSQuotes(v string) string {
 
 // Search performs ILIKE-based full-text search across messages,
 // grouped to one result per session via DISTINCT ON, UNION'd with a
-// session name (display_name / first_message) branch.
+// session metadata (display_name / first_message / llm_*) branch.
 func (s *Store) Search(
 	ctx context.Context, f db.SearchFilter,
 ) (db.SearchPage, error) {
@@ -250,11 +250,20 @@ func (s *Store) Search(
 						THEN COALESCE(s.display_name, s.session_name, '')
 					WHEN s.first_message ILIKE '%%' || $1 || '%%' ESCAPE E'\\'
 						THEN COALESCE(s.first_message, '')
+					WHEN s.llm_title ILIKE '%%' || $1 || '%%' ESCAPE E'\\'
+						THEN s.llm_title
+					WHEN s.llm_keywords ILIKE '%%' || $1 || '%%' ESCAPE E'\\'
+						THEN s.llm_keywords
+					WHEN s.llm_summary ILIKE '%%' || $1 || '%%' ESCAPE E'\\'
+						THEN s.llm_summary
 					ELSE COALESCE(s.display_name, s.session_name, s.first_message, '')
 				END AS snippet
 			FROM sessions s
 			WHERE (COALESCE(s.display_name, s.session_name) ILIKE '%%' || $1 || '%%' ESCAPE E'\\'
-				OR s.first_message ILIKE '%%' || $1 || '%%' ESCAPE E'\\')
+				OR s.first_message ILIKE '%%' || $1 || '%%' ESCAPE E'\\'
+				OR s.llm_title ILIKE '%%' || $1 || '%%' ESCAPE E'\\'
+				OR s.llm_keywords ILIKE '%%' || $1 || '%%' ESCAPE E'\\'
+				OR s.llm_summary ILIKE '%%' || $1 || '%%' ESCAPE E'\\')
 				AND s.deleted_at IS NULL
 				AND EXISTS (
 					SELECT 1 FROM messages mx

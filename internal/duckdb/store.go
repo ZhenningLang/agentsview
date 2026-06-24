@@ -548,7 +548,10 @@ func (s *Store) Search(ctx context.Context, f db.SearchFilter) (db.SearchPage, e
 		args = append(args, f.Project)
 		nameProject = "AND s.project = ?"
 	}
-	args = append(args, pattern, pattern, pattern, pattern)
+	args = append(args,
+		pattern, pattern, pattern, pattern, pattern,
+		pattern, pattern, pattern, pattern, pattern,
+	)
 	if f.Project != "" {
 		args = append(args, f.Project)
 	}
@@ -594,12 +597,21 @@ func (s *Store) Search(ctx context.Context, f db.SearchFilter) (db.SearchPage, e
 						THEN COALESCE(s.display_name, s.session_name, '')
 					WHEN s.first_message ILIKE ? ESCAPE '\'
 						THEN COALESCE(s.first_message, '')
+					WHEN s.llm_title ILIKE ? ESCAPE '\'
+						THEN s.llm_title
+					WHEN s.llm_keywords ILIKE ? ESCAPE '\'
+						THEN s.llm_keywords
+					WHEN s.llm_summary ILIKE ? ESCAPE '\'
+						THEN s.llm_summary
 					ELSE COALESCE(s.display_name, s.session_name, s.first_message, '')
 				END AS snippet,
 				1.0 AS rank, 2 AS match_priority, 0 AS match_pos
 			FROM sessions s
 			WHERE (COALESCE(s.display_name, s.session_name) ILIKE ? ESCAPE '\'
-				OR s.first_message ILIKE ? ESCAPE '\')
+				OR s.first_message ILIKE ? ESCAPE '\'
+				OR s.llm_title ILIKE ? ESCAPE '\'
+				OR s.llm_keywords ILIKE ? ESCAPE '\'
+				OR s.llm_summary ILIKE ? ESCAPE '\')
 				AND s.deleted_at IS NULL
 				AND EXISTS (
 					SELECT 1 FROM messages mx

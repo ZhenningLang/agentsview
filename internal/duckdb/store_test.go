@@ -300,6 +300,102 @@ func TestSearchGroupsMessagesAndIncludesNameMatches(t *testing.T) {
 	assert.Equal(t, "needle override rename", overridden.Results[0].Snippet)
 }
 
+func TestSearchIncludesSyncedLLMMetadata(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+
+	writes := []db.SessionBatchWrite{
+		{
+			Session:         syncSession("duck-llm-keywords", "alpha", "login token first", "2026-01-16T00:00:00.000Z", 1),
+			Messages:        []db.Message{syncMessage("duck-llm-keywords", 0, "user", "login token flow only", "2026-01-16T00:00:00.000Z")},
+			DataVersion:     1,
+			ReplaceMessages: true,
+		},
+		{
+			Session:         syncSession("duck-llm-title", "alpha", "plain first title", "2026-01-16T01:00:00.000Z", 1),
+			Messages:        []db.Message{syncMessage("duck-llm-title", 0, "user", "plain body title", "2026-01-16T01:00:00.000Z")},
+			DataVersion:     1,
+			ReplaceMessages: true,
+		},
+		{
+			Session:         syncSession("duck-llm-summary", "alpha", "plain first summary", "2026-01-16T02:00:00.000Z", 1),
+			Messages:        []db.Message{syncMessage("duck-llm-summary", 0, "user", "plain body summary", "2026-01-16T02:00:00.000Z")},
+			DataVersion:     1,
+			ReplaceMessages: true,
+		},
+		{
+			Session:         syncSession("duck-llm-system-only", "alpha", "plain first guard", "2026-01-16T03:00:00.000Z", 1),
+			Messages:        []db.Message{systemSyncMessage("duck-llm-system-only", 0, "user", "plain body guard", "2026-01-16T03:00:00.000Z")},
+			DataVersion:     1,
+			ReplaceMessages: true,
+		},
+		{
+			Session:         syncSession("duck-llm-doublehit", "alpha", "plain first double", "2026-01-16T04:00:00.000Z", 1),
+			Messages:        []db.Message{syncMessage("duck-llm-doublehit", 0, "user", "duckllmdoublehit in message", "2026-01-16T04:00:00.000Z")},
+			DataVersion:     1,
+			ReplaceMessages: true,
+		},
+	}
+	_, err := local.WriteSessionBatchAtomic(writes)
+	require.NoError(t, err)
+	setLocalLLMFields(t, local, "duck-llm-keywords", llmFixtureValues{Keywords: "鉴权,登录,token"})
+	setLocalLLMFields(t, local, "duck-llm-title", llmFixtureValues{Title: "Authz rollout title"})
+	setLocalLLMFields(t, local, "duck-llm-summary", llmFixtureValues{Summary: "Summarizes refreshtoken debugging"})
+	setLocalLLMFields(t, local, "duck-llm-system-only", llmFixtureValues{Keywords: "duckllmguardonly"})
+	setLocalLLMFields(t, local, "duck-llm-doublehit", llmFixtureValues{Keywords: "duckllmdoublehit"})
+
+	syncer := newTestSync(t, filepath.Join(t.TempDir(), "llm-search.duckdb"), local, SyncOptions{})
+	_, err = syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	store := NewStoreFromDB(syncer.DB())
+
+	t.Run("keywords", func(t *testing.T) {
+		got, err := store.Search(ctx, db.SearchFilter{Query: "鉴权", Limit: 10})
+		require.NoError(t, err)
+		require.Len(t, got.Results, 1)
+		assert.Equal(t, "duck-llm-keywords", got.Results[0].SessionID)
+		assert.Equal(t, -1, got.Results[0].Ordinal)
+		assert.Equal(t, "鉴权,登录,token", got.Results[0].Snippet)
+	})
+	t.Run("title", func(t *testing.T) {
+		got, err := store.Search(ctx, db.SearchFilter{Query: "authz", Limit: 10})
+		require.NoError(t, err)
+		require.Len(t, got.Results, 1)
+		assert.Equal(t, "duck-llm-title", got.Results[0].SessionID)
+		assert.Equal(t, "Authz rollout title", got.Results[0].Snippet)
+	})
+	t.Run("summary", func(t *testing.T) {
+		got, err := store.Search(ctx, db.SearchFilter{Query: "refreshtoken", Limit: 10})
+		require.NoError(t, err)
+		require.Len(t, got.Results, 1)
+		assert.Equal(t, "duck-llm-summary", got.Results[0].SessionID)
+		assert.Equal(t, "Summarizes refreshtoken debugging", got.Results[0].Snippet)
+	})
+	t.Run("system only excluded", func(t *testing.T) {
+		got, err := store.Search(ctx, db.SearchFilter{Query: "duckllmguardonly", Limit: 10})
+		require.NoError(t, err)
+		assert.Empty(t, got.Results)
+	})
+	t.Run("message branch wins", func(t *testing.T) {
+		got, err := store.Search(ctx, db.SearchFilter{Query: "duckllmdoublehit", Limit: 10})
+		require.NoError(t, err)
+		seen := 0
+		for _, r := range got.Results {
+			if r.SessionID == "duck-llm-doublehit" {
+				seen++
+				assert.NotEqual(t, -1, r.Ordinal)
+			}
+		}
+		assert.Equal(t, 1, seen)
+	})
+}
+
+func systemSyncMessage(sessionID string, ordinal int, role, content, ts string) db.Message {
+	m := syncMessage(sessionID, ordinal, role, content, ts)
+	m.IsSystem = true
+	return m
+}
+
 func TestStoreCurationMethods(t *testing.T) {
 	ctx := context.Background()
 	store, fixture := newSyncedStore(t)
