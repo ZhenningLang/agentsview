@@ -222,18 +222,18 @@ func insertSidebarIndexSession(
 	_, err := store.DB().Exec(`
 		INSERT INTO sessions (
 			id, machine, project, agent, first_message,
-			display_name, started_at, ended_at, message_count,
+			display_name, llm_title, started_at, ended_at, message_count,
 			user_message_count, parent_session_id,
 			relationship_type, is_automated
 		) VALUES (
 			$1, $2, $3, $4, $5,
-			$6, $7::timestamptz, $8::timestamptz, $9,
-			$10, $11, $12, $13
+			$6, $7, $8::timestamptz, $9::timestamptz, $10,
+			$11, $12, $13, $14
 		)
 	`, row.id, row.machine, row.project, row.agent,
-		row.firstMessage, row.displayName, row.startedAt,
-		row.endedAt, row.messageCount, row.userMessageCount,
-		row.parentSessionID, row.relationshipType,
+		row.firstMessage, row.displayName, row.llmTitle,
+		row.startedAt, row.endedAt, row.messageCount,
+		row.userMessageCount, row.parentSessionID, row.relationshipType,
 		row.isAutomated)
 	require.NoError(t, err, "inserting sidebar index session %s", id)
 }
@@ -245,6 +245,7 @@ type sidebarIndexSessionSeed struct {
 	agent            string
 	firstMessage     string
 	displayName      *string
+	llmTitle         string
 	startedAt        string
 	endedAt          string
 	messageCount     int
@@ -324,6 +325,27 @@ func TestStoreGetSidebarSessionIndexReturnsDisplayName(
 	got := index.Sessions[0].DisplayName
 	require.NotNil(t, got)
 	assert.Equal(t, displayName, *got)
+}
+
+func TestStoreGetSidebarSessionIndexReturnsLLMTitle(
+	t *testing.T,
+) {
+	pgURL := testPGURL(t)
+	store := ensureSidebarIndexStoreSchema(t, pgURL)
+	defer store.Close()
+
+	insertSidebarIndexSession(t, store, "llm-title", func(
+		s *sidebarIndexSessionSeed,
+	) {
+		s.llmTitle = "LLM sidebar title"
+	})
+
+	index, err := store.GetSidebarSessionIndex(
+		context.Background(), db.SessionFilter{},
+	)
+	require.NoError(t, err, "GetSidebarSessionIndex")
+	require.Len(t, index.Sessions, 1)
+	assert.Equal(t, "LLM sidebar title", index.Sessions[0].LLMTitle)
 }
 
 func TestStoreGetSidebarSessionIndexExcludeAutomated(

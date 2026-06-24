@@ -35,6 +35,7 @@ export interface SessionGroupInput {
   agent: string;
   first_message?: string | null;
   display_name?: string | null;
+  llm_title?: string | null;
   started_at: string | null;
   ended_at: string | null;
   created_at: string;
@@ -455,6 +456,7 @@ class SessionsStore {
       ...current,
       ...hydrated,
       display_name: hydrated.display_name ?? current.display_name,
+      llm_title: hydrated.llm_title ?? current.llm_title,
       is_teammate: hydrated.is_teammate ?? current.is_teammate,
       is_index_only: false,
     };
@@ -1112,6 +1114,7 @@ function sidebarIndexRowToSession(
     agent: row.agent,
     first_message: null,
     display_name: row.display_name ?? null,
+    llm_title: row.llm_title ?? existing?.llm_title ?? null,
     started_at: row.started_at,
     ended_at: row.ended_at,
     message_count: row.message_count,
@@ -1136,6 +1139,7 @@ function sidebarIndexRowToSession(
     machine: skinny.machine,
     agent: skinny.agent,
     display_name: skinny.display_name,
+    llm_title: skinny.llm_title ?? existing.llm_title,
     started_at: skinny.started_at,
     ended_at: skinny.ended_at,
     message_count: skinny.message_count,

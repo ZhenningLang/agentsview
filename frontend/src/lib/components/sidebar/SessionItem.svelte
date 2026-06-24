@@ -4,12 +4,13 @@
     type SessionGroupInput,
   } from "../../stores/sessions.svelte.js";
   import { starred } from "../../stores/starred.svelte.js";
+  import { ui } from "../../stores/ui.svelte.js";
   import { formatRelativeTime, truncate } from "../../utils/format.js";
   import { agentColor as getAgentColor, agentLabel } from "../../utils/agents.js";
   import {
     normalizeMessagePreview,
-    previewMessage,
   } from "../../utils/messages.js";
+  import { sessionTitle } from "../../utils/session-title.js";
   import {
     ChevronDownIcon,
     ChevronRightIcon,
@@ -95,37 +96,9 @@
       ?? false,
   );
 
-  /**
-   * Clean display name: for teammate sessions, extract the unique task
-   * description (e.g. "Task #2: Align ROADMAP.md...") instead of the
-   * repetitive "You are a teammate on..." boilerplate.
-   */
   let displayLabel = $derived.by((): { text: string; isShell: boolean } => {
-    const name = session.display_name ?? null;
-    if (name) {
-      return { text: name, isShell: false };
-    }
-    let msg = session.first_message ?? "";
-    if (msg.includes("<teammate-message")) {
-      msg = msg
-        .replace(/<teammate-message[^>]*>/g, "")
-        .replace(/<\/teammate-message>/g, "")
-        .trim();
-      // Extract "Task #N: description" from the boilerplate.
-      const taskMatch = msg.match(/Task\s*#?\d+[:\s]+(.+?)(?:\s+\d+\.|$)/s);
-      if (taskMatch) {
-        return { text: taskMatch[1]!.trim(), isShell: false };
-      }
-      // Fallback: skip the "You are a teammate on ..." boilerplate.
-      const afterTeam = msg.match(/team[."]\s*[^.]*?[.]\s+(.+)/s)
-        ?? msg.match(/You are a teammate[^.]*\.\s+(.+)/s);
-      if (afterTeam) {
-        return { text: afterTeam[1]!.trim(), isShell: false };
-      }
-    }
-    const p = previewMessage(msg);
-    if (p.text) return { text: p.text, isShell: p.isShell };
-    return { text: session.project, isShell: false };
+    const title = sessionTitle(session, ui.useLlmTitle);
+    return { text: title.text, isShell: title.isShell };
   });
 
   let timeStr = $derived(

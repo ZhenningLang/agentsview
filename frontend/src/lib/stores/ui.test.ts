@@ -505,6 +505,51 @@ describe("UIStore", () => {
       ui.toggleSort();
       expect(ui.sortNewestFirst).toBe(!initial);
     });
+
+    it("should toggle LLM title preference", () => {
+      ui.setUseLlmTitle(false);
+      expect(ui.useLlmTitle).toBe(false);
+
+      ui.toggleUseLlmTitle();
+      expect(ui.useLlmTitle).toBe(true);
+
+      ui.setUseLlmTitle(false);
+      expect(ui.useLlmTitle).toBe(false);
+    });
+
+    it("should persist LLM title preference", async () => {
+      const original = globalThis.localStorage;
+      const setItem = vi.fn();
+      const getItem = vi.fn((key: string) =>
+        key === "agentsview-use-llm-title" ? "true" : null,
+      );
+
+      Object.defineProperty(globalThis, "localStorage", {
+        value: { getItem, setItem },
+        writable: true,
+        configurable: true,
+      });
+
+      try {
+        // @ts-expect-error -- cache bust for fresh UIStore
+        const mod = await import("./ui.svelte.js?persistUseLlmTitle");
+        expect(mod.ui.useLlmTitle).toBe(true);
+        setItem.mockClear();
+
+        mod.ui.setUseLlmTitle(false);
+        await tick();
+        expect(setItem).toHaveBeenLastCalledWith(
+          "agentsview-use-llm-title",
+          "false",
+        );
+      } finally {
+        Object.defineProperty(globalThis, "localStorage", {
+          value: original,
+          writable: true,
+          configurable: true,
+        });
+      }
+    });
   });
 
   describe("block type filtering", () => {

@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
     .fn()
     .mockReturnValue("/api/v1/sessions/sess-123/md"),
   copyToClipboard: vi.fn().mockResolvedValue(true),
+  fetchBalance: vi.fn(),
 }));
 
 vi.mock("../../api/client.js", () => ({
@@ -25,6 +26,10 @@ vi.mock("../../utils/clipboard.js", () => ({
   copyToClipboard: mocks.copyToClipboard,
 }));
 
+vi.mock("../../api/llm.js", () => ({
+  fetchBalance: mocks.fetchBalance,
+}));
+
 import { sessions } from "../../stores/sessions.svelte.js";
 import { ui } from "../../stores/ui.svelte.js";
 
@@ -33,9 +38,29 @@ import AppHeader from "./AppHeader.svelte";
 
 describe("AppHeader export actions", () => {
   let component: ReturnType<typeof mount> | undefined;
+  const originalStorage = globalThis.localStorage;
+  let store: Map<string, string>;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    store = new Map();
+    Object.defineProperty(globalThis, "localStorage", {
+      value: {
+        getItem: vi.fn((key: string) => store.get(key) ?? null),
+        setItem: vi.fn((key: string, value: string) => {
+          store.set(key, value);
+        }),
+        removeItem: vi.fn((key: string) => {
+          store.delete(key);
+        }),
+        clear: vi.fn(() => {
+          store.clear();
+        }),
+      },
+      writable: true,
+      configurable: true,
+    });
+    mocks.fetchBalance.mockResolvedValue({ supported: false, available: false });
     sessions.activeSessionId = "sess-123";
     ui.isMobileViewport = false;
     ui.followLatest = false;
@@ -47,6 +72,11 @@ describe("AppHeader export actions", () => {
       component = undefined;
     }
     document.body.innerHTML = "";
+    Object.defineProperty(globalThis, "localStorage", {
+      value: originalStorage,
+      writable: true,
+      configurable: true,
+    });
   });
 
   it("copies markdown export link from export menu", async () => {
@@ -115,5 +145,47 @@ describe("AppHeader export actions", () => {
     expect(moreButton?.title).toBe("More navigation");
     expect(shortcutsButton).not.toBeNull();
     expect(shortcutsButton?.title).toBe("Keyboard shortcuts (?)");
+  });
+
+  it("renders supported LLM balance chip", async () => {
+    mocks.fetchBalance.mockResolvedValueOnce({
+      supported: true,
+      currency: "CNY",
+      amount: "12.34",
+      available: true,
+    });
+
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    const chip = document.querySelector('[data-testid="llm-balance-chip"]');
+    expect(chip).not.toBeNull();
+    expect(chip?.textContent).toContain("¥12.34");
+  });
+
+  it("does not render unsupported or missing LLM balance", async () => {
+    mocks.fetchBalance.mockResolvedValueOnce({
+      supported: false,
+      available: false,
+    });
+
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    expect(document.querySelector('[data-testid="llm-balance-chip"]')).toBeNull();
+  });
+
+  it("skips balance fetch for remote connections", async () => {
+    store.set("agentsview-server-url", "http://remote.test");
+
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+
+    expect(mocks.fetchBalance).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-testid="llm-balance-chip"]')).toBeNull();
   });
 });

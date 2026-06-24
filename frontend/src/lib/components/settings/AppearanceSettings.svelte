@@ -48,6 +48,21 @@
     </div>
   </div>
 
+  <div class="setting-row">
+    <div>
+      <span class="setting-label">LLM titles</span>
+      <p class="setting-hint">Use generated titles when available; otherwise keep the original title.</p>
+    </div>
+    <button
+      class="setting-toggle"
+      class:active={ui.useLlmTitle}
+      aria-pressed={ui.useLlmTitle}
+      onclick={() => ui.toggleUseLlmTitle()}
+    >
+      {ui.useLlmTitle ? "On" : "Off"}
+    </button>
+  </div>
+
   <div class="setting-row column">
     <span class="setting-label">Block visibility</span>
     <div class="block-toggles">
@@ -85,6 +100,12 @@
     white-space: nowrap;
   }
 
+  .setting-hint {
+    margin: 3px 0 0;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
   .setting-toggle {
     height: 26px;
     padding: 0 12px;
@@ -100,6 +121,12 @@
 
   .setting-toggle:hover {
     background: var(--bg-surface-hover);
+  }
+
+  .setting-toggle.active {
+    color: var(--accent-blue);
+    background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+    border-color: var(--accent-blue);
   }
 
   .setting-options {

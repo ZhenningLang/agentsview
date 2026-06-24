@@ -412,6 +412,7 @@ type SidebarSessionIndexRow struct {
 	Machine           string  `json:"machine"`
 	Agent             string  `json:"agent"`
 	DisplayName       *string `json:"display_name,omitempty"`
+	LLMTitle          string  `json:"llm_title"`
 	StartedAt         *string `json:"started_at"`
 	EndedAt           *string `json:"ended_at"`
 	CreatedAt         string  `json:"created_at"`
@@ -533,6 +534,7 @@ func (db *DB) GetSidebarSessionIndex(
 			machine,
 			agent,
 			COALESCE(display_name, session_name) AS display_name,
+			llm_title,
 			started_at,
 			ended_at,
 			created_at,
@@ -569,6 +571,7 @@ func (db *DB) GetSidebarSessionIndex(
 			&row.Machine,
 			&row.Agent,
 			&row.DisplayName,
+			&row.LLMTitle,
 			&row.StartedAt,
 			&row.EndedAt,
 			&row.CreatedAt,

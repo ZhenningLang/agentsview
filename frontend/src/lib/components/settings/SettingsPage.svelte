@@ -10,6 +10,7 @@
   import GithubSettings from "./GithubSettings.svelte";
   import RemoteSettings from "./RemoteSettings.svelte";
   import WorktreeMappingSettings from "./WorktreeMappingSettings.svelte";
+  import LLMEnrichmentSettings from "./LLMEnrichmentSettings.svelte";
 
   let authTokenInput: string = $state("");
 
@@ -92,6 +93,7 @@
       <WorktreeMappingSettings />
       <GithubSettings />
       <RemoteSettings />
+      <LLMEnrichmentSettings />
 
       <div class="settings-actions">
         <button
