@@ -14,7 +14,9 @@ const mocks = vi.hoisted(() => ({
   fetchLLMConfig: vi.fn(),
   saveLLMConfig: vi.fn(),
   testLLMConnection: vi.fn(),
-  triggerEnrich: vi.fn(),
+  startEnrichJob: vi.fn(),
+  stopEnrichJob: vi.fn(),
+  fetchEnrichJob: vi.fn(),
 }));
 
 vi.mock("../../api/llm.js", () => ({
@@ -22,7 +24,9 @@ vi.mock("../../api/llm.js", () => ({
   fetchLLMConfig: mocks.fetchLLMConfig,
   saveLLMConfig: mocks.saveLLMConfig,
   testLLMConnection: mocks.testLLMConnection,
-  triggerEnrich: mocks.triggerEnrich,
+  startEnrichJob: mocks.startEnrichJob,
+  stopEnrichJob: mocks.stopEnrichJob,
+  fetchEnrichJob: mocks.fetchEnrichJob,
 }));
 
 import { sync } from "../../stores/sync.svelte.js";
@@ -68,13 +72,35 @@ describe("LLMEnrichmentSettings", () => {
       errors: 1,
       by_status: { ok: 4 },
     });
-    mocks.triggerEnrich.mockReset().mockResolvedValue({
-      enriched: 2,
-      skipped: 1,
+    mocks.fetchEnrichJob.mockReset().mockResolvedValue({
+      running: false,
+      processed: 0,
+      total: 0,
+      succeeded: 0,
       no_content: 0,
-      errors: 0,
-      candidates: 3,
-      elapsed_ms: 20,
+      failed: 0,
+      skipped: 0,
+    });
+    mocks.startEnrichJob.mockReset().mockResolvedValue({
+      running: true,
+      source: "manual",
+      processed: 0,
+      total: 3,
+      succeeded: 0,
+      no_content: 0,
+      failed: 0,
+      skipped: 0,
+    });
+    mocks.stopEnrichJob.mockReset().mockResolvedValue({
+      running: false,
+      source: "manual",
+      processed: 1,
+      total: 3,
+      succeeded: 1,
+      no_content: 0,
+      failed: 0,
+      skipped: 0,
+      done_at: "2026-06-24T00:00:00Z",
     });
     mocks.fetchLLMConfig.mockReset().mockResolvedValue({
       enabled: true,
@@ -217,7 +243,7 @@ describe("LLMEnrichmentSettings", () => {
     expect(enabled.checked).toBe(false);
   });
 
-  it("triggers enrichment and refreshes status", async () => {
+  it("starts a background job and shows progress", async () => {
     component = mount(LLMEnrichmentSettings, { target: document.body });
     await flush();
 
@@ -229,13 +255,19 @@ describe("LLMEnrichmentSettings", () => {
     button!.click();
     await flush();
 
-    expect(mocks.triggerEnrich).toHaveBeenCalledWith({ limit: 25 });
-    expect(mocks.fetchEnrichStatus).toHaveBeenCalledTimes(2);
-    expect(document.body.textContent).toContain("Enriched 2 of 3 candidates");
+    expect(mocks.startEnrichJob).toHaveBeenCalledTimes(1);
+    const progress = document.querySelector('[data-testid="enrich-progress"]');
+    expect(progress).toBeTruthy();
+    expect(progress?.textContent).toContain("Enriching 0 / 3");
+    // While running, the primary action becomes a Stop button.
+    const stop = Array.from(document.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.trim() === "Stop",
+    );
+    expect(stop).toBeTruthy();
   });
 
-  it("surfaces backend trigger errors", async () => {
-    mocks.triggerEnrich.mockRejectedValueOnce(new Error("LLM is disabled"));
+  it("surfaces backend start errors", async () => {
+    mocks.startEnrichJob.mockRejectedValueOnce(new Error("LLM is disabled"));
     component = mount(LLMEnrichmentSettings, { target: document.body });
     await flush();
 
@@ -246,7 +278,7 @@ describe("LLMEnrichmentSettings", () => {
     await flush();
 
     expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-      "Failed to trigger LLM enrichment",
+      "Failed to start LLM enrichment",
     );
   });
 
@@ -281,7 +313,7 @@ describe("LLMEnrichmentSettings", () => {
     button!.click();
     await flush();
 
-    expect(mocks.triggerEnrich).not.toHaveBeenCalled();
+    expect(mocks.startEnrichJob).not.toHaveBeenCalled();
   });
 
   it("provider presets auto-fill base URL and model", async () => {

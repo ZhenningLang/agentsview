@@ -23,6 +23,20 @@ export interface LLMEnrichResponse {
   elapsed_ms: number;
 }
 
+export interface LLMEnrichJobState {
+  running: boolean;
+  source?: string;
+  processed: number;
+  total: number;
+  succeeded: number;
+  no_content: number;
+  failed: number;
+  skipped: number;
+  started_at?: string;
+  done_at?: string;
+  error?: string;
+}
+
 export interface LLMEnrichmentStatusReport {
   total: number;
   enriched: number;
@@ -131,6 +145,18 @@ export function fetchEnrichStatus(
   signal?: AbortSignal,
 ): Promise<LLMEnrichmentStatusReport> {
   return getJSON<LLMEnrichmentStatusReport>("/llm/enrich/status", signal);
+}
+
+export function startEnrichJob(signal?: AbortSignal): Promise<LLMEnrichJobState> {
+  return postJSON<LLMEnrichJobState>("/llm/enrich/start", {}, signal);
+}
+
+export function stopEnrichJob(signal?: AbortSignal): Promise<LLMEnrichJobState> {
+  return postJSON<LLMEnrichJobState>("/llm/enrich/stop", {}, signal);
+}
+
+export function fetchEnrichJob(signal?: AbortSignal): Promise<LLMEnrichJobState> {
+  return getJSON<LLMEnrichJobState>("/llm/enrich/job", signal);
 }
 
 export function fetchLLMConfig(signal?: AbortSignal): Promise<LLMConfigResponse> {

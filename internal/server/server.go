@@ -73,6 +73,10 @@ type Server struct {
 	updateCheckFn UpdateCheckFunc
 	llmHTTPClient *http.Client
 
+	// enrichJob tracks the single in-flight background enrichment job
+	// (manual or periodic). Nil only before New finishes.
+	enrichJob *enrichJob
+
 	// basePath is a URL prefix for reverse-proxy deployments
 	// (e.g. "/agentsview"). When set, all routes are served
 	// under this prefix and a <base href> tag is injected
@@ -126,6 +130,7 @@ func New(
 		},
 		spaFS:      dist,
 		spaHandler: http.FileServerFS(dist),
+		enrichJob:  newEnrichJob(),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -746,6 +751,14 @@ func (s *Server) ListenAndServe() error {
 	s.httpSrv = srv
 	s.mu.Unlock()
 	log.Printf("Starting server at http://%s", addr)
+
+	// Drive periodic background enrichment for the lifetime of the
+	// server. It reads the live config each tick so toggling
+	// "Run periodically" takes effect without a restart, and no-ops
+	// unless a writable local backend is present.
+	if s.baseCtx != nil && s.llmWriter != nil {
+		go s.runPeriodicEnrichment(s.baseCtx)
+	}
 
 	listenCtx := context.Background()
 	if s.baseCtx != nil {

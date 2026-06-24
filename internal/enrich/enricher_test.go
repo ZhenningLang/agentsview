@@ -106,6 +106,52 @@ func TestEnricherRunSuccessWritesEnrichment(t *testing.T) {
 	assert.Equal(t, 3, s.EnrichedMsgCount)
 }
 
+func TestEnricherRunReportsProgress(t *testing.T) {
+	d := dbTestDB(t)
+	ctx := context.Background()
+	ended := "2026-06-24T09:00:00Z"
+	const n = 4
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("p%d", i)
+		insertEnrichSession(t, d, id, func(s *db.Session) {
+			s.MessageCount = 3
+			s.UserMessageCount = 2
+			s.EndedAt = &ended
+		})
+		insertEnrichMessages(t, d,
+			db.Message{SessionID: id, Ordinal: 0, Role: "user", Content: "Need auth help", ContentLength: 14},
+			db.Message{SessionID: id, Ordinal: 1, Role: "assistant", Content: "Use token login", ContentLength: 15},
+		)
+	}
+
+	var mu sync.Mutex
+	var updates [][2]int
+	stats, err := New(d, &mockChatClient{}, config.LLMConfig{
+		Enabled: true, Model: "m", MinUserMessages: 2, Concurrency: 2,
+	}).Run(ctx, Options{
+		Now: time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC),
+		OnProgress: func(done, total int) {
+			mu.Lock()
+			updates = append(updates, [2]int{done, total})
+			mu.Unlock()
+		},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, n, stats.Candidates)
+	assert.Equal(t, n, stats.Succeeded)
+
+	require.NotEmpty(t, updates)
+	// First callback announces the total with zero done; the last
+	// reports completion. The callback fires under the stats mutex so
+	// done advances monotonically and never exceeds total.
+	assert.Equal(t, [2]int{0, n}, updates[0])
+	assert.Equal(t, [2]int{n, n}, updates[len(updates)-1])
+	for _, u := range updates {
+		assert.Equal(t, n, u[1])
+		assert.LessOrEqual(t, u[0], n)
+	}
+}
+
 func TestEnricherWritesEmbeddingWhenConfigured(t *testing.T) {
 	d := dbTestDB(t)
 	ctx := context.Background()

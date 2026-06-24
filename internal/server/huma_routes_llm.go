@@ -24,6 +24,9 @@ func (s *Server) registerLLMRoutes() {
 	group := newRouteGroup(s.api, "/api/v1/llm", "LLM")
 
 	post(s, group, "/enrich", "Trigger LLM enrichment", s.humaTriggerLLMEnrichment)
+	post(s, group, "/enrich/start", "Start background LLM enrichment job", s.humaStartLLMEnrichmentJob)
+	post(s, group, "/enrich/stop", "Stop background LLM enrichment job", s.humaStopLLMEnrichmentJob)
+	get(s, group, "/enrich/job", "Get background LLM enrichment job state", s.humaLLMEnrichmentJob)
 	get(s, group, "/enrich/status", "Get LLM enrichment status", s.humaLLMEnrichmentStatus)
 	get(s, group, "/balance", "Get LLM provider balance", s.humaLLMBalance)
 	post(s, group, "/test", "Test LLM connection", s.humaTestLLMConnection)
@@ -119,6 +122,49 @@ func (s *Server) humaTriggerLLMEnrichment(
 		Candidates: stats.Candidates,
 		ElapsedMS:  time.Since(started).Milliseconds(),
 	}}, nil
+}
+
+func (s *Server) humaStartLLMEnrichmentJob(
+	ctx context.Context,
+	_ *emptyInput,
+) (*jsonOutput[enrichJobState], error) {
+	if err := s.requireLocalWritableLLMRequest(ctx); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	llmCfg := s.cfg.ResolveLLM()
+	s.mu.RUnlock()
+	if !llmCfg.Enabled {
+		return nil, apiError(http.StatusConflict, "LLM enrichment is disabled")
+	}
+	if strings.TrimSpace(llmCfg.APIKey) == "" {
+		return nil, apiError(http.StatusBadRequest, "LLM API key is not configured")
+	}
+	if strings.TrimSpace(llmCfg.BaseURL) == "" || strings.TrimSpace(llmCfg.Model) == "" {
+		return nil, apiError(http.StatusBadRequest, "LLM base_url and model are required")
+	}
+	state, _ := s.startEnrichJob("manual", llmCfg)
+	return &jsonOutput[enrichJobState]{Body: state}, nil
+}
+
+func (s *Server) humaStopLLMEnrichmentJob(
+	ctx context.Context,
+	_ *emptyInput,
+) (*jsonOutput[enrichJobState], error) {
+	if err := s.requireLocalWritableLLMRequest(ctx); err != nil {
+		return nil, err
+	}
+	return &jsonOutput[enrichJobState]{Body: s.stopEnrichJob()}, nil
+}
+
+func (s *Server) humaLLMEnrichmentJob(
+	ctx context.Context,
+	_ *emptyInput,
+) (*jsonOutput[enrichJobState], error) {
+	if err := requireLocalLLMRequest(ctx); err != nil {
+		return nil, err
+	}
+	return &jsonOutput[enrichJobState]{Body: s.enrichJob.snapshot()}, nil
 }
 
 func (s *Server) humaLLMEnrichmentStatus(
