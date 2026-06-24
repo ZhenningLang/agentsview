@@ -2,10 +2,13 @@ package server_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -68,9 +71,10 @@ func TestLLMRoutes(t *testing.T) {
 }
 
 func TestLLMRoutesRejectRemoteRequests(t *testing.T) {
+	called := false
 	client := llmTestClient(func(req *http.Request) (*http.Response, error) {
-		t.Fatal("provider should not be called for remote requests")
-		return nil, nil
+		called = true
+		return jsonResponse(http.StatusOK, `{}`), nil
 	})
 	te := setupWithServerOpts(t, []server.Option{server.WithLLMHTTPClient(client)}, withLLMConfig(func(c *config.LLMConfig) {
 		c.Enabled = true
@@ -88,10 +92,249 @@ func TestLLMRoutesRejectRemoteRequests(t *testing.T) {
 		{method: http.MethodPost, path: "/api/v1/llm/enrich", body: `{}`},
 		{method: http.MethodGet, path: "/api/v1/llm/enrich/status"},
 		{method: http.MethodGet, path: "/api/v1/llm/balance"},
+		{method: http.MethodGet, path: "/api/v1/config/llm"},
+		{method: http.MethodPost, path: "/api/v1/config/llm", body: `{}`},
+		{method: http.MethodPost, path: "/api/v1/llm/test", body: `{}`},
 	} {
 		w := requestJSON(te, tc.method, tc.path, tc.body, remote)
 		assert.Equal(t, http.StatusForbidden, w.Code, "%s %s body: %s", tc.method, tc.path, w.Body.String())
 	}
+	assert.False(t, called)
+	_, err := os.Stat(filepath.Join(te.dataDir, "config.toml"))
+	assert.True(t, os.IsNotExist(err), "remote config save must not touch disk")
+}
+
+func TestLLMConfigGetMasksAPIKeys(t *testing.T) {
+	te := setup(t, withLLMConfig(func(c *config.LLMConfig) {
+		c.Enabled = true
+		c.BaseURL = "https://chat.example/v1"
+		c.APIKey = "chat-secret-1234"
+		c.Model = "chat-model"
+		c.ReasoningEffort = "low"
+		c.MinUserMessages = 3
+		c.ReenrichMsgDelta = 4
+		c.ReenrichIdleMinutes = 5
+		c.Concurrency = 2
+		c.Periodic = true
+		c.Embed = config.LLMEmbedConfig{
+			BaseURL: "https://embed.example/v1",
+			APIKey:  "embed-secret-5678",
+			Model:   "embed-model",
+		}
+	}))
+
+	w := te.get(t, "/api/v1/config/llm")
+	assertStatus(t, w, http.StatusOK)
+	assert.NotContains(t, w.Body.String(), "chat-secret-1234")
+	assert.NotContains(t, w.Body.String(), "embed-secret-5678")
+	resp := decode[map[string]any](t, w)
+	assert.Equal(t, true, resp["enabled"])
+	assert.Equal(t, "https://chat.example/v1", resp["base_url"])
+	assert.Equal(t, true, resp["has_api_key"])
+	assert.Equal(t, "1234", resp["api_key_preview"])
+	embed := resp["embed"].(map[string]any)
+	assert.Equal(t, true, embed["has_api_key"])
+	assert.Equal(t, "5678", embed["api_key_preview"])
+}
+
+func TestLLMConfigGetDoesNotPreviewShortAPIKeys(t *testing.T) {
+	te := setup(t, withLLMConfig(func(c *config.LLMConfig) {
+		c.APIKey = "abcd"
+		c.Embed.APIKey = "xyz"
+	}))
+
+	w := te.get(t, "/api/v1/config/llm")
+	assertStatus(t, w, http.StatusOK)
+	assert.NotContains(t, w.Body.String(), "abcd")
+	assert.NotContains(t, w.Body.String(), "xyz")
+	resp := decode[map[string]any](t, w)
+	assert.Equal(t, true, resp["has_api_key"])
+	assert.NotContains(t, resp, "api_key_preview")
+	embed := resp["embed"].(map[string]any)
+	assert.Equal(t, true, embed["has_api_key"])
+	assert.NotContains(t, embed, "api_key_preview")
+}
+
+func TestLLMConfigAndTestRejectReadOnlyMode(t *testing.T) {
+	te := setupPGMode(t)
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: "/api/v1/config/llm"},
+		{method: http.MethodPost, path: "/api/v1/config/llm", body: `{}`},
+		{method: http.MethodPost, path: "/api/v1/llm/test", body: `{}`},
+	} {
+		w := requestJSON(te, tc.method, tc.path, tc.body)
+		assert.Equal(t, http.StatusForbidden, w.Code, "%s %s body: %s", tc.method, tc.path, w.Body.String())
+	}
+}
+
+func TestLLMConfigPostUpdatesHotAndPreservesMaskedKeys(t *testing.T) {
+	var gotAuth string
+	client := llmTestClient(func(req *http.Request) (*http.Response, error) {
+		gotAuth = req.Header.Get("Authorization")
+		switch req.URL.Path {
+		case "/v1/chat/completions":
+			return jsonResponse(http.StatusOK, `{"choices":[{"message":{"content":"ok"}}]}`), nil
+		case "/v1/embeddings":
+			return jsonResponse(http.StatusOK, `{"data":[{"embedding":[0.1]}]}`), nil
+		default:
+			return jsonResponse(http.StatusNotFound, `{}`), nil
+		}
+	})
+	te := setupWithServerOpts(t, []server.Option{server.WithLLMHTTPClient(client)}, withLLMConfig(func(c *config.LLMConfig) {
+		c.Enabled = false
+		c.BaseURL = "https://old-chat.example/v1"
+		c.APIKey = "old-chat-secret"
+		c.Model = "old-chat-model"
+		c.Embed = config.LLMEmbedConfig{
+			BaseURL: "https://old-embed.example/v1",
+			APIKey:  "old-embed-secret",
+			Model:   "old-embed-model",
+		}
+	}))
+
+	body := `{
+		"enabled": true,
+		"base_url": "https://new-chat.example/v1",
+		"api_key": "********",
+		"model": "new-chat-model",
+		"reasoning_effort": "medium",
+		"min_user_messages": 7,
+		"reenrich_msg_delta": 8,
+		"reenrich_idle_minutes": 9,
+		"concurrency": 3,
+		"periodic": true,
+		"embed": {
+			"base_url": "https://new-embed.example/v1",
+			"api_key": "",
+			"model": "new-embed-model"
+		}
+	}`
+	w := postJSON(te, "/api/v1/config/llm", body)
+	assertStatus(t, w, http.StatusOK)
+	assert.NotContains(t, w.Body.String(), "old-chat-secret")
+	assert.NotContains(t, w.Body.String(), "old-embed-secret")
+
+	data, err := os.ReadFile(filepath.Join(te.dataDir, "config.toml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "old-chat-secret")
+	assert.Contains(t, string(data), "old-embed-secret")
+	assert.Contains(t, string(data), "new-chat-model")
+
+	w = postJSON(te, "/api/v1/llm/test", `{"embed":{"model":""}}`)
+	assertStatus(t, w, http.StatusOK)
+	assert.Equal(t, "Bearer old-chat-secret", gotAuth)
+
+	w = postJSON(te, "/api/v1/config/llm", `{
+		"api_key": "new-chat-secret",
+		"embed": {"api_key": "new-embed-secret"}
+	}`)
+	assertStatus(t, w, http.StatusOK)
+	data, err = os.ReadFile(filepath.Join(te.dataDir, "config.toml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "new-chat-secret")
+	assert.Contains(t, string(data), "new-embed-secret")
+	assert.NotContains(t, w.Body.String(), "new-chat-secret")
+	assert.NotContains(t, w.Body.String(), "new-embed-secret")
+}
+
+func TestLLMConnectionTestReportsChatAndEmbed(t *testing.T) {
+	var paths []string
+	var chatBody map[string]any
+	client := llmTestClient(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.Path)
+		switch req.URL.Path {
+		case "/v1/chat/completions":
+			body, err := io.ReadAll(req.Body)
+			require.NoError(t, err)
+			require.NoError(t, json.Unmarshal(body, &chatBody))
+			return jsonResponse(http.StatusOK, `{"choices":[{"message":{"content":"ok"}}]}`), nil
+		case "/v1/embeddings":
+			return jsonResponse(http.StatusOK, `{"data":[{"embedding":[0.1,0.2]}]}`), nil
+		default:
+			return jsonResponse(http.StatusNotFound, `{}`), nil
+		}
+	})
+	te := setupWithServerOpts(t, []server.Option{server.WithLLMHTTPClient(client)}, withLLMConfig(func(c *config.LLMConfig) {
+		c.Enabled = true
+		c.BaseURL = "http://llm.test/v1"
+		c.APIKey = "secret-key"
+		c.Model = "chat-model"
+		c.Embed.Model = "embed-model"
+	}))
+
+	w := postJSON(te, "/api/v1/llm/test", `{}`)
+	assertStatus(t, w, http.StatusOK)
+	assert.NotContains(t, w.Body.String(), "secret-key")
+	resp := decode[map[string]any](t, w)
+	chat := resp["chat"].(map[string]any)
+	embed := resp["embed"].(map[string]any)
+	assert.Equal(t, true, chat["ok"])
+	assert.Equal(t, "ok", chat["message"])
+	assert.Equal(t, true, embed["ok"])
+	assert.Equal(t, "ok", embed["message"])
+	assert.Equal(t, []string{"/v1/chat/completions", "/v1/embeddings"}, paths)
+	assert.Equal(t, float64(4), chatBody["max_tokens"])
+	messages := chatBody["messages"].([]any)
+	require.Len(t, messages, 2)
+	assert.Contains(t, strings.ToLower(messages[0].(map[string]any)["content"].(string)), "json")
+	assert.Contains(t, strings.ToLower(messages[1].(map[string]any)["content"].(string)), "json")
+}
+
+func TestLLMConnectionTestReportsEmbedDisabledAndSanitizesErrors(t *testing.T) {
+	client := llmTestClient(func(req *http.Request) (*http.Response, error) {
+		return jsonResponse(http.StatusUnauthorized, `{"error":"bad secret-key"}`), nil
+	})
+	te := setupWithServerOpts(t, []server.Option{server.WithLLMHTTPClient(client)}, withLLMConfig(func(c *config.LLMConfig) {
+		c.Enabled = true
+		c.BaseURL = "http://llm.test/v1"
+		c.APIKey = "secret-key"
+		c.Model = "chat-model"
+	}))
+
+	w := postJSON(te, "/api/v1/llm/test", `{}`)
+	assertStatus(t, w, http.StatusOK)
+	assert.NotContains(t, w.Body.String(), "secret-key")
+	resp := decode[map[string]any](t, w)
+	chat := resp["chat"].(map[string]any)
+	embed := resp["embed"].(map[string]any)
+	assert.Equal(t, false, chat["ok"])
+	assert.Contains(t, chat["message"], "[redacted]")
+	assert.Equal(t, false, embed["ok"])
+	assert.Equal(t, true, embed["disabled"])
+	assert.Equal(t, "disabled", embed["message"])
+}
+
+func TestLLMConnectionTestAcceptsCandidateConfig(t *testing.T) {
+	var gotAuth string
+	client := llmTestClient(func(req *http.Request) (*http.Response, error) {
+		gotAuth = req.Header.Get("Authorization")
+		return jsonResponse(http.StatusOK, `{"choices":[{"message":{"content":"ok"}}]}`), nil
+	})
+	te := setupWithServerOpts(t, []server.Option{server.WithLLMHTTPClient(client)}, withLLMConfig(func(c *config.LLMConfig) {
+		c.Enabled = true
+		c.BaseURL = "http://saved.test/v1"
+		c.APIKey = "saved-secret"
+		c.Model = "saved-model"
+	}))
+
+	body := map[string]any{
+		"base_url": "http://candidate.test/v1",
+		"api_key":  "candidate-secret",
+		"model":    "candidate-model",
+		"embed": map[string]any{
+			"model": "",
+		},
+	}
+	data, err := json.Marshal(body)
+	require.NoError(t, err)
+	w := postJSON(te, "/api/v1/llm/test", string(data))
+	assertStatus(t, w, http.StatusOK)
+	assert.Equal(t, "Bearer candidate-secret", gotAuth)
 }
 
 func TestLLMEnrichRejectsDisabledOrUnconfigured(t *testing.T) {

@@ -33,6 +33,61 @@ export interface LLMEnrichmentStatusReport {
   by_status: Record<string, number>;
 }
 
+export interface LLMEmbedConfigResponse {
+  base_url?: string;
+  model?: string;
+  has_api_key: boolean;
+  api_key_preview?: string;
+}
+
+export interface LLMConfigResponse {
+  enabled: boolean;
+  base_url?: string;
+  model?: string;
+  reasoning_effort?: string;
+  min_user_messages: number;
+  reenrich_msg_delta: number;
+  reenrich_idle_minutes: number;
+  concurrency: number;
+  periodic: boolean;
+  balance_url?: string;
+  has_api_key: boolean;
+  api_key_preview?: string;
+  embed: LLMEmbedConfigResponse;
+}
+
+export interface LLMEmbedConfigPayload {
+  base_url?: string;
+  api_key?: string;
+  model?: string;
+}
+
+export interface LLMConfigPayload {
+  enabled?: boolean;
+  base_url?: string;
+  api_key?: string;
+  model?: string;
+  reasoning_effort?: string;
+  min_user_messages?: number;
+  reenrich_msg_delta?: number;
+  reenrich_idle_minutes?: number;
+  concurrency?: number;
+  periodic?: boolean;
+  balance_url?: string;
+  embed?: LLMEmbedConfigPayload;
+}
+
+export interface LLMTestChannelResult {
+  ok: boolean;
+  disabled?: boolean;
+  message: string;
+}
+
+export interface LLMTestResponse {
+  chat: LLMTestChannelResult;
+  embed: LLMTestChannelResult;
+}
+
 async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${getBase()}${path}`, authHeaders({ signal }));
   if (!res.ok) {
@@ -76,6 +131,24 @@ export function fetchEnrichStatus(
   signal?: AbortSignal,
 ): Promise<LLMEnrichmentStatusReport> {
   return getJSON<LLMEnrichmentStatusReport>("/llm/enrich/status", signal);
+}
+
+export function fetchLLMConfig(signal?: AbortSignal): Promise<LLMConfigResponse> {
+  return getJSON<LLMConfigResponse>("/config/llm", signal);
+}
+
+export function saveLLMConfig(
+  payload: LLMConfigPayload,
+  signal?: AbortSignal,
+): Promise<LLMConfigResponse> {
+  return postJSON<LLMConfigResponse>("/config/llm", payload, signal);
+}
+
+export function testLLMConnection(
+  payload: LLMConfigPayload = {},
+  signal?: AbortSignal,
+): Promise<LLMTestResponse> {
+  return postJSON<LLMTestResponse>("/llm/test", payload, signal);
 }
 
 export interface SemanticSearchResponse extends SearchResponse {

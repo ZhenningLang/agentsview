@@ -3,9 +3,15 @@
   import { ApiError, isRemoteConnection } from "../../api/runtime.js";
   import {
     fetchEnrichStatus,
+    fetchLLMConfig,
+    saveLLMConfig,
+    testLLMConnection,
     triggerEnrich,
     type LLMEnrichResponse,
     type LLMEnrichmentStatusReport,
+    type LLMConfigPayload,
+    type LLMConfigResponse,
+    type LLMTestResponse,
   } from "../../api/llm.js";
   import { sync } from "../../stores/sync.svelte.js";
   import SettingsSection from "./SettingsSection.svelte";
@@ -13,8 +19,13 @@
   let status: LLMEnrichmentStatusReport | null = $state(null);
   let result: LLMEnrichResponse | null = $state(null);
   let loading = $state(false);
+  let configLoading = $state(false);
   let running = $state(false);
+  let saving = $state(false);
+  let testing = $state(false);
   let error = $state("");
+  let configMessage = $state("");
+  let testResult: LLMTestResponse | null = $state(null);
   const remote = isRemoteConnection();
   const readOnly = $derived(sync.readOnly);
   const unavailableReason = $derived(
@@ -25,6 +36,28 @@
         : "",
   );
   const canTrigger = $derived(!remote && !readOnly && !running);
+  const canSaveConfig = $derived(!remote && !readOnly && !saving);
+  const canTestConfig = $derived(!remote && !testing);
+
+  const keySentinel = "********";
+  const reasoningOptions = ["", "low", "medium", "high"];
+
+  let form = $state({
+    enabled: false,
+    baseUrl: "",
+    apiKey: "",
+    model: "",
+    reasoningEffort: "",
+    minUserMessages: 0,
+    reenrichMsgDelta: 0,
+    reenrichIdleMinutes: 0,
+    concurrency: 0,
+    periodic: false,
+    balanceUrl: "",
+    embedBaseUrl: "",
+    embedApiKey: "",
+    embedModel: "",
+  });
 
   type CountCard = readonly [string, number];
 
@@ -38,6 +71,96 @@
       error = err instanceof ApiError ? err.message : "Failed to load LLM status";
     } finally {
       loading = false;
+    }
+  }
+
+  function maskedValue(hasKey: boolean, preview?: string): string {
+    if (!hasKey) return "";
+    return `${keySentinel}${preview ?? ""}`;
+  }
+
+  function applyConfig(config: LLMConfigResponse) {
+    form.enabled = config.enabled;
+    form.baseUrl = config.base_url ?? "";
+    form.apiKey = maskedValue(config.has_api_key, config.api_key_preview);
+    form.model = config.model ?? "";
+    form.reasoningEffort = config.reasoning_effort ?? "";
+    form.minUserMessages = config.min_user_messages;
+    form.reenrichMsgDelta = config.reenrich_msg_delta;
+    form.reenrichIdleMinutes = config.reenrich_idle_minutes;
+    form.concurrency = config.concurrency;
+    form.periodic = config.periodic;
+    form.balanceUrl = config.balance_url ?? "";
+    form.embedBaseUrl = config.embed?.base_url ?? "";
+    form.embedApiKey = maskedValue(config.embed?.has_api_key ?? false, config.embed?.api_key_preview);
+    form.embedModel = config.embed?.model ?? "";
+  }
+
+  async function loadConfig() {
+    if (remote) return;
+    configLoading = true;
+    configMessage = "";
+    try {
+      applyConfig(await fetchLLMConfig());
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : "Failed to load LLM config";
+    } finally {
+      configLoading = false;
+    }
+  }
+
+  function keyPayload(value: string): string {
+    const trimmed = value.trim();
+    return trimmed.startsWith(keySentinel) ? keySentinel : trimmed;
+  }
+
+  function formPayload(): LLMConfigPayload {
+    return {
+      enabled: form.enabled,
+      base_url: form.baseUrl.trim(),
+      api_key: keyPayload(form.apiKey),
+      model: form.model.trim(),
+      reasoning_effort: form.reasoningEffort,
+      min_user_messages: Number(form.minUserMessages) || 0,
+      reenrich_msg_delta: Number(form.reenrichMsgDelta) || 0,
+      reenrich_idle_minutes: Number(form.reenrichIdleMinutes) || 0,
+      concurrency: Number(form.concurrency) || 0,
+      periodic: form.periodic,
+      balance_url: form.balanceUrl.trim(),
+      embed: {
+        base_url: form.embedBaseUrl.trim(),
+        api_key: keyPayload(form.embedApiKey),
+        model: form.embedModel.trim(),
+      },
+    };
+  }
+
+  async function saveConfig() {
+    if (!canSaveConfig) return;
+    saving = true;
+    error = "";
+    configMessage = "";
+    try {
+      applyConfig(await saveLLMConfig(formPayload()));
+      configMessage = "LLM config saved";
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : "Failed to save LLM config";
+    } finally {
+      saving = false;
+    }
+  }
+
+  async function testConfig() {
+    if (!canTestConfig) return;
+    testing = true;
+    error = "";
+    testResult = null;
+    try {
+      testResult = await testLLMConnection(formPayload());
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : "Failed to test LLM connection";
+    } finally {
+      testing = false;
     }
   }
 
@@ -58,6 +181,7 @@
 
   onMount(() => {
     loadStatus();
+    loadConfig();
   });
 
   function countCards(report: LLMEnrichmentStatusReport | null): CountCard[] {
@@ -70,6 +194,11 @@
       ["Errors", report?.errors ?? 0],
     ];
   }
+
+  function channelText(label: string, result: LLMTestResponse["chat"]): string {
+    if (result.disabled) return `${label}: disabled`;
+    return `${label}: ${result.ok ? "ok" : "error"}${result.message ? ` - ${result.message}` : ""}`;
+  }
 </script>
 
 <SettingsSection
@@ -81,6 +210,99 @@
       {unavailableReason}
     </p>
   {:else}
+    <form class="config-form" onsubmit={(event) => { event.preventDefault(); saveConfig(); }}>
+      <label class="toggle-row">
+        <input name="enabled" type="checkbox" bind:checked={form.enabled} />
+        <span>Enable LLM enrichment</span>
+      </label>
+
+      <div class="field-group">
+        <h4>Chat provider</h4>
+        <label>
+          <span>Base URL</span>
+          <input name="base_url" type="url" bind:value={form.baseUrl} placeholder="https://api.deepseek.com/v1" />
+        </label>
+        <label>
+          <span>API key</span>
+          <input name="api_key" type="password" bind:value={form.apiKey} autocomplete="off" />
+        </label>
+        <label>
+          <span>Model</span>
+          <input name="model" type="text" bind:value={form.model} placeholder="deepseek-chat" />
+        </label>
+        <label>
+          <span>Reasoning effort</span>
+          <select name="reasoning_effort" bind:value={form.reasoningEffort}>
+            {#each reasoningOptions as option}
+              <option value={option}>{option || "default"}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+
+      <div class="field-group">
+        <h4>Embedding provider</h4>
+        <label>
+          <span>Base URL</span>
+          <input name="embed_base_url" type="url" bind:value={form.embedBaseUrl} placeholder="defaults to chat base URL" />
+        </label>
+        <label>
+          <span>API key</span>
+          <input name="embed_api_key" type="password" bind:value={form.embedApiKey} autocomplete="off" />
+        </label>
+        <label>
+          <span>Model</span>
+          <input name="embed_model" type="text" bind:value={form.embedModel} placeholder="leave empty to disable embeddings" />
+        </label>
+      </div>
+
+      <div class="field-group schedule-grid">
+        <h4>Scheduling</h4>
+        <label>
+          <span>Min user messages</span>
+          <input name="min_user_messages" type="number" min="0" bind:value={form.minUserMessages} />
+        </label>
+        <label>
+          <span>Re-enrich message delta</span>
+          <input name="reenrich_msg_delta" type="number" min="0" bind:value={form.reenrichMsgDelta} />
+        </label>
+        <label>
+          <span>Idle minutes</span>
+          <input name="reenrich_idle_minutes" type="number" min="0" bind:value={form.reenrichIdleMinutes} />
+        </label>
+        <label>
+          <span>Concurrency</span>
+          <input name="concurrency" type="number" min="0" bind:value={form.concurrency} />
+        </label>
+        <label class="toggle-row periodic-toggle">
+          <input name="periodic" type="checkbox" bind:checked={form.periodic} />
+          <span>Run periodically</span>
+        </label>
+      </div>
+
+      {#if configLoading}
+        <p class="muted">Loading LLM config...</p>
+      {/if}
+      {#if configMessage}
+        <p class="result">{configMessage}</p>
+      {/if}
+      {#if testResult}
+        <div class="test-result" data-testid="llm-test-result">
+          <p>{channelText("chat", testResult.chat)}</p>
+          <p>{channelText("embed", testResult.embed)}</p>
+        </div>
+      {/if}
+
+      <div class="actions">
+        <button class="trigger-btn" type="submit" disabled={!canSaveConfig}>
+          {saving ? "Saving..." : "Save LLM config"}
+        </button>
+        <button class="refresh-btn" type="button" onclick={testConfig} disabled={!canTestConfig}>
+          {testing ? "Testing..." : "Test connection"}
+        </button>
+      </div>
+    </form>
+
     <div class="status-grid" aria-label="LLM enrichment status">
       {#each countCards(status) as [label, value]}
         <div class="status-card">
@@ -131,6 +353,91 @@
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 8px;
+  }
+
+  .config-form,
+  .field-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .field-group {
+    padding: 12px;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    background: var(--bg-inset);
+  }
+
+  .field-group h4 {
+    margin: 0;
+    font-size: 11px;
+    font-weight: 650;
+    color: var(--text-secondary);
+  }
+
+  .field-group label {
+    display: grid;
+    grid-template-columns: minmax(110px, 0.42fr) minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  .field-group span,
+  .toggle-row span {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .field-group input,
+  .field-group select {
+    min-width: 0;
+    height: 30px;
+    padding: 0 9px;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font-size: 12px;
+  }
+
+  .field-group input:focus,
+  .field-group select:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+  }
+
+  .toggle-row,
+  .field-group .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .toggle-row input {
+    margin: 0;
+  }
+
+  .periodic-toggle {
+    grid-column: 1 / -1;
+  }
+
+  .test-result {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    background: var(--bg-inset);
+  }
+
+  .test-result p {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.4;
   }
 
   .status-card {
@@ -214,6 +521,11 @@
   @media (max-width: 549px) {
     .status-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .field-group label {
+      grid-template-columns: 1fr;
+      gap: 4px;
     }
   }
 </style>

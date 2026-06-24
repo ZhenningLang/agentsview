@@ -11,8 +11,11 @@ import { ApiError, setAuthToken } from "./runtime.js";
 import {
   fetchBalance,
   fetchEnrichStatus,
+  fetchLLMConfig,
   fetchSemanticSearchStatus,
+  saveLLMConfig,
   semanticSearch,
+  testLLMConnection,
   triggerEnrich,
 } from "./llm.js";
 
@@ -151,6 +154,98 @@ describe("LLM API helpers", () => {
       "/api/v1/llm/enrich/status",
       expect.any(Object),
     );
+  });
+
+  it("fetches and saves masked LLM config", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: true,
+            base_url: "https://api.deepseek.com/v1",
+            model: "deepseek-chat",
+            reasoning_effort: "low",
+            min_user_messages: 3,
+            reenrich_msg_delta: 10,
+            reenrich_idle_minutes: 60,
+            concurrency: 2,
+            periodic: true,
+            has_api_key: true,
+            api_key_preview: "1234",
+            embed: {
+              base_url: "https://embed.example/v1",
+              model: "embed-model",
+              has_api_key: true,
+              api_key_preview: "5678",
+            },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: false,
+            min_user_messages: 0,
+            reenrich_msg_delta: 0,
+            reenrich_idle_minutes: 0,
+            concurrency: 0,
+            periodic: false,
+            has_api_key: true,
+            api_key_preview: "1234",
+            embed: { has_api_key: false },
+          }),
+          { status: 200 },
+        ),
+      );
+
+    await expect(fetchLLMConfig()).resolves.toMatchObject({
+      enabled: true,
+      has_api_key: true,
+      api_key_preview: "1234",
+      embed: { has_api_key: true, api_key_preview: "5678" },
+    });
+    await expect(
+      saveLLMConfig({ enabled: false, api_key: "********" }),
+    ).resolves.toMatchObject({ enabled: false, has_api_key: true });
+
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/v1/config/llm");
+    const [path, init] = fetchMock.mock.calls[1]!;
+    expect(path).toBe("/api/v1/config/llm");
+    expect(init).toMatchObject({ method: "POST" });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      enabled: false,
+      api_key: "********",
+    });
+  });
+
+  it("posts LLM test requests and surfaces ApiError", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            chat: { ok: true, message: "ok" },
+            embed: { ok: false, disabled: true, message: "disabled" },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "not available" }), { status: 403 }),
+      );
+
+    await expect(testLLMConnection()).resolves.toEqual({
+      chat: { ok: true, message: "ok" },
+      embed: { ok: false, disabled: true, message: "disabled" },
+    });
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/v1/llm/test");
+    expect(JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string)).toEqual({});
+
+    await expect(testLLMConnection({ base_url: "http://bad.test" })).rejects.toMatchObject({
+      name: "ApiError",
+      status: 403,
+      message: "not available",
+    } satisfies Partial<ApiError>);
   });
 
   it("fetches semantic status and semantic search results", async () => {

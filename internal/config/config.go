@@ -1510,6 +1510,25 @@ func (c *Config) SaveTerminalConfig(tc TerminalConfig) error {
 	return nil
 }
 
+// SaveLLMConfig persists LLM settings to the config file.
+func (c *Config) SaveLLMConfig(llm LLMConfig) error {
+	if err := os.MkdirAll(c.DataDir, 0o700); err != nil {
+		return fmt.Errorf("creating data dir: %w", err)
+	}
+
+	existing, err := c.readConfigMap()
+	if err != nil {
+		return fmt.Errorf("reading config file: %w", err)
+	}
+
+	existing["llm"] = llm
+	if err := c.writeConfigMap(existing); err != nil {
+		return err
+	}
+	c.LLM = llm
+	return nil
+}
+
 // SaveSettings persists a partial settings update to the config file.
 // The patch map contains config keys mapped to their new values. Only
 // the keys present in patch are written; other config keys are preserved.
