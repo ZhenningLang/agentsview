@@ -50,9 +50,15 @@ consumed** -- no background loop reads it, so checking it does nothing.
   refreshes counts on completion.
 - Toggling `Run periodically` on causes the ticker to start a job on the next
   tick without a restart; off makes ticks no-op.
+- The job reports per-run cost: provider-reported token usage (chat
+  prompt/completion + embed, captured from the previously-discarded `usage`
+  object) and a chat-provider balance delta for providers with a balance
+  endpoint (DeepSeek). The UI shows tokens and chat spend on completion.
+  Embedding via a separate provider (OpenRouter, USD) is not in the balance
+  delta but its tokens are shown.
 - Backend table-driven tests (testify) for the job manager, progress, periodic
-  gating; frontend vitest for start/stop/progress. `go fmt`, `go vet`, build
-  clean.
+  gating, and token/cost reporting; frontend vitest for start/stop/progress and
+  cost display. `go fmt`, `go vet`, build clean.
 
 ## Not doing
 
