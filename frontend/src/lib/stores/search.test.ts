@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { searchStore } from "./search.svelte.js";
 import { SearchService } from "../api/generated/index";
 import type { SearchResponse } from "../api/types.js";
+import { fetchSemanticSearchStatus, semanticSearch } from "../api/llm.js";
 
 vi.mock("../api/runtime.js", () => ({
   configureGeneratedClient: vi.fn(),
@@ -40,8 +41,17 @@ vi.mock("../api/generated/index", () => ({
   },
 }));
 
+vi.mock("../api/llm.js", () => ({
+  fetchSemanticSearchStatus: vi.fn(),
+  semanticSearch: vi.fn(),
+}));
+
 const searchService = SearchService as unknown as {
   getApiV1Search: ReturnType<typeof vi.fn>;
+};
+const llmApi = { fetchSemanticSearchStatus, semanticSearch } as unknown as {
+  fetchSemanticSearchStatus: ReturnType<typeof vi.fn>;
+  semanticSearch: ReturnType<typeof vi.fn>;
 };
 
 function createDeferred<T>() {
@@ -105,6 +115,7 @@ describe("SearchStore", () => {
     vi.useFakeTimers();
     searchStore.clear();
     searchStore.resetSort();
+    searchStore.setSemanticAvailable(false);
     vi.clearAllMocks();
   });
 
@@ -355,6 +366,58 @@ describe("SearchStore", () => {
     expect(searchStore.sort).toBe("recency");
     searchStore.resetSort();
     expect(searchStore.sort).toBe("relevance");
+  });
+
+  it("refreshSemanticAvailability gates semantic mode", async () => {
+    llmApi.fetchSemanticSearchStatus.mockResolvedValueOnce({ available: true });
+    await searchStore.refreshSemanticAvailability();
+    expect(searchStore.semanticAvailable).toBe(true);
+
+    searchStore.setMode("semantic");
+    expect(searchStore.mode).toBe("semantic");
+
+    searchStore.setSemanticAvailable(false);
+    expect(searchStore.mode).toBe("keyword");
+  });
+
+  it("semantic mode calls semantic API and not keyword search", async () => {
+    searchStore.setSemanticAvailable(true);
+    searchStore.setMode("semantic");
+    llmApi.semanticSearch.mockResolvedValueOnce(makeSearchResponse("auth", 1));
+
+    searchStore.search("auth", "proj");
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    await vi.runAllTimersAsync();
+    await flushMicrotasks();
+
+    expect(llmApi.semanticSearch).toHaveBeenCalledWith(
+      "auth",
+      "proj",
+      30,
+      expect.any(AbortSignal),
+    );
+    expect(searchService.getApiV1Search).not.toHaveBeenCalled();
+    expect(searchStore.results).toHaveLength(1);
+  });
+
+  it("disabled semantic response hides semantic mode", async () => {
+    searchStore.setSemanticAvailable(true);
+    searchStore.setMode("semantic");
+    llmApi.semanticSearch.mockResolvedValueOnce({
+      query: "auth",
+      disabled: true,
+      results: [],
+      count: 0,
+    });
+
+    searchStore.search("auth");
+    vi.advanceTimersByTime(DEBOUNCE_MS);
+    await vi.runAllTimersAsync();
+    await flushMicrotasks();
+
+    expect(searchStore.semanticAvailable).toBe(false);
+    expect(searchStore.mode).toBe("keyword");
+    expect(searchStore.results).toHaveLength(0);
   });
 
   it("setSort cancels pending debounced search before running", async () => {

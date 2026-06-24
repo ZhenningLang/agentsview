@@ -29,6 +29,10 @@
     searchStore.resetSort();
   });
 
+  $effect(() => {
+    searchStore.refreshSemanticAvailability();
+  });
+
   // Filtered recent sessions (client-side filter)
   let recentSessions = $derived.by(() => {
     if (inputValue.length > 0 && inputValue.length < 3) {
@@ -167,15 +171,31 @@
     <div class="palette-results">
       {#if showSearchResults}
         <div class="palette-sort">
+          {#if searchStore.semanticAvailable}
+            <button
+              class="sort-btn"
+              class:active={searchStore.mode === "keyword"}
+              onmousedown={(e: MouseEvent) => e.preventDefault()}
+              onclick={() => { searchStore.setMode("keyword"); selectedIndex = 0; }}
+            >Keyword</button>
+            <button
+              class="sort-btn"
+              class:active={searchStore.mode === "semantic"}
+              onmousedown={(e: MouseEvent) => e.preventDefault()}
+              onclick={() => { searchStore.setMode("semantic"); selectedIndex = 0; }}
+            >Semantic</button>
+          {/if}
           <button
             class="sort-btn"
             class:active={searchStore.sort === "relevance"}
+            disabled={searchStore.mode === "semantic"}
             onmousedown={(e: MouseEvent) => e.preventDefault()}
             onclick={() => { searchStore.setSort("relevance"); selectedIndex = 0; }}
           >Relevance</button>
           <button
             class="sort-btn"
             class:active={searchStore.sort === "recency"}
+            disabled={searchStore.mode === "semantic"}
             onmousedown={(e: MouseEvent) => e.preventDefault()}
             onclick={() => { searchStore.setSort("recency"); selectedIndex = 0; }}
           >Recency</button>

@@ -1,4 +1,5 @@
 import { getBase, authHeaders, ApiError, responseErrorMessage } from "./runtime";
+import type { SearchResponse } from "./types.js";
 
 export interface LLMBalanceResponse {
   supported: boolean;
@@ -75,4 +76,29 @@ export function fetchEnrichStatus(
   signal?: AbortSignal,
 ): Promise<LLMEnrichmentStatusReport> {
   return getJSON<LLMEnrichmentStatusReport>("/llm/enrich/status", signal);
+}
+
+export interface SemanticSearchResponse extends SearchResponse {
+  disabled?: boolean;
+}
+
+export interface SemanticSearchStatusResponse {
+  available: boolean;
+}
+
+export function fetchSemanticSearchStatus(
+  signal?: AbortSignal,
+): Promise<SemanticSearchStatusResponse> {
+  return getJSON<SemanticSearchStatusResponse>("/search/semantic/status", signal);
+}
+
+export function semanticSearch(
+  query: string,
+  project?: string,
+  k = 30,
+  signal?: AbortSignal,
+): Promise<SemanticSearchResponse> {
+  const params = new URLSearchParams({ q: query, k: String(k) });
+  if (project) params.set("project", project);
+  return getJSON<SemanticSearchResponse>(`/search/semantic?${params.toString()}`, signal);
 }

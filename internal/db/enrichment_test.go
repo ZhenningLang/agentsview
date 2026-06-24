@@ -170,6 +170,25 @@ func TestWriteEnrichmentSuccessAndFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "session not found")
 }
 
+func TestWriteEnrichmentCanPersistEmbedding(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	insertSession(t, d, "ok", "proj", func(s *Session) {
+		s.MessageCount = 5
+		s.UserMessageCount = 3
+	})
+	require.NoError(t, d.WriteEnrichment(ctx, "ok", EnrichmentWrite{
+		Title: "Title", Summary: "Summary", Keywords: []string{"auth"},
+		Model: "deepseek-chat", MessageCnt: 5, Embedding: []float32{0.25, 0.5}, HasEmbedding: true,
+	}))
+
+	embeddings, err := d.SessionEmbeddings(ctx, EmbeddingFilter{Project: "proj"})
+	require.NoError(t, err)
+	require.Len(t, embeddings, 1)
+	assert.Equal(t, "ok", embeddings[0].SessionID)
+	assert.Equal(t, []float32{0.25, 0.5}, embeddings[0].Vector)
+}
+
 func TestGetEnrichmentStatus(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()

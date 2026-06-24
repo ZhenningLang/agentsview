@@ -11,6 +11,8 @@ import { ApiError, setAuthToken } from "./runtime.js";
 import {
   fetchBalance,
   fetchEnrichStatus,
+  fetchSemanticSearchStatus,
+  semanticSearch,
   triggerEnrich,
 } from "./llm.js";
 
@@ -149,6 +151,26 @@ describe("LLM API helpers", () => {
       "/api/v1/llm/enrich/status",
       expect.any(Object),
     );
+  });
+
+  it("fetches semantic status and semantic search results", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ available: true }), { status: 200 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ query: "auth", results: [], count: 0 }), { status: 200 }),
+      );
+
+    await expect(fetchSemanticSearchStatus()).resolves.toEqual({ available: true });
+    await expect(semanticSearch("auth", "proj", 5)).resolves.toEqual({
+      query: "auth",
+      results: [],
+      count: 0,
+    });
+
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/v1/search/semantic/status");
+    expect(fetchMock.mock.calls[1]![0]).toBe("/api/v1/search/semantic?q=auth&k=5&project=proj");
   });
 
   it("throws ApiError with server message on non-OK responses", async () => {
