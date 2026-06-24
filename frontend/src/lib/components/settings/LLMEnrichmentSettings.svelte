@@ -486,6 +486,16 @@
               ? `, ${job.skipped} skipped`
               : ""}{job.no_content ? `, ${job.no_content} no content` : ""}.
           </p>
+          <p class="muted" data-testid="enrich-cost">
+            Tokens: {(job.prompt_tokens + job.completion_tokens).toLocaleString()} chat
+            ({job.prompt_tokens.toLocaleString()} in / {job.completion_tokens.toLocaleString()} out){job.embed_tokens
+              ? `, ${job.embed_tokens.toLocaleString()} embed`
+              : ""}.
+            {#if job.cost_spent}
+              Chat spend this run: {job.cost_currency}
+              {job.cost_spent}{job.balance_end ? ` (balance now ${job.cost_currency} ${job.balance_end})` : ""}.
+            {/if}
+          </p>
         {/if}
         {#if job.error}
           <p class="error" role="alert">{job.error}</p>

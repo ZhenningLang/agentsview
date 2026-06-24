@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,19 @@ type enrichJobState struct {
 	StartedAt string `json:"started_at,omitempty"`
 	DoneAt    string `json:"done_at,omitempty"`
 	Error     string `json:"error,omitempty"`
+
+	// Token usage reported by the provider for this run.
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	EmbedTokens      int `json:"embed_tokens"`
+
+	// Chat-provider balance delta, populated only when the provider
+	// exposes a balance endpoint (e.g. DeepSeek). CostSpent is the
+	// formatted BalanceStart-BalanceEnd amount in CostCurrency.
+	CostCurrency string `json:"cost_currency,omitempty"`
+	CostSpent    string `json:"cost_spent,omitempty"`
+	BalanceStart string `json:"balance_start,omitempty"`
+	BalanceEnd   string `json:"balance_end,omitempty"`
 }
 
 // enrichJob is the single-flight background enrichment job tracker.
@@ -91,6 +105,17 @@ func (s *Server) runEnrichJob(
 	client *llm.Client,
 ) {
 	j := s.enrichJob
+
+	// Snapshot the chat-provider balance before the run so the cost of
+	// this run can be reported as a balance delta (best-effort; only
+	// providers with a balance endpoint, e.g. DeepSeek, populate it).
+	if startBal := s.fetchLLMBalance(ctx, cfg); startBal.Supported {
+		j.mu.Lock()
+		j.state.CostCurrency = startBal.Currency
+		j.state.BalanceStart = startBal.Amount
+		j.mu.Unlock()
+	}
+
 	runner := enrich.New(s.llmWriter, client, cfg)
 	stats, err := runner.Run(ctx, enrich.Options{
 		Limit: 0,
@@ -102,6 +127,12 @@ func (s *Server) runEnrichJob(
 		},
 	})
 
+	// Fetch the ending balance on an independent timeout so a stopped
+	// or cancelled run still reports its cost.
+	balCtx, balCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	endBal := s.fetchLLMBalance(balCtx, cfg)
+	balCancel()
+
 	j.mu.Lock()
 	j.state.Running = false
 	j.state.DoneAt = time.Now().UTC().Format(time.RFC3339)
@@ -109,8 +140,20 @@ func (s *Server) runEnrichJob(
 	j.state.NoContent = stats.NoContent
 	j.state.Failed = stats.Failed
 	j.state.Skipped = stats.SkippedTooShort
+	j.state.PromptTokens = stats.PromptTokens
+	j.state.CompletionTokens = stats.CompletionTokens
+	j.state.EmbedTokens = stats.EmbedTokens
 	if j.state.Total == 0 {
 		j.state.Total = stats.Candidates
+	}
+	if endBal.Supported {
+		j.state.BalanceEnd = endBal.Amount
+		if j.state.CostCurrency == "" {
+			j.state.CostCurrency = endBal.Currency
+		}
+		if spent, ok := balanceSpent(j.state.BalanceStart, endBal.Amount); ok {
+			j.state.CostSpent = spent
+		}
 	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		j.state.Error = err.Error()
@@ -120,6 +163,22 @@ func (s *Server) runEnrichJob(
 	j.cancel = nil
 	j.mu.Unlock()
 	cancel()
+}
+
+// balanceSpent returns the formatted start-minus-end amount when both
+// parse as numbers. A negative delta (e.g. the account was topped up
+// mid-run) is clamped to zero rather than reported as negative spend.
+func balanceSpent(start, end string) (string, bool) {
+	s, errS := strconv.ParseFloat(strings.TrimSpace(start), 64)
+	e, errE := strconv.ParseFloat(strings.TrimSpace(end), 64)
+	if errS != nil || errE != nil {
+		return "", false
+	}
+	delta := s - e
+	if delta < 0 {
+		delta = 0
+	}
+	return strconv.FormatFloat(delta, 'f', 4, 64), true
 }
 
 // stopEnrichJob cancels the running job, if any, and returns the

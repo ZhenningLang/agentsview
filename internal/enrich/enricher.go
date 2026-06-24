@@ -22,6 +22,25 @@ type embedClient interface {
 	Embed(ctx context.Context, input string) ([]float32, error)
 }
 
+// chatUsageClient and embedUsageClient are optional interfaces a client
+// may implement to also report token usage. The enricher type-asserts
+// them and falls back to the plain calls (with zero usage) otherwise.
+type chatUsageClient interface {
+	ChatJSONUsage(ctx context.Context, system, user string) (string, llm.Usage, error)
+}
+
+type embedUsageClient interface {
+	EmbedUsage(ctx context.Context, input string) ([]float32, llm.Usage, error)
+}
+
+// tokenUsage accumulates token counts across a candidate's chat and
+// embedding calls.
+type tokenUsage struct {
+	prompt     int
+	completion int
+	embed      int
+}
+
 type Options struct {
 	Project string
 	Force   bool
@@ -44,6 +63,10 @@ type Stats struct {
 	NoContent       int
 	Succeeded       int
 	Failed          int
+	// Token usage summed across all processed candidates in this run.
+	PromptTokens     int
+	CompletionTokens int
+	EmbedTokens      int
 }
 
 type Enricher struct {
@@ -112,7 +135,7 @@ func (e *Enricher) Run(ctx context.Context, opts Options) (Stats, error) {
 		go func() {
 			defer wg.Done()
 			for candidate := range jobs {
-				result := e.processCandidate(ctx, candidate, opts.Now)
+				result, usage := e.processCandidate(ctx, candidate, opts.Now)
 				mu.Lock()
 				switch result {
 				case db.EnrichStatusOK:
@@ -122,6 +145,9 @@ func (e *Enricher) Run(ctx context.Context, opts Options) (Stats, error) {
 				case db.EnrichStatusError:
 					stats.Failed++
 				}
+				stats.PromptTokens += usage.prompt
+				stats.CompletionTokens += usage.completion
+				stats.EmbedTokens += usage.embed
 				done++
 				if opts.OnProgress != nil {
 					opts.OnProgress(done, total)
@@ -147,11 +173,12 @@ func (e *Enricher) Run(ctx context.Context, opts Options) (Stats, error) {
 	return stats, nil
 }
 
-func (e *Enricher) processCandidate(ctx context.Context, candidate db.EnrichCandidate, now time.Time) string {
+func (e *Enricher) processCandidate(ctx context.Context, candidate db.EnrichCandidate, now time.Time) (string, tokenUsage) {
+	var usage tokenUsage
 	messages, err := e.db.GetAllMessages(ctx, candidate.ID)
 	if err != nil {
 		e.writeFailure(ctx, candidate.ID, err)
-		return db.EnrichStatusError
+		return db.EnrichStatusError, usage
 	}
 	samples := sampleMessages(messages)
 	if len(samples) == 0 {
@@ -159,20 +186,27 @@ func (e *Enricher) processCandidate(ctx context.Context, candidate db.EnrichCand
 			Status: db.EnrichStatusNoContent,
 			Error:  "no sampleable message content",
 		})
-		return db.EnrichStatusNoContent
+		return db.EnrichStatusNoContent, usage
 	}
 	system, user := buildPrompt(candidate, samples)
-	content, err := e.client.ChatJSON(ctx, system, user)
+	content, chatUsage, err := e.chatJSON(ctx, system, user)
+	usage.prompt += chatUsage.PromptTokens
+	usage.completion += chatUsage.CompletionTokens
 	if err != nil {
 		e.writeFailure(ctx, candidate.ID, err)
-		return db.EnrichStatusError
+		return db.EnrichStatusError, usage
 	}
 	parsed, err := llm.ParseEnrichment(content)
 	if err != nil {
 		e.writeFailure(ctx, candidate.ID, err)
-		return db.EnrichStatusError
+		return db.EnrichStatusError, usage
 	}
-	embedding, hasEmbedding := e.embeddingForSamples(ctx, samples)
+	embedding, hasEmbedding, embedUsage := e.embeddingForSamples(ctx, samples)
+	if embedUsage.TotalTokens > 0 {
+		usage.embed += embedUsage.TotalTokens
+	} else {
+		usage.embed += embedUsage.PromptTokens
+	}
 	if err := e.db.WriteEnrichment(ctx, candidate.ID, db.EnrichmentWrite{
 		Title:        parsed.Title,
 		Summary:      parsed.Summary,
@@ -185,32 +219,56 @@ func (e *Enricher) processCandidate(ctx context.Context, candidate db.EnrichCand
 		HasEmbedding: hasEmbedding,
 	}); err != nil {
 		e.writeFailure(ctx, candidate.ID, err)
-		return db.EnrichStatusError
+		return db.EnrichStatusError, usage
 	}
-	return db.EnrichStatusOK
+	return db.EnrichStatusOK, usage
 }
 
-func (e *Enricher) embeddingForSamples(ctx context.Context, samples []string) ([]float32, bool) {
+// chatJSON calls the chat client, preferring the usage-reporting
+// variant when the client implements it.
+func (e *Enricher) chatJSON(ctx context.Context, system, user string) (string, llm.Usage, error) {
+	if uc, ok := e.client.(chatUsageClient); ok {
+		return uc.ChatJSONUsage(ctx, system, user)
+	}
+	content, err := e.client.ChatJSON(ctx, system, user)
+	return content, llm.Usage{}, err
+}
+
+func (e *Enricher) embeddingForSamples(ctx context.Context, samples []string) ([]float32, bool, llm.Usage) {
 	if strings.TrimSpace(e.cfg.Embed.Model) == "" {
-		return nil, false
+		return nil, false, llm.Usage{}
 	}
-	client, ok := e.client.(embedClient)
-	if !ok {
-		return nil, false
+	vector, usage, err := e.embed(ctx, strings.Join(samples, "\n\n"))
+	if errors.Is(err, errNoEmbedClient) {
+		return nil, false, llm.Usage{}
 	}
-	vector, err := client.Embed(ctx, strings.Join(samples, "\n\n"))
 	if err != nil {
 		log.Printf("LLM enrichment embedding skipped: %T", err)
-		return nil, false
+		return nil, false, usage
 	}
 	if len(vector) == 0 {
-		return nil, false
+		return nil, false, usage
 	}
 	if _, err := db.EncodeEmbedding(vector); err != nil {
 		log.Printf("LLM enrichment embedding skipped: invalid vector")
-		return nil, false
+		return nil, false, usage
 	}
-	return vector, true
+	return vector, true, usage
+}
+
+var errNoEmbedClient = errors.New("client does not support embeddings")
+
+// embed calls the embed client, preferring the usage-reporting variant
+// when the client implements it.
+func (e *Enricher) embed(ctx context.Context, input string) ([]float32, llm.Usage, error) {
+	if uc, ok := e.client.(embedUsageClient); ok {
+		return uc.EmbedUsage(ctx, input)
+	}
+	if ec, ok := e.client.(embedClient); ok {
+		vector, err := ec.Embed(ctx, input)
+		return vector, llm.Usage{}, err
+	}
+	return nil, llm.Usage{}, errNoEmbedClient
 }
 
 func (e *Enricher) writeFailure(ctx context.Context, sessionID string, err error) {

@@ -3,6 +3,7 @@ package server_test
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,6 +83,69 @@ func TestLLMEnrichmentJobRunsToCompletion(t *testing.T) {
 
 	status := decode[db.EnrichmentStatusReport](t, te.get(t, "/api/v1/llm/enrich/status"))
 	assert.Equal(t, n, status.Enriched)
+}
+
+func TestLLMEnrichmentJobReportsTokensAndCost(t *testing.T) {
+	var mu sync.Mutex
+	balanceCalls := 0
+	balances := []string{"100.0000", "99.5000"}
+	client := llmTestClient(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/chat/completions":
+			return jsonResponse(http.StatusOK,
+				`{"choices":[{"message":{"content":"{\"title\":\"T\",\"summary\":\"S\",\"keywords\":[\"k\"]}"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`), nil
+		case "/v1/embeddings":
+			return jsonResponse(http.StatusOK,
+				`{"data":[{"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":7,"total_tokens":7}}`), nil
+		case "/user/balance":
+			mu.Lock()
+			amount := balances[len(balances)-1]
+			if balanceCalls < len(balances) {
+				amount = balances[balanceCalls]
+			}
+			balanceCalls++
+			mu.Unlock()
+			return jsonResponse(http.StatusOK,
+				`{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"`+amount+`"}]}`), nil
+		}
+		return jsonResponse(http.StatusNotFound, `{}`), nil
+	})
+	te := setupWithServerOpts(t,
+		[]server.Option{server.WithLLMHTTPClient(client)},
+		withLLMConfig(func(c *config.LLMConfig) {
+			c.Enabled = true
+			c.BaseURL = "https://api.deepseek.com/v1"
+			c.APIKey = "secret"
+			c.Model = "deepseek-chat"
+			c.MinUserMessages = 2
+			c.Concurrency = 2
+			c.Embed = config.LLMEmbedConfig{
+				BaseURL: "https://api.deepseek.com/v1",
+				APIKey:  "secret",
+				Model:   "embed-model",
+			}
+		}))
+
+	const n = 2
+	for i := 0; i < n; i++ {
+		seedEnrichCandidate(t, te, fmt.Sprintf("s%d", i))
+	}
+
+	startW := postJSON(te, "/api/v1/llm/enrich/start", `{}`)
+	assertStatus(t, startW, http.StatusOK)
+
+	require.Eventually(t, func() bool {
+		job := decode[map[string]any](t, te.get(t, "/api/v1/llm/enrich/job"))
+		return job["running"] == false && job["done_at"] != ""
+	}, 5*time.Second, 20*time.Millisecond)
+
+	job := decode[map[string]any](t, te.get(t, "/api/v1/llm/enrich/job"))
+	assert.EqualValues(t, n*10, job["prompt_tokens"])
+	assert.EqualValues(t, n*5, job["completion_tokens"])
+	assert.EqualValues(t, n*7, job["embed_tokens"])
+	assert.Equal(t, "CNY", job["cost_currency"])
+	assert.Equal(t, "0.5000", job["cost_spent"])
+	assert.Equal(t, "99.5000", job["balance_end"])
 }
 
 func TestLLMEnrichmentJobStartRejectsDisabled(t *testing.T) {

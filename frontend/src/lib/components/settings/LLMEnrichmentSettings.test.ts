@@ -80,6 +80,9 @@ describe("LLMEnrichmentSettings", () => {
       no_content: 0,
       failed: 0,
       skipped: 0,
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      embed_tokens: 0,
     });
     mocks.startEnrichJob.mockReset().mockResolvedValue({
       running: true,
@@ -90,6 +93,9 @@ describe("LLMEnrichmentSettings", () => {
       no_content: 0,
       failed: 0,
       skipped: 0,
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      embed_tokens: 0,
     });
     mocks.stopEnrichJob.mockReset().mockResolvedValue({
       running: false,
@@ -100,6 +106,9 @@ describe("LLMEnrichmentSettings", () => {
       no_content: 0,
       failed: 0,
       skipped: 0,
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      embed_tokens: 0,
       done_at: "2026-06-24T00:00:00Z",
     });
     mocks.fetchLLMConfig.mockReset().mockResolvedValue({
@@ -264,6 +273,36 @@ describe("LLMEnrichmentSettings", () => {
       btn.textContent?.trim() === "Stop",
     );
     expect(stop).toBeTruthy();
+  });
+
+  it("renders token usage and chat cost for a completed job", async () => {
+    mocks.fetchEnrichJob.mockResolvedValueOnce({
+      running: false,
+      source: "manual",
+      processed: 3,
+      total: 3,
+      succeeded: 3,
+      no_content: 0,
+      failed: 0,
+      skipped: 0,
+      done_at: "2026-06-24T00:00:00Z",
+      prompt_tokens: 1200,
+      completion_tokens: 800,
+      embed_tokens: 3400,
+      cost_currency: "CNY",
+      cost_spent: "0.4200",
+      balance_end: "98.7600",
+    });
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+
+    const cost = document.querySelector('[data-testid="enrich-cost"]');
+    expect(cost).toBeTruthy();
+    const text = (cost?.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toContain("2,000 chat");
+    expect(text).toContain("3,400 embed");
+    expect(text).toContain("CNY 0.4200");
+    expect(text).toContain("balance now CNY 98.7600");
   });
 
   it("surfaces backend start errors", async () => {
