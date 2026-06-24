@@ -68,6 +68,16 @@ CREATE TABLE IF NOT EXISTS sessions (
     health_score              INT,
     health_grade              TEXT,
     termination_status        TEXT,
+    llm_title                 TEXT NOT NULL DEFAULT '',
+    llm_summary               TEXT NOT NULL DEFAULT '',
+    llm_keywords              TEXT NOT NULL DEFAULT '',
+    llm_embedding             BYTEA,
+    llm_embedding_dim         INT NOT NULL DEFAULT 0,
+    enriched_at               TEXT NOT NULL DEFAULT '',
+    enriched_msg_count        INT NOT NULL DEFAULT 0,
+    enrich_model              TEXT NOT NULL DEFAULT '',
+    enrich_status             TEXT NOT NULL DEFAULT '',
+    enrich_error              TEXT NOT NULL DEFAULT '',
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -575,6 +585,56 @@ func EnsureSchema(
 			"sessions", "secrets_rules_version",
 			`secrets_rules_version TEXT NOT NULL DEFAULT ''`,
 			"adding sessions.secrets_rules_version",
+		},
+		{
+			"sessions", "llm_title",
+			`llm_title TEXT NOT NULL DEFAULT ''`,
+			"adding sessions.llm_title",
+		},
+		{
+			"sessions", "llm_summary",
+			`llm_summary TEXT NOT NULL DEFAULT ''`,
+			"adding sessions.llm_summary",
+		},
+		{
+			"sessions", "llm_keywords",
+			`llm_keywords TEXT NOT NULL DEFAULT ''`,
+			"adding sessions.llm_keywords",
+		},
+		{
+			"sessions", "llm_embedding",
+			`llm_embedding BYTEA`,
+			"adding sessions.llm_embedding",
+		},
+		{
+			"sessions", "llm_embedding_dim",
+			`llm_embedding_dim INT NOT NULL DEFAULT 0`,
+			"adding sessions.llm_embedding_dim",
+		},
+		{
+			"sessions", "enriched_at",
+			`enriched_at TEXT NOT NULL DEFAULT ''`,
+			"adding sessions.enriched_at",
+		},
+		{
+			"sessions", "enriched_msg_count",
+			`enriched_msg_count INT NOT NULL DEFAULT 0`,
+			"adding sessions.enriched_msg_count",
+		},
+		{
+			"sessions", "enrich_model",
+			`enrich_model TEXT NOT NULL DEFAULT ''`,
+			"adding sessions.enrich_model",
+		},
+		{
+			"sessions", "enrich_status",
+			`enrich_status TEXT NOT NULL DEFAULT ''`,
+			"adding sessions.enrich_status",
+		},
+		{
+			"sessions", "enrich_error",
+			`enrich_error TEXT NOT NULL DEFAULT ''`,
+			"adding sessions.enrich_error",
 		},
 		{
 			"sessions", "session_name",
@@ -1369,7 +1429,10 @@ func CheckSchemaCompat(
 	rows, err := db.QueryContext(ctx,
 		`SELECT id, created_at, deleted_at, updated_at,
 			termination_status, secret_leak_count, secrets_rules_version,
-			session_name
+			session_name, llm_title, llm_summary, llm_keywords,
+			llm_embedding, llm_embedding_dim, enriched_at,
+			enriched_msg_count, enrich_model, enrich_status,
+			enrich_error
 		 FROM sessions LIMIT 0`)
 	if err != nil {
 		return fmt.Errorf(

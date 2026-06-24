@@ -60,11 +60,15 @@ func duckContractSessionsCursorsAndMetadata(
 	require.NoError(t, err)
 	require.NotNil(t, alpha)
 	require.Equal(t, "alpha", alpha.Project)
+	require.Equal(t, "LLM Alpha", alpha.LLMTitle)
+	require.Empty(t, alpha.LLMEmbedding)
 
 	full, err := store.GetSessionFull(ctx, fixture.alphaID)
 	require.NoError(t, err)
 	require.NotNil(t, full)
 	require.Equal(t, fixture.alphaID, full.ID)
+	require.Equal(t, "LLM Alpha", full.LLMTitle)
+	require.Empty(t, full.LLMEmbedding)
 
 	index, err := store.GetSidebarSessionIndex(ctx, db.SessionFilter{Project: "alpha"})
 	require.NoError(t, err)

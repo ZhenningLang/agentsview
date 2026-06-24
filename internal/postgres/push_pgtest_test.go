@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -188,6 +189,184 @@ func TestPushSessionTerminationStatus(t *testing.T) {
 		sess.ID,
 	).Scan(&got), "read back 2")
 	assert.Nil(t, got)
+}
+
+func TestPushPropagatesLLMFieldsOnInsertAndUpdate(t *testing.T) {
+	pgURL := testPGURL(t)
+
+	const schema = "agentsview_push_llm_fields_test"
+	pg, err := Open(pgURL, schema, true)
+	require.NoError(t, err, "Open")
+	defer pg.Close()
+
+	ctx := context.Background()
+	_, err = pg.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`)
+	require.NoError(t, err, "drop schema")
+	require.NoError(t, EnsureSchema(ctx, pg, schema), "EnsureSchema")
+
+	localDB, err := db.Open(filepath.Join(t.TempDir(), "local.db"))
+	require.NoError(t, err, "db.Open")
+	defer localDB.Close()
+
+	sync := &Sync{
+		pg:         pg,
+		local:      localDB,
+		machine:    "test-machine",
+		schema:     schema,
+		schemaDone: true,
+	}
+
+	started := "2026-01-01T00:00:00Z"
+	sess := db.Session{
+		ID:               "llm-push-001",
+		Project:          "p",
+		Machine:          "test-machine",
+		Agent:            "claude",
+		StartedAt:        &started,
+		CreatedAt:        started,
+		MessageCount:     1,
+		UserMessageCount: 1,
+	}
+	require.NoError(t, localDB.UpsertSession(sess), "UpsertSession")
+	setLocalPGLLMFields(t, localDB, sess.ID, pgLLMFixtureValues{
+		Title:            "First PG LLM title",
+		Summary:          "First summary",
+		Keywords:         "auth,token",
+		Embedding:        []byte{0x00, 0x00, 0x80, 0x3f},
+		EmbeddingDim:     1,
+		EnrichedAt:       "2026-01-01T01:00:00Z",
+		EnrichedMsgCount: 1,
+		Model:            "deepseek-chat",
+		Status:           "ok",
+		Error:            "",
+		LocalModifiedAt:  "2026-01-01T01:00:00Z",
+	})
+
+	first, err := sync.Push(ctx, false, nil)
+	require.NoError(t, err, "first Push")
+	assert.Equal(t, 1, first.SessionsPushed)
+	assertPGLLMFields(t, pg, sess.ID, pgLLMFixtureValues{
+		Title:            "First PG LLM title",
+		Summary:          "First summary",
+		Keywords:         "auth,token",
+		Embedding:        []byte{0x00, 0x00, 0x80, 0x3f},
+		EmbeddingDim:     1,
+		EnrichedAt:       "2026-01-01T01:00:00Z",
+		EnrichedMsgCount: 1,
+		Model:            "deepseek-chat",
+		Status:           "ok",
+		Error:            "",
+	})
+
+	time.Sleep(time.Millisecond)
+	setLocalPGLLMFields(t, localDB, sess.ID, pgLLMFixtureValues{
+		Title:            "Updated PG LLM title",
+		Summary:          "Updated summary",
+		Keywords:         "semantic,search",
+		Embedding:        []byte{0x00, 0x00, 0x00, 0x40},
+		EmbeddingDim:     1,
+		EnrichedAt:       "2026-01-01T02:00:00Z",
+		EnrichedMsgCount: 2,
+		Model:            "deepseek-chat",
+		Status:           "error",
+		Error:            "rate limited",
+		LocalModifiedAt:  time.Now().UTC().Format("2006-01-02T15:04:05.000Z"),
+	})
+	second, err := sync.Push(ctx, false, nil)
+	require.NoError(t, err, "second Push")
+	assert.Equal(t, 1, second.SessionsPushed)
+	assertPGLLMFields(t, pg, sess.ID, pgLLMFixtureValues{
+		Title:            "Updated PG LLM title",
+		Summary:          "Updated summary",
+		Keywords:         "semantic,search",
+		Embedding:        []byte{0x00, 0x00, 0x00, 0x40},
+		EmbeddingDim:     1,
+		EnrichedAt:       "2026-01-01T02:00:00Z",
+		EnrichedMsgCount: 2,
+		Model:            "deepseek-chat",
+		Status:           "error",
+		Error:            "rate limited",
+	})
+}
+
+type pgLLMFixtureValues struct {
+	Title            string
+	Summary          string
+	Keywords         string
+	Embedding        []byte
+	EmbeddingDim     int
+	EnrichedAt       string
+	EnrichedMsgCount int
+	Model            string
+	Status           string
+	Error            string
+	LocalModifiedAt  string
+}
+
+func setLocalPGLLMFields(t *testing.T, local *db.DB, sessionID string, values pgLLMFixtureValues) {
+	t.Helper()
+	raw, err := sql.Open("sqlite3", local.Path())
+	require.NoError(t, err, "open local sqlite")
+	defer raw.Close()
+	_, err = raw.Exec(`
+		UPDATE sessions SET
+			llm_title = ?,
+			llm_summary = ?,
+			llm_keywords = ?,
+			llm_embedding = ?,
+			llm_embedding_dim = ?,
+			enriched_at = ?,
+			enriched_msg_count = ?,
+			enrich_model = ?,
+			enrich_status = ?,
+			enrich_error = ?,
+			local_modified_at = ?
+		WHERE id = ?`,
+		values.Title,
+		values.Summary,
+		values.Keywords,
+		values.Embedding,
+		values.EmbeddingDim,
+		values.EnrichedAt,
+		values.EnrichedMsgCount,
+		values.Model,
+		values.Status,
+		values.Error,
+		values.LocalModifiedAt,
+		sessionID,
+	)
+	require.NoError(t, err, "updating local LLM fields")
+}
+
+func assertPGLLMFields(t *testing.T, pg *sql.DB, sessionID string, want pgLLMFixtureValues) {
+	t.Helper()
+	var got pgLLMFixtureValues
+	require.NoError(t, pg.QueryRow(`
+		SELECT llm_title, llm_summary, llm_keywords, llm_embedding,
+			llm_embedding_dim, enriched_at, enriched_msg_count,
+			enrich_model, enrich_status, enrich_error
+		FROM sessions WHERE id = $1`, sessionID).Scan(
+		&got.Title,
+		&got.Summary,
+		&got.Keywords,
+		&got.Embedding,
+		&got.EmbeddingDim,
+		&got.EnrichedAt,
+		&got.EnrichedMsgCount,
+		&got.Model,
+		&got.Status,
+		&got.Error,
+	), "read PG LLM fields")
+	assert.Equal(t, want.Title, got.Title)
+	assert.Equal(t, want.Summary, got.Summary)
+	assert.Equal(t, want.Keywords, got.Keywords)
+	assert.Equal(t, want.Embedding, got.Embedding)
+	assert.Equal(t, want.EmbeddingDim, got.EmbeddingDim)
+	assert.Equal(t, want.EnrichedAt, got.EnrichedAt)
+	assert.Equal(t, want.EnrichedMsgCount, got.EnrichedMsgCount)
+	assert.Equal(t, want.Model, got.Model)
+	assert.Equal(t, want.Status, got.Status)
+	assert.Equal(t, want.Error, got.Error)
 }
 
 // TestPushSyncsUsageEventsForZeroMessageSession verifies that a session

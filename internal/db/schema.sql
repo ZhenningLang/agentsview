@@ -52,7 +52,17 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     termination_status TEXT,
     secret_leak_count INTEGER NOT NULL DEFAULT 0,
-    secrets_rules_version TEXT NOT NULL DEFAULT ''
+    secrets_rules_version TEXT NOT NULL DEFAULT '',
+    llm_title TEXT NOT NULL DEFAULT '',
+    llm_summary TEXT NOT NULL DEFAULT '',
+    llm_keywords TEXT NOT NULL DEFAULT '',
+    llm_embedding BLOB,
+    llm_embedding_dim INTEGER NOT NULL DEFAULT 0,
+    enriched_at TEXT NOT NULL DEFAULT '',
+    enriched_msg_count INTEGER NOT NULL DEFAULT 0,
+    enrich_model TEXT NOT NULL DEFAULT '',
+    enrich_status TEXT NOT NULL DEFAULT '',
+    enrich_error TEXT NOT NULL DEFAULT ''
 );
 
 -- Messages table with ordinal for efficient range queries

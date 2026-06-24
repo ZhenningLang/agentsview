@@ -577,5 +577,9 @@ func duckSessionFingerprintFields(sess db.Session, machine string) []any {
 		sess.IsTruncated, nilTime(sess.DeletedAt),
 		timeValue(sess.CreatedAt), nilString(sess.TerminationStatus),
 		sess.SecretLeakCount, sess.SecretsRulesVersion,
+		sess.LLMTitle, sess.LLMSummary, sess.LLMKeywords,
+		sess.LLMEmbedding, sess.LLMEmbeddingDim, sess.EnrichedAt,
+		sess.EnrichedMsgCount, sess.EnrichModel, sess.EnrichStatus,
+		sess.EnrichError,
 	}
 }

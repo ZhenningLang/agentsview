@@ -792,6 +792,10 @@ func (s *Sync) pushSession(
 			health_score, health_grade,
 			has_tool_calls, has_context_data,
 			secret_leak_count, secrets_rules_version,
+			llm_title, llm_summary, llm_keywords,
+			llm_embedding, llm_embedding_dim, enriched_at,
+			enriched_msg_count, enrich_model, enrich_status,
+			enrich_error,
 			updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7,
@@ -807,6 +811,8 @@ func (s *Sync) pushSession(
 			$40,
 			$41, $42, $43, $44,
 			$45, $46,
+			$47, $48, $49, $50, $51,
+			$52, $53, $54, $55, $56,
 			NOW()
 		)
 		ON CONFLICT (id) DO UPDATE SET
@@ -855,6 +861,16 @@ func (s *Sync) pushSession(
 			has_context_data = EXCLUDED.has_context_data,
 			secret_leak_count = EXCLUDED.secret_leak_count,
 			secrets_rules_version = EXCLUDED.secrets_rules_version,
+			llm_title = EXCLUDED.llm_title,
+			llm_summary = EXCLUDED.llm_summary,
+			llm_keywords = EXCLUDED.llm_keywords,
+			llm_embedding = EXCLUDED.llm_embedding,
+			llm_embedding_dim = EXCLUDED.llm_embedding_dim,
+			enriched_at = EXCLUDED.enriched_at,
+			enriched_msg_count = EXCLUDED.enriched_msg_count,
+			enrich_model = EXCLUDED.enrich_model,
+			enrich_status = EXCLUDED.enrich_status,
+			enrich_error = EXCLUDED.enrich_error,
 			updated_at = NOW()
 		WHERE sessions.machine IS DISTINCT FROM EXCLUDED.machine
 			OR sessions.project IS DISTINCT FROM EXCLUDED.project
@@ -900,7 +916,17 @@ func (s *Sync) pushSession(
 			OR sessions.has_tool_calls IS DISTINCT FROM EXCLUDED.has_tool_calls
 			OR sessions.has_context_data IS DISTINCT FROM EXCLUDED.has_context_data
 			OR sessions.secret_leak_count IS DISTINCT FROM EXCLUDED.secret_leak_count
-			OR sessions.secrets_rules_version IS DISTINCT FROM EXCLUDED.secrets_rules_version`,
+			OR sessions.secrets_rules_version IS DISTINCT FROM EXCLUDED.secrets_rules_version
+			OR sessions.llm_title IS DISTINCT FROM EXCLUDED.llm_title
+			OR sessions.llm_summary IS DISTINCT FROM EXCLUDED.llm_summary
+			OR sessions.llm_keywords IS DISTINCT FROM EXCLUDED.llm_keywords
+			OR sessions.llm_embedding IS DISTINCT FROM EXCLUDED.llm_embedding
+			OR sessions.llm_embedding_dim IS DISTINCT FROM EXCLUDED.llm_embedding_dim
+			OR sessions.enriched_at IS DISTINCT FROM EXCLUDED.enriched_at
+			OR sessions.enriched_msg_count IS DISTINCT FROM EXCLUDED.enriched_msg_count
+			OR sessions.enrich_model IS DISTINCT FROM EXCLUDED.enrich_model
+			OR sessions.enrich_status IS DISTINCT FROM EXCLUDED.enrich_status
+			OR sessions.enrich_error IS DISTINCT FROM EXCLUDED.enrich_error`,
 		sess.ID, s.machine,
 		sanitizePG(sess.Project),
 		sess.Agent,
@@ -930,6 +956,10 @@ func (s *Sync) pushSession(
 		sess.HealthScore, nilStr(sess.HealthGrade),
 		sess.HasToolCalls, sess.HasContextData,
 		sess.SecretLeakCount, sess.SecretsRulesVersion,
+		sess.LLMTitle, sess.LLMSummary, sess.LLMKeywords,
+		sess.LLMEmbedding, sess.LLMEmbeddingDim, sess.EnrichedAt,
+		sess.EnrichedMsgCount, sess.EnrichModel, sess.EnrichStatus,
+		sess.EnrichError,
 	)
 	return err
 }

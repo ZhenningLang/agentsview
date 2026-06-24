@@ -59,7 +59,7 @@ func TestEnsureSchemaCreatesRequiredMirrorTables(t *testing.T) {
 		`SELECT value FROM sync_metadata WHERE key = ?`,
 		schemaVersionMetadataKey,
 	).Scan(&version))
-	assert.Equal(t, "3", version)
+	assert.Equal(t, "4", version)
 	var repaired string
 	require.NoError(t, db.QueryRowContext(ctx,
 		`SELECT value FROM sync_metadata WHERE key = ?`,
@@ -102,6 +102,7 @@ func TestEnsureSchemaIsIdempotent(t *testing.T) {
 	require.NoError(t, EnsureSchema(ctx, db), "second EnsureSchema")
 
 	assert.True(t, columnExists(t, db, "sessions", "secret_leak_count"))
+	assert.True(t, columnExists(t, db, "sessions", "llm_title"))
 	assert.True(t, columnExists(t, db, "messages", "thinking_text"))
 }
 
@@ -147,6 +148,14 @@ func TestEnsureSchemaAddsMissingColumnsNonDestructively(t *testing.T) {
 	assert.Equal(t, 0, messageCount)
 	assert.Equal(t, "", relationshipType)
 	assert.False(t, isAutomated)
+	var llmTitle string
+	var llmEmbedding []byte
+	require.NoError(t, db.QueryRowContext(ctx,
+		`SELECT llm_title, llm_embedding
+		 FROM sessions WHERE id = ?`, "kept",
+	).Scan(&llmTitle, &llmEmbedding))
+	assert.Equal(t, "", llmTitle)
+	assert.Nil(t, llmEmbedding)
 }
 
 func TestEnsureSchemaMigratesMessagesIDPrimaryKey(t *testing.T) {

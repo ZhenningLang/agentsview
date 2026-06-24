@@ -12,7 +12,7 @@ import (
 
 // SchemaVersion is the version of the DuckDB mirror schema created by
 // EnsureSchema. Increment it when a non-optional DuckDB column/table is added.
-const SchemaVersion = 3
+const SchemaVersion = 4
 
 const schemaVersionMetadataKey = "agentsview_schema_version"
 const defaultRepairMetadataKey = "agentsview_default_repair_v1"
@@ -131,7 +131,17 @@ var mirrorTables = []tableSpec{
 			created_at TIMESTAMP,
 			termination_status TEXT,
 			secret_leak_count INTEGER NOT NULL DEFAULT 0,
-			secrets_rules_version TEXT NOT NULL DEFAULT ''
+			secrets_rules_version TEXT NOT NULL DEFAULT '',
+			llm_title TEXT NOT NULL DEFAULT '',
+			llm_summary TEXT NOT NULL DEFAULT '',
+			llm_keywords TEXT NOT NULL DEFAULT '',
+			llm_embedding BLOB,
+			llm_embedding_dim INTEGER NOT NULL DEFAULT 0,
+			enriched_at TEXT NOT NULL DEFAULT '',
+			enriched_msg_count INTEGER NOT NULL DEFAULT 0,
+			enrich_model TEXT NOT NULL DEFAULT '',
+			enrich_status TEXT NOT NULL DEFAULT '',
+			enrich_error TEXT NOT NULL DEFAULT ''
 		)`,
 		columns: []columnSpec{
 			{"id", "id TEXT"},
@@ -187,6 +197,16 @@ var mirrorTables = []tableSpec{
 			{"termination_status", "termination_status TEXT"},
 			{"secret_leak_count", "secret_leak_count INTEGER NOT NULL DEFAULT 0"},
 			{"secrets_rules_version", "secrets_rules_version TEXT NOT NULL DEFAULT ''"},
+			{"llm_title", "llm_title TEXT NOT NULL DEFAULT ''"},
+			{"llm_summary", "llm_summary TEXT NOT NULL DEFAULT ''"},
+			{"llm_keywords", "llm_keywords TEXT NOT NULL DEFAULT ''"},
+			{"llm_embedding", "llm_embedding BLOB"},
+			{"llm_embedding_dim", "llm_embedding_dim INTEGER NOT NULL DEFAULT 0"},
+			{"enriched_at", "enriched_at TEXT NOT NULL DEFAULT ''"},
+			{"enriched_msg_count", "enriched_msg_count INTEGER NOT NULL DEFAULT 0"},
+			{"enrich_model", "enrich_model TEXT NOT NULL DEFAULT ''"},
+			{"enrich_status", "enrich_status TEXT NOT NULL DEFAULT ''"},
+			{"enrich_error", "enrich_error TEXT NOT NULL DEFAULT ''"},
 		},
 		indexes: []string{
 			"CREATE INDEX IF NOT EXISTS idx_sessions_ended ON sessions(ended_at, id)",

@@ -210,7 +210,11 @@ func TestEnsureSchemaBatchesColumnIntrospection(t *testing.T) {
 			"has_context_data", "data_version", "cwd",
 			"git_branch", "source_session_id",
 			"source_version", "parser_malformed_lines",
-			"is_truncated",
+			"is_truncated", "llm_title", "llm_summary",
+			"llm_keywords", "llm_embedding",
+			"llm_embedding_dim", "enriched_at",
+			"enriched_msg_count", "enrich_model",
+			"enrich_status", "enrich_error",
 		},
 		"messages": {
 			"model", "token_usage", "context_tokens",
@@ -312,7 +316,8 @@ func TestEnsureSchemaGroupsMissingColumnMigrationsByTable(t *testing.T) {
 
 	require.NoError(t, EnsureSchema(context.Background(), db, "agentsview"))
 
-	// Two tables have missing columns (sessions: termination_status;
+	// Two tables have missing columns (sessions: termination_status,
+	// LLM enrichment columns, and other late-added session columns;
 	// messages: source_parent_uuid, is_sidechain, is_compact_boundary,
 	// thinking_text; skills: prompt, prompt_tokens). Per-table batching
 	// means one ALTER each.
