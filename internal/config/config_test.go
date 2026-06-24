@@ -786,6 +786,11 @@ func TestLLMConfig_ResolveEmbedFallback(t *testing.T) {
 	assert.Empty(t, cfg.LLM.Embed.BaseURL, "ResolveLLM must not mutate raw config")
 	assert.Empty(t, cfg.LLM.Embed.APIKey, "ResolveLLM must not mutate raw config")
 
+	cfg.LLM.Embed = LLMEmbedConfig{BaseURL: "http://localhost:11434/v1", Model: "embed-model"}
+	resolved = cfg.ResolveLLM()
+	assert.Equal(t, "http://localhost:11434/v1", resolved.Embed.BaseURL)
+	assert.Empty(t, resolved.Embed.APIKey, "custom embed base_url may be an unauthenticated local provider")
+
 	cfg.LLM.Embed = LLMEmbedConfig{}
 	resolved = cfg.ResolveLLM()
 	assert.Empty(t, resolved.Embed.Model, "empty embed model remains the disabled signal")

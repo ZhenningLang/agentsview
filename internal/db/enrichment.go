@@ -46,14 +46,16 @@ type EnrichCandidate struct {
 }
 
 type EnrichmentWrite struct {
-	Title      string
-	Summary    string
-	Keywords   []string
-	Model      string
-	Status     string
-	Error      string
-	MessageCnt int
-	EnrichedAt time.Time
+	Title        string
+	Summary      string
+	Keywords     []string
+	Model        string
+	Status       string
+	Error        string
+	MessageCnt   int
+	EnrichedAt   time.Time
+	Embedding    []float32
+	HasEmbedding bool
 }
 
 func (db *DB) EnrichCandidates(
@@ -166,6 +168,21 @@ func (db *DB) WriteEnrichment(
 	defer db.mu.Unlock()
 	switch status {
 	case EnrichStatusOK:
+		embeddingSQL := ""
+		args := []any{
+			strings.TrimSpace(write.Title), strings.TrimSpace(write.Summary),
+			joinKeywords(write.Keywords), enrichedAt, write.MessageCnt,
+			strings.TrimSpace(write.Model),
+		}
+		if write.HasEmbedding {
+			encoded, err := EncodeEmbedding(write.Embedding)
+			if err != nil {
+				return fmt.Errorf("write enrichment embedding %s: %w", sessionID, err)
+			}
+			embeddingSQL = "llm_embedding = ?,\n\t\t\t    llm_embedding_dim = ?,"
+			args = append(args, encoded, len(write.Embedding))
+		}
+		args = append(args, sessionID)
 		res, err := db.getWriter().ExecContext(ctx, `
 			UPDATE sessions
 			SET llm_title = ?,
@@ -176,11 +193,10 @@ func (db *DB) WriteEnrichment(
 			    enrich_model = ?,
 			    enrich_status = 'ok',
 			    enrich_error = '',
+			    `+embeddingSQL+`
 			    local_modified_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
 			WHERE id = ?`,
-			strings.TrimSpace(write.Title), strings.TrimSpace(write.Summary),
-			joinKeywords(write.Keywords), enrichedAt, write.MessageCnt,
-			strings.TrimSpace(write.Model), sessionID)
+			args...)
 		if err != nil {
 			return fmt.Errorf("write enrichment success %s: %w", sessionID, err)
 		}

@@ -18,6 +18,7 @@ func TestDuckDBStoreContract(t *testing.T) {
 	}{
 		{"sessions_cursors_and_metadata", duckContractSessionsCursorsAndMetadata},
 		{"messages_search_and_secrets", duckContractMessagesSearchAndSecrets},
+		{"session_embeddings", duckContractSessionEmbeddings},
 		{"read_only_curation", duckContractReadOnlyCuration},
 		{"analytics_trends_and_usage", duckContractAnalyticsTrendsAndUsage},
 		{"local_only_methods_read_only", duckContractLocalOnlyMethodsReadOnly},
@@ -28,6 +29,39 @@ func TestDuckDBStoreContract(t *testing.T) {
 			tt.run(t, store, fixture)
 		})
 	}
+}
+
+func duckContractSessionEmbeddings(
+	t *testing.T, store *Store, fixture syncFixture,
+) {
+	t.Helper()
+	ctx := context.Background()
+	deletedVector, err := db.EncodeEmbedding([]float32{0})
+	require.NoError(t, err)
+	_, err = store.DB().ExecContext(ctx, `
+		INSERT INTO sessions (
+			id, project, machine, agent, first_message, started_at, ended_at,
+			message_count, user_message_count, llm_title, llm_embedding, llm_embedding_dim, deleted_at
+		) VALUES (?, 'alpha', 'local', 'claude', 'deleted first', '2026-01-12T00:00:00Z',
+			'2026-01-12T00:01:00Z', 1, 1, 'Deleted', ?, 1, '2026-01-12T00:02:00Z')`,
+		"duck-sync-deleted", deletedVector)
+	require.NoError(t, err)
+	embeddings, err := store.SessionEmbeddings(ctx, db.EmbeddingFilter{})
+	require.NoError(t, err)
+	require.Len(t, embeddings, 1)
+	got := embeddings[0]
+	assert.Equal(t, fixture.alphaID, got.SessionID)
+	assert.Equal(t, "alpha", got.Project)
+	assert.Equal(t, "claude", got.Agent)
+	assert.Equal(t, "alpha first", got.Name)
+	assert.Equal(t, []float32{1}, got.Vector)
+
+	alphaOnly, err := store.SessionEmbeddings(ctx, db.EmbeddingFilter{Project: "alpha"})
+	require.NoError(t, err)
+	assert.Len(t, alphaOnly, 1)
+	betaOnly, err := store.SessionEmbeddings(ctx, db.EmbeddingFilter{Project: "beta"})
+	require.NoError(t, err)
+	assert.Empty(t, betaOnly)
 }
 
 func duckContractSessionsCursorsAndMetadata(

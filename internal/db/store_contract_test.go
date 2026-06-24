@@ -56,6 +56,7 @@ func TestStoreContract(t *testing.T) {
 		{"sessions_cursor_filters_and_dates", contractSessionsCursorFiltersAndDates},
 		{"messages_ordering_and_tool_results", contractMessagesOrderingAndToolResults},
 		{"search_modes_and_secret_findings", contractSearchModesAndSecretFindings},
+		{"session_embeddings", contractSessionEmbeddings},
 		{"stars_and_pins", contractStarsAndPins},
 		{"analytics_trends_and_usage", contractAnalyticsTrendsAndUsage},
 		{"local_only_methods", contractLocalOnlyMethods},
@@ -72,6 +73,32 @@ func TestStoreContract(t *testing.T) {
 			}
 		})
 	}
+}
+
+func contractSessionEmbeddings(
+	t *testing.T,
+	store Store,
+	fixture storeContractFixture,
+	_ storeContractBackend,
+) {
+	t.Helper()
+	ctx := context.Background()
+	embeddings, err := store.SessionEmbeddings(ctx, EmbeddingFilter{})
+	require.NoError(t, err)
+	require.Len(t, embeddings, 1)
+	got := embeddings[0]
+	assert.Equal(t, fixture.alphaID, got.SessionID)
+	assert.Equal(t, "alpha", got.Project)
+	assert.Equal(t, "claude", got.Agent)
+	assert.Equal(t, "Alpha DuckDB parity", got.Name)
+	assert.Equal(t, []float32{1}, got.Vector)
+
+	alphaOnly, err := store.SessionEmbeddings(ctx, EmbeddingFilter{Project: "alpha"})
+	require.NoError(t, err)
+	assert.Len(t, alphaOnly, 1)
+	betaOnly, err := store.SessionEmbeddings(ctx, EmbeddingFilter{Project: "beta"})
+	require.NoError(t, err)
+	assert.Empty(t, betaOnly)
 }
 
 func contractSessionsCursorFiltersAndDates(

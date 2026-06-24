@@ -39,6 +39,7 @@ type Store interface {
 	// Search.
 	HasFTS() bool
 	Search(ctx context.Context, f SearchFilter) (SearchPage, error)
+	SessionEmbeddings(ctx context.Context, f EmbeddingFilter) ([]SessionEmbedding, error)
 	SearchSession(ctx context.Context, sessionID, query string) ([]int, error)
 	SearchContent(ctx context.Context, f ContentSearchFilter) (ContentSearchPage, error)
 	GetEnrichmentStatus(ctx context.Context) (EnrichmentStatusReport, error)

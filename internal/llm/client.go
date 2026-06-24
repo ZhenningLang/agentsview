@@ -191,9 +191,9 @@ func setHeaders(req *http.Request, apiKey string) {
 func resolveEmbedFallback(cfg config.LLMConfig) config.LLMConfig {
 	if cfg.Embed.BaseURL == "" {
 		cfg.Embed.BaseURL = cfg.BaseURL
-	}
-	if cfg.Embed.APIKey == "" {
-		cfg.Embed.APIKey = cfg.APIKey
+		if cfg.Embed.APIKey == "" {
+			cfg.Embed.APIKey = cfg.APIKey
+		}
 	}
 	return cfg
 }

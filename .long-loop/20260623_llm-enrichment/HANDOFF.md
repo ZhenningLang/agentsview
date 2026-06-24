@@ -219,3 +219,43 @@ Boundary decisions:
   `llm_title` so list-level title switching works before detail hydration.
 - operational-side-effect: read-only backends show an unavailable enrichment
   trigger instead of presenting a write action that can only fail after click.
+
+## Phase 07 vector-semantic
+
+做了什么:
+
+- Added `db.EncodeEmbedding` / `db.DecodeEmbedding` for little-endian float32 vector bytes with dimension and non-finite validation.
+- Extended `db.Store` with `SessionEmbeddings(ctx, EmbeddingFilter)` and implemented it for SQLite, PostgreSQL, and DuckDB.
+- Added store contract coverage for embedding reads, project filtering, deleted-session exclusion, and vector decode consistency.
+- Extended `db.EnrichmentWrite` and `internal/enrich` so configured embed providers can write `llm_embedding` / `llm_embedding_dim` after text enrichment succeeds.
+- Kept text enrichment successful when embedding is unconfigured or unsupported; embedding failures do not mark `enrich_status=error`.
+- Added `internal/search` semantic ranking with cosine similarity, top-K ordering, disabled config gating, and semantic result shape using `ordinal=-1`.
+- Added `/api/v1/search/semantic/status` for zero-outbound availability gating and `/api/v1/search/semantic?q=&project=&k=` for enabled semantic search.
+- Added frontend semantic search helper, command-palette status gating, and search store `keyword|semantic` mode; DeepSeek-only default keeps semantic mode hidden because `[llm.embed].model` is empty.
+- Review fixes: unauthenticated embed providers are supported, semantic routes are local-only before provider calls, non-finite provider vectors are skipped without failing text enrichment, and DuckDB/PostgreSQL now have behavior-level `SessionEmbeddings` parity tests.
+- Wrote and ran phase verifier at `.long-loop/20260623_llm-enrichment/phases/07_vector-semantic/verify.sh`.
+
+下一步:
+
+- Phase 07 review blockers are fixed and acknowledged in `.long-loop/20260623_llm-enrichment/phases/07_vector-semantic/ack.md`.
+- Manual QA8/QA9 remain operator-controlled: DeepSeek-only browser smoke for hidden semantic mode, and optional real embedding-provider E2E.
+
+验证证据:
+
+- Final phase verifier passed: `bash .long-loop/20260623_llm-enrichment/phases/07_vector-semantic/verify.sh`.
+- QA1 vector/search focused tests: `ok   go.kenn.io/agentsview/internal/search 0.509s`, `ok   go.kenn.io/agentsview/internal/db 0.895s`.
+- QA2 store parity: SQLite/DuckDB/backendcontract focused tests passed; `make test-postgres` ran Docker-backed PG and ended with `ok   go.kenn.io/agentsview/internal/postgres 25.062s` inside `verify.sh`.
+- QA3 enricher embedding: `ok` for `internal/enrich`, `internal/db`, and `internal/llm` focused tests.
+- QA4/QA5 semantic route/service: `ok` for `internal/server` and `internal/search` semantic tests.
+- QA6 frontend focused semantic tests: `Test Files 3 passed (3)`, `Tests 29 passed (29)`.
+- QA7 full regression: `make test`, `make vet`, and `npm --prefix frontend run check` passed inside `verify.sh`; frontend all-tests also passed when rerun alone with `Test Files 76 passed (76)`, `Tests 1283 passed (1283)`.
+- Note: a first full frontend test run executed concurrently with heavy Go/PG verification failed in unrelated existing events/usage/highlight tests; rerunning the same frontend command alone passed.
+
+Boundary decisions:
+
+- schema-contract: `SessionEmbeddings` exposes only session-level embedding metadata plus decoded vector through `db.Store`; no new DB columns were added in this phase.
+- context-surface: semantic search is local-only and rejects remote clients before provider calls; when local, it sends the user query to the embed provider only when `llm.enabled`, `llm.embed.model`, and `llm.embed.base_url` are configured.
+- context-surface: `llm.embed.api_key` is not a generic availability requirement so local unauthenticated providers such as Ollama-style endpoints can be used; provider-specific auth failures are delegated to the provider HTTP response.
+- context-surface: `/api/v1/search/semantic/status` performs zero provider calls and gates frontend visibility so DeepSeek-only default does not show semantic mode.
+- limit-default-fallback: semantic `k` is clamped with existing search limits; default is `db.DefaultSearchLimit`, max is `db.MaxSearchLimit`.
+- schema-contract: semantic results are independent search-mode results with `ordinal=-1` and are not fused into text search ranking.

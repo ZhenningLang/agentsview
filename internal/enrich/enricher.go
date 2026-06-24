@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +16,10 @@ import (
 
 type chatClient interface {
 	ChatJSON(ctx context.Context, system, user string) (string, error)
+}
+
+type embedClient interface {
+	Embed(ctx context.Context, input string) ([]float32, error)
 }
 
 type Options struct {
@@ -152,19 +157,45 @@ func (e *Enricher) processCandidate(ctx context.Context, candidate db.EnrichCand
 		e.writeFailure(ctx, candidate.ID, err)
 		return db.EnrichStatusError
 	}
+	embedding, hasEmbedding := e.embeddingForSamples(ctx, samples)
 	if err := e.db.WriteEnrichment(ctx, candidate.ID, db.EnrichmentWrite{
-		Title:      parsed.Title,
-		Summary:    parsed.Summary,
-		Keywords:   parsed.Keywords,
-		Model:      e.cfg.Model,
-		Status:     db.EnrichStatusOK,
-		MessageCnt: candidate.MessageCount,
-		EnrichedAt: now,
+		Title:        parsed.Title,
+		Summary:      parsed.Summary,
+		Keywords:     parsed.Keywords,
+		Model:        e.cfg.Model,
+		Status:       db.EnrichStatusOK,
+		MessageCnt:   candidate.MessageCount,
+		EnrichedAt:   now,
+		Embedding:    embedding,
+		HasEmbedding: hasEmbedding,
 	}); err != nil {
 		e.writeFailure(ctx, candidate.ID, err)
 		return db.EnrichStatusError
 	}
 	return db.EnrichStatusOK
+}
+
+func (e *Enricher) embeddingForSamples(ctx context.Context, samples []string) ([]float32, bool) {
+	if strings.TrimSpace(e.cfg.Embed.Model) == "" {
+		return nil, false
+	}
+	client, ok := e.client.(embedClient)
+	if !ok {
+		return nil, false
+	}
+	vector, err := client.Embed(ctx, strings.Join(samples, "\n\n"))
+	if err != nil {
+		log.Printf("LLM enrichment embedding skipped: %T", err)
+		return nil, false
+	}
+	if len(vector) == 0 {
+		return nil, false
+	}
+	if _, err := db.EncodeEmbedding(vector); err != nil {
+		log.Printf("LLM enrichment embedding skipped: invalid vector")
+		return nil, false
+	}
+	return vector, true
 }
 
 func (e *Enricher) writeFailure(ctx context.Context, sessionID string, err error) {

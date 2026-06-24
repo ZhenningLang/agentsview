@@ -1413,9 +1413,9 @@ func (c *Config) ResolveLLM() LLMConfig {
 	llm := c.LLM
 	if llm.Embed.BaseURL == "" {
 		llm.Embed.BaseURL = llm.BaseURL
-	}
-	if llm.Embed.APIKey == "" {
-		llm.Embed.APIKey = llm.APIKey
+		if llm.Embed.APIKey == "" {
+			llm.Embed.APIKey = llm.APIKey
+		}
 	}
 	return llm
 }

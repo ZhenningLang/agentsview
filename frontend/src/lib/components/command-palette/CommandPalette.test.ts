@@ -38,10 +38,14 @@ const { mockUi, mockSessions, mockSearchStore, mockCopyToClipboard } = vi.hoiste
       results: [] as Array<unknown>,
       isSearching: false,
       sort: "relevance" as "relevance" | "recency",
+      mode: "keyword" as "keyword" | "semantic",
+      semanticAvailable: false,
       search: vi.fn(),
       clear: vi.fn(),
       resetSort: vi.fn(),
       setSort: vi.fn(),
+      setMode: vi.fn(),
+      refreshSemanticAvailability: vi.fn(),
     },
     mockCopyToClipboard: vi.fn(),
   }),
@@ -113,6 +117,8 @@ describe("CommandPalette", () => {
     Element.prototype.scrollIntoView = vi.fn();
     mockSearchStore.results = [];
     mockSearchStore.isSearching = false;
+    mockSearchStore.mode = "keyword";
+    mockSearchStore.semanticAvailable = false;
     mockSessions.filters.project = "";
     mockSessions.sessions = [
       makeSession("s1", "cursor"),
@@ -244,6 +250,38 @@ describe("CommandPalette", () => {
     expect(mockSessions.selectSession).toHaveBeenCalledWith("claude:nameonly123");
     expect(mockUi.scrollToOrdinal).not.toHaveBeenCalled();
     expect(mockUi.clearScrollState).toHaveBeenCalled();
+
+    unmount(component);
+  });
+
+  it("shows semantic mode only when semantic search is available", async () => {
+    mockSearchStore.semanticAvailable = true;
+    mockSearchStore.results = [
+      {
+        session_id: "claude:semantic123",
+        project: "proj-a",
+        agent: "claude",
+        name: "semantic match",
+        ordinal: -1,
+        session_ended_at: "2026-01-01T00:00:00Z",
+        snippet: "Semantic match",
+        rank: 0.9,
+      },
+    ];
+
+    const component = mount(CommandPalette, { target: document.body });
+    await tick();
+    expect(mockSearchStore.refreshSemanticAvailability).toHaveBeenCalled();
+
+    const input = document.querySelector<HTMLInputElement>(".palette-input")!;
+    input.value = "auth";
+    input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+
+    const semanticButton = await tickUntil(".palette-sort .sort-btn:nth-child(2)");
+    expect(semanticButton.textContent?.trim()).toBe("Semantic");
+    semanticButton.click();
+    await tick();
+    expect(mockSearchStore.setMode).toHaveBeenCalledWith("semantic");
 
     unmount(component);
   });

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"go.kenn.io/agentsview/internal/db"
+	semantic "go.kenn.io/agentsview/internal/search"
 	"go.kenn.io/agentsview/internal/service"
 )
 
@@ -14,6 +15,8 @@ func (s *Server) registerSearchRoutes() {
 	group := newRouteGroup(s.api, "/api/v1/search", "Search")
 
 	get(s, group, "", "Search sessions", s.humaSearch)
+	get(s, group, "/semantic/status", "Get semantic search status", s.humaSemanticSearchStatus)
+	get(s, group, "/semantic", "Semantic search sessions", s.humaSemanticSearch)
 	get(s, group, "/content", "Search session content", s.humaSearchContent)
 }
 
@@ -50,6 +53,12 @@ type contentSearchInput struct {
 	Cursor           int               `query:"cursor" minimum:"0" doc:"Pagination cursor"`
 }
 
+type semanticSearchInput struct {
+	Query   string `query:"q" required:"true" doc:"Semantic search query"`
+	Project string `query:"project" doc:"Filter by project"`
+	Limit   int    `query:"k" minimum:"0" doc:"Maximum number of results"`
+}
+
 func (s *Server) humaSearch(
 	ctx context.Context,
 	in *searchInput,
@@ -84,6 +93,48 @@ func (s *Server) humaSearch(
 			Next:    page.NextCursor,
 		},
 	}, nil
+}
+
+func (s *Server) humaSemanticSearch(
+	ctx context.Context,
+	in *semanticSearchInput,
+) (*jsonOutput[semantic.SemanticResponse], error) {
+	if !isLocalhostContext(ctx) {
+		return nil, apiError(http.StatusForbidden, "not available from remote clients")
+	}
+	query := strings.TrimSpace(in.Query)
+	if query == "" {
+		return nil, apiError(http.StatusBadRequest, "query required")
+	}
+	limit := clampLimit(in.Limit, db.DefaultSearchLimit, db.MaxSearchLimit)
+	llmCfg := s.cfg.ResolveLLM()
+	res, err := semantic.Semantic(ctx, s.db, s.llmClient(llmCfg), llmCfg, semantic.Request{
+		Query:   query,
+		Project: in.Project,
+		Limit:   limit,
+	})
+	if err != nil {
+		if handled := handleHumaContextError(err); handled != nil {
+			return nil, handled
+		}
+		return nil, serverError(err)
+	}
+	if res.Results == nil {
+		res.Results = []db.SearchResult{}
+	}
+	return &jsonOutput[semantic.SemanticResponse]{Body: res}, nil
+}
+
+func (s *Server) humaSemanticSearchStatus(
+	ctx context.Context,
+	_ *emptyInput,
+) (*jsonOutput[semantic.StatusResponse], error) {
+	if !isLocalhostContext(ctx) {
+		return nil, apiError(http.StatusForbidden, "not available from remote clients")
+	}
+	return &jsonOutput[semantic.StatusResponse]{Body: semantic.StatusResponse{
+		Available: semantic.Available(s.cfg.ResolveLLM()),
+	}}, nil
 }
 
 func (s *Server) humaSearchContent(
