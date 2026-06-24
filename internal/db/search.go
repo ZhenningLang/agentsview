@@ -81,7 +81,8 @@ type SearchPage struct {
 }
 
 // Search performs FTS5 full-text search across messages, grouped by session,
-// plus a LIKE-based search on session display names and first messages.
+// plus a LIKE-based search on session display names, first messages, and LLM
+// enrichment metadata.
 //
 // Results come from two branches joined with UNION ALL:
 //
@@ -90,9 +91,9 @@ type SearchPage struct {
 //     The outer JOIN messages_fts includes a MATCH clause to prevent segment
 //     duplicates. Ordinal is the matched message's ordinal (≥ 0).
 //
-//  2. Name branch — display_name / first_message LIKE matches that are NOT
-//     already covered by the FTS branch. Ordinal is -1 (no specific message
-//     to navigate to).
+//  2. Name branch — display_name / first_message / llm_* LIKE matches that
+//     are NOT already covered by the FTS branch. Ordinal is -1 (no specific
+//     message to navigate to).
 func (db *DB) Search(
 	ctx context.Context, f SearchFilter,
 ) (SearchPage, error) {
@@ -154,22 +155,34 @@ func (db *DB) Search(
 	//   2  | WHERE messages_fts MATCH ? (outer JOIN)     | f.Query
 	//   3  | WHEN COALESCE(display_name,session_name) LIKE ? (CASE) | likePattern
 	//   4  | WHEN s.first_message LIKE ? (CASE)          | likePattern
-	//   5  | WHERE COALESCE(display_name,session_name) LIKE ? (name WHERE) | likePattern
-	//   6  | WHERE s.first_message LIKE ? (name WHERE)   | likePattern
-	//  [7] | AND s.project = ? (name branch, optional)   | f.Project
-	//   8  | WHERE messages_fts MATCH ? (NOT IN)         | ftsArgs[0]
-	//  [8+]| AND s2.project = ? (NOT IN, if set)         | ftsArgs[1]
-	//   9  | LIMIT ? OFFSET ?                            | f.Limit+1, f.Cursor
-	args := make([]any, 0, len(ftsArgs)*2+6+len(nameProjectArgs))
+	//   5  | WHEN s.llm_title LIKE ? (CASE)              | likePattern
+	//   6  | WHEN s.llm_keywords LIKE ? (CASE)           | likePattern
+	//   7  | WHEN s.llm_summary LIKE ? (CASE)            | likePattern
+	//   8  | WHERE COALESCE(display_name,session_name) LIKE ? (name WHERE) | likePattern
+	//   9  | WHERE s.first_message LIKE ? (name WHERE)   | likePattern
+	//  10  | WHERE s.llm_title LIKE ? (name WHERE)       | likePattern
+	//  11  | WHERE s.llm_keywords LIKE ? (name WHERE)    | likePattern
+	//  12  | WHERE s.llm_summary LIKE ? (name WHERE)     | likePattern
+	// [13] | AND s.project = ? (name branch, optional)   | f.Project
+	//  14  | WHERE messages_fts MATCH ? (NOT IN)         | ftsArgs[0]
+	// [14+]| AND s2.project = ? (NOT IN, if set)         | ftsArgs[1]
+	//  15  | LIMIT ? OFFSET ?                            | f.Limit+1, f.Cursor
+	args := make([]any, 0, len(ftsArgs)*2+12+len(nameProjectArgs))
 	args = append(args, ftsArgs...)          // (1) ROW_NUMBER WHERE
 	args = append(args, f.Query)             // (2) outer MATCH re-filter
 	args = append(args, likePattern)         // (3) CASE COALESCE(display_name,session_name) LIKE
 	args = append(args, likePattern)         // (4) CASE first_message LIKE
-	args = append(args, likePattern)         // (5) name WHERE COALESCE(display_name,session_name) LIKE
-	args = append(args, likePattern)         // (6) name WHERE first_message LIKE
-	args = append(args, nameProjectArgs...)  // (7) optional name branch project
-	args = append(args, ftsArgs...)          // (8) NOT IN WHERE
-	args = append(args, f.Limit+1, f.Cursor) // (9) LIMIT / OFFSET
+	args = append(args, likePattern)         // (5) CASE llm_title LIKE
+	args = append(args, likePattern)         // (6) CASE llm_keywords LIKE
+	args = append(args, likePattern)         // (7) CASE llm_summary LIKE
+	args = append(args, likePattern)         // (8) name WHERE COALESCE(display_name,session_name) LIKE
+	args = append(args, likePattern)         // (9) name WHERE first_message LIKE
+	args = append(args, likePattern)         // (10) name WHERE llm_title LIKE
+	args = append(args, likePattern)         // (11) name WHERE llm_keywords LIKE
+	args = append(args, likePattern)         // (12) name WHERE llm_summary LIKE
+	args = append(args, nameProjectArgs...)  // (13) optional name branch project
+	args = append(args, ftsArgs...)          // (14) NOT IN WHERE
+	args = append(args, f.Limit+1, f.Cursor) // (15) LIMIT / OFFSET
 
 	query := fmt.Sprintf(`
 		SELECT session_id, project, agent, name,
@@ -212,7 +225,7 @@ func (db *DB) Search(
 
 			UNION ALL
 
-			-- Name branch: display_name / session_name / first_message matches not in FTS branch
+			-- Name branch: display_name / session_name / first_message / llm_* matches not in FTS branch
 			SELECT s.id, s.project, s.agent,
 				COALESCE(s.display_name, s.session_name, s.first_message, '') AS name,
 				COALESCE(s.ended_at, s.started_at, '') AS session_ended_at,
@@ -222,13 +235,22 @@ func (db *DB) Search(
 						THEN COALESCE(s.display_name, s.session_name, '')
 					WHEN s.first_message LIKE ? ESCAPE '\'
 						THEN COALESCE(s.first_message, '')
+					WHEN s.llm_title LIKE ? ESCAPE '\'
+						THEN s.llm_title
+					WHEN s.llm_keywords LIKE ? ESCAPE '\'
+						THEN s.llm_keywords
+					WHEN s.llm_summary LIKE ? ESCAPE '\'
+						THEN s.llm_summary
 					ELSE COALESCE(s.display_name, s.session_name, s.first_message, '')
 				END AS snippet,
 				0.0 AS rank,
 				0 AS match_pos
 			FROM sessions s
 			WHERE (COALESCE(s.display_name, s.session_name) LIKE ? ESCAPE '\'
-				OR s.first_message LIKE ? ESCAPE '\')
+				OR s.first_message LIKE ? ESCAPE '\'
+				OR s.llm_title LIKE ? ESCAPE '\'
+				OR s.llm_keywords LIKE ? ESCAPE '\'
+				OR s.llm_summary LIKE ? ESCAPE '\')
 				AND s.deleted_at IS NULL
 				AND EXISTS (
 					SELECT 1 FROM messages mx

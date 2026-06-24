@@ -297,6 +297,133 @@ func TestSearch(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("llm keywords match when messages do not contain query", func(t *testing.T) {
+		insertSession(t, d, "s-llm-keywords", "proj-llm", func(s *Session) {
+			s.Agent = "claude"
+			s.FirstMessage = new("token login discussion")
+			s.StartedAt = new("2024-01-08T10:00:00Z")
+		})
+		insertMessages(t, d, userMsg("s-llm-keywords", 0, "login token flow only"))
+		setSearchLLMFields(t, d, "s-llm-keywords", "", "", "鉴权,登录,token")
+
+		page, err := d.Search(context.Background(), SearchFilter{
+			Query: "鉴权", Limit: 10,
+		})
+		require.NoError(t, err, "Search")
+		require.Len(t, page.Results, 1)
+		r := page.Results[0]
+		assert.Equal(t, "s-llm-keywords", r.SessionID)
+		assert.Equal(t, -1, r.Ordinal, "llm metadata-only match")
+		assert.Equal(t, "鉴权,登录,token", r.Snippet)
+	})
+
+	t.Run("llm title and summary choose matching snippet", func(t *testing.T) {
+		insertSession(t, d, "s-llm-title", "proj-llm", func(s *Session) {
+			s.Agent = "claude"
+			s.FirstMessage = new("plain first title")
+			s.StartedAt = new("2024-01-09T10:00:00Z")
+		})
+		insertMessages(t, d, userMsg("s-llm-title", 0, "plain body title"))
+		setSearchLLMFields(t, d, "s-llm-title", "Authz rollout title", "", "")
+
+		titlePage, err := d.Search(context.Background(), SearchFilter{
+			Query: "Authz", Limit: 10,
+		})
+		require.NoError(t, err, "Search title")
+		require.Len(t, titlePage.Results, 1)
+		assert.Equal(t, "s-llm-title", titlePage.Results[0].SessionID)
+		assert.Equal(t, "Authz rollout title", titlePage.Results[0].Snippet)
+
+		insertSession(t, d, "s-llm-summary", "proj-llm", func(s *Session) {
+			s.Agent = "claude"
+			s.FirstMessage = new("plain first summary")
+			s.StartedAt = new("2024-01-10T10:00:00Z")
+		})
+		insertMessages(t, d, userMsg("s-llm-summary", 0, "plain body summary"))
+		setSearchLLMFields(t, d, "s-llm-summary", "", "Summarizes refreshtoken debugging", "")
+
+		summaryPage, err := d.Search(context.Background(), SearchFilter{
+			Query: "refreshtoken", Limit: 10,
+		})
+		require.NoError(t, err, "Search summary")
+		require.Len(t, summaryPage.Results, 1)
+		assert.Equal(t, "s-llm-summary", summaryPage.Results[0].SessionID)
+		assert.Equal(t, "Summarizes refreshtoken debugging", summaryPage.Results[0].Snippet)
+	})
+
+	t.Run("display name snippet wins when llm metadata also matches", func(t *testing.T) {
+		insertSession(t, d, "s-llm-display-priority", "proj-llm", func(s *Session) {
+			s.Agent = "claude"
+			s.FirstMessage = new("plain first display priority")
+			s.StartedAt = new("2024-01-10T11:00:00Z")
+		})
+		require.NoError(t, d.RenameSession("s-llm-display-priority",
+			new("priorityterm display name")))
+		insertMessages(t, d, userMsg("s-llm-display-priority", 0, "plain body priority"))
+		setSearchLLMFields(t, d, "s-llm-display-priority",
+			"priorityterm llm title", "priorityterm llm summary", "priorityterm,llm")
+
+		page, err := d.Search(context.Background(), SearchFilter{
+			Query: "priorityterm", Limit: 10,
+		})
+		require.NoError(t, err, "Search")
+		require.Len(t, page.Results, 1)
+		r := page.Results[0]
+		assert.Equal(t, "s-llm-display-priority", r.SessionID)
+		assert.Equal(t, -1, r.Ordinal, "metadata-only match")
+		assert.Equal(t, "priorityterm display name", r.Snippet)
+	})
+
+	t.Run("llm metadata respects visible message guard", func(t *testing.T) {
+		insertSession(t, d, "s-llm-system-only", "proj-llm", func(s *Session) {
+			s.Agent = "claude"
+			s.FirstMessage = new("plain first")
+			s.StartedAt = new("2024-01-11T10:00:00Z")
+		})
+		sys := userMsg("s-llm-system-only", 0, "plain body")
+		sys.IsSystem = true
+		insertMessages(t, d, sys)
+		setSearchLLMFields(t, d, "s-llm-system-only", "", "", "guardonlyllm")
+
+		page, err := d.Search(context.Background(), SearchFilter{
+			Query: "guardonlyllm", Limit: 10,
+		})
+		require.NoError(t, err, "Search")
+		assert.Empty(t, page.Results, "system-only llm metadata match")
+	})
+
+	t.Run("message branch wins over llm metadata match", func(t *testing.T) {
+		insertSession(t, d, "s-llm-doublehit", "proj-llm", func(s *Session) {
+			s.Agent = "claude"
+			s.FirstMessage = new("plain first")
+			s.StartedAt = new("2024-01-12T10:00:00Z")
+		})
+		insertMessages(t, d, userMsg("s-llm-doublehit", 0, "llmdoublehit in message"))
+		setSearchLLMFields(t, d, "s-llm-doublehit", "", "", "llmdoublehit")
+
+		page, err := d.Search(context.Background(), SearchFilter{
+			Query: "llmdoublehit", Limit: 10,
+		})
+		require.NoError(t, err, "Search")
+		seen := 0
+		for _, r := range page.Results {
+			if r.SessionID == "s-llm-doublehit" {
+				seen++
+				assert.NotEqual(t, -1, r.Ordinal, "message branch should win")
+			}
+		}
+		assert.Equal(t, 1, seen, "s-llm-doublehit occurrences")
+	})
+}
+
+func setSearchLLMFields(t *testing.T, d *DB, sessionID, title, summary, keywords string) {
+	t.Helper()
+	_, err := d.getWriter().Exec(`
+		UPDATE sessions
+		SET llm_title = ?, llm_summary = ?, llm_keywords = ?
+		WHERE id = ?`, title, summary, keywords, sessionID)
+	require.NoError(t, err, "set llm search fields")
 }
 
 // TestSearchEmptyQueryGuard verifies that Search returns an empty page
