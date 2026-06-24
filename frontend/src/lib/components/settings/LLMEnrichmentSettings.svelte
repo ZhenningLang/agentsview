@@ -50,10 +50,12 @@
   };
 
   // Known OpenAI-compatible providers. Selecting one fills the base URL and
-  // suggests models; "Custom" leaves the fields for manual entry. OpenRouter
-  // embeddings are confirmed working (proxies text-embedding-3-large; it
-  // ignores the dimensions param and returns 3072-dim vectors, which is fine
-  // here since we store the full vector + dimension).
+  // suggests models; "Custom" leaves the fields for manual entry. Model names
+  // are base-URL specific: direct OpenAI uses bare ids ("text-embedding-3-large"),
+  // while OpenRouter requires the namespaced form ("openai/text-embedding-3-large").
+  // OpenRouter embeddings are confirmed working via a live Test connection call;
+  // it ignores the dimensions param and returns 3072-dim vectors, which is fine
+  // here since we store the full vector + dimension.
   const chatProviders: ProviderPreset[] = [
     { id: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com", models: ["deepseek-chat", "deepseek-reasoner"] },
     { id: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", models: ["gpt-4o-mini", "gpt-4o"] },
@@ -64,7 +66,7 @@
   ];
   const embedProviders: ProviderPreset[] = [
     { id: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", models: ["text-embedding-3-small", "text-embedding-3-large"] },
-    { id: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", models: ["text-embedding-3-large", "text-embedding-3-small"] },
+    { id: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", models: ["openai/text-embedding-3-large", "openai/text-embedding-3-small"] },
     { id: "ollama", label: "Ollama (local)", baseUrl: "http://localhost:11434/v1", models: ["bge-m3", "nomic-embed-text"] },
     { id: "custom", label: "Custom", baseUrl: "", models: [] },
   ];
