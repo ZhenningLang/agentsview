@@ -1,13 +1,15 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { ApiError, isRemoteConnection } from "../../api/runtime.js";
   import {
     fetchEnrichStatus,
     fetchLLMConfig,
     saveLLMConfig,
     testLLMConnection,
-    triggerEnrich,
-    type LLMEnrichResponse,
+    startEnrichJob,
+    stopEnrichJob,
+    fetchEnrichJob,
+    type LLMEnrichJobState,
     type LLMEnrichmentStatusReport,
     type LLMConfigPayload,
     type LLMConfigResponse,
@@ -17,17 +19,23 @@
   import SettingsSection from "./SettingsSection.svelte";
 
   let status: LLMEnrichmentStatusReport | null = $state(null);
-  let result: LLMEnrichResponse | null = $state(null);
+  let job = $state<LLMEnrichJobState | null>(null);
   let loading = $state(false);
   let configLoading = $state(false);
-  let running = $state(false);
   let saving = $state(false);
   let testing = $state(false);
   let error = $state("");
   let configMessage = $state("");
   let testResult: LLMTestResponse | null = $state(null);
+  let pollHandle: ReturnType<typeof setTimeout> | null = null;
   const remote = isRemoteConnection();
   const readOnly = $derived(sync.readOnly);
+  const jobRunning = $derived(job?.running ?? false);
+  function jobPercent(j: LLMEnrichJobState | null): number {
+    if (!j || j.total <= 0) return 0;
+    return Math.min(100, Math.round((j.processed / j.total) * 100));
+  }
+  const progressPct = $derived(jobPercent(job));
   const unavailableReason = $derived(
     remote
       ? "LLM enrichment is available only from the local server connection."
@@ -35,7 +43,8 @@
         ? "LLM enrichment cannot run against a read-only backend."
         : "",
   );
-  const canTrigger = $derived(!remote && !readOnly && !running);
+  const canTrigger = $derived(!remote && !readOnly && !jobRunning);
+  const canStop = $derived(!remote && !readOnly && jobRunning);
   const canSaveConfig = $derived(!remote && !readOnly && !saving);
   const canTestConfig = $derived(!remote && !testing);
 
@@ -222,25 +231,67 @@
     }
   }
 
-  async function runEnrichment() {
-    if (!canTrigger) return;
-    running = true;
-    error = "";
-    result = null;
+  function stopPoll() {
+    if (pollHandle) {
+      clearTimeout(pollHandle);
+      pollHandle = null;
+    }
+  }
+
+  function schedulePoll() {
+    stopPoll();
+    pollHandle = setTimeout(async () => {
+      pollHandle = null;
+      try {
+        job = await fetchEnrichJob();
+      } catch {
+        // Transient poll failure; keep the last known state and retry.
+      }
+      await loadStatus();
+      if (job?.running) schedulePoll();
+    }, 1500);
+  }
+
+  async function refreshJob() {
+    if (remote) return;
     try {
-      result = await triggerEnrich({ limit: 25 });
-      status = await fetchEnrichStatus();
+      job = await fetchEnrichJob();
+      if (job.running) schedulePoll();
+    } catch {
+      // No job state available yet; ignore.
+    }
+  }
+
+  async function startEnrichment() {
+    if (!canTrigger) return;
+    error = "";
+    try {
+      job = await startEnrichJob();
+      schedulePoll();
     } catch (err) {
-      error = err instanceof ApiError ? err.message : "Failed to trigger LLM enrichment";
-    } finally {
-      running = false;
+      error = err instanceof ApiError ? err.message : "Failed to start LLM enrichment";
+    }
+  }
+
+  async function stopEnrichment() {
+    if (!canStop) return;
+    error = "";
+    try {
+      job = await stopEnrichJob();
+      // The job unwinds asynchronously; keep polling until it reports done.
+      schedulePoll();
+    } catch (err) {
+      error = err instanceof ApiError ? err.message : "Failed to stop LLM enrichment";
     }
   }
 
   onMount(() => {
     loadStatus();
     loadConfig();
+    refreshJob();
   });
+
+  onDestroy(stopPoll);
 
   function countCards(report: LLMEnrichmentStatusReport | null): CountCard[] {
     return [
@@ -414,11 +465,32 @@
       </p>
     {/if}
 
-    {#if result}
-      <p class="result" data-testid="llm-enrichment-result">
-        Enriched {result.enriched} of {result.candidates} candidates in {result.elapsed_ms}ms.
-        Skipped {result.skipped}, no content {result.no_content}, errors {result.errors}.
-      </p>
+    {#if job && (jobRunning || job.done_at)}
+      <div class="enrich-progress" data-testid="enrich-progress">
+        <div
+          class="progress-track"
+          role="progressbar"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={progressPct}
+        >
+          <div class="progress-fill" style="width: {progressPct}%"></div>
+        </div>
+        {#if jobRunning}
+          <p class="muted" data-testid="enrich-progress-label">
+            Enriching {job.processed} / {job.total} ({progressPct}%){job.source === "periodic" ? " - periodic" : ""}...
+          </p>
+        {:else}
+          <p class="result" data-testid="enrich-progress-label">
+            Done: {job.succeeded} enriched, {job.failed} failed{job.skipped
+              ? `, ${job.skipped} skipped`
+              : ""}{job.no_content ? `, ${job.no_content} no content` : ""}.
+          </p>
+        {/if}
+        {#if job.error}
+          <p class="error" role="alert">{job.error}</p>
+        {/if}
+      </div>
     {/if}
 
     {#if error}
@@ -426,14 +498,16 @@
     {/if}
 
     <div class="actions">
-      <button
-        class="trigger-btn"
-        onclick={runEnrichment}
-        disabled={!canTrigger}
-      >
-        {running ? "Enriching..." : "Run enrichment"}
-      </button>
-      <button class="refresh-btn" onclick={loadStatus} disabled={loading || running}>
+      {#if jobRunning}
+        <button class="refresh-btn" onclick={stopEnrichment} disabled={!canStop}>
+          Stop
+        </button>
+      {:else}
+        <button class="trigger-btn" onclick={startEnrichment} disabled={!canTrigger}>
+          Run enrichment
+        </button>
+      {/if}
+      <button class="refresh-btn" onclick={loadStatus} disabled={loading}>
         Refresh status
       </button>
     </div>
@@ -574,6 +648,27 @@
 
   .error {
     color: var(--accent-red, #ef4444);
+  }
+
+  .enrich-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .progress-track {
+    width: 100%;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border-muted);
+    overflow: hidden;
+  }
+
+  .progress-fill {
+    height: 100%;
+    background: var(--accent-blue);
+    transition: width 0.3s ease;
   }
 
   .actions {

@@ -27,6 +27,12 @@ type Options struct {
 	Force   bool
 	Limit   int
 	Now     time.Time
+	// OnProgress, when set, is invoked once after the candidate set is
+	// queried with (0, total), and again after each candidate finishes
+	// with the cumulative done count and the total. It is called from
+	// worker goroutines while holding the stats mutex, so it must not
+	// block or re-enter the enricher.
+	OnProgress func(done, total int)
 }
 
 type Stats struct {
@@ -83,6 +89,9 @@ func (e *Enricher) Run(ctx context.Context, opts Options) (Stats, error) {
 		return stats, err
 	}
 	stats.Candidates = len(candidates)
+	if opts.OnProgress != nil {
+		opts.OnProgress(0, len(candidates))
+	}
 	if len(candidates) == 0 {
 		return stats, nil
 	}
@@ -96,6 +105,8 @@ func (e *Enricher) Run(ctx context.Context, opts Options) (Stats, error) {
 	jobs := make(chan db.EnrichCandidate)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	total := len(candidates)
+	done := 0
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
@@ -110,6 +121,10 @@ func (e *Enricher) Run(ctx context.Context, opts Options) (Stats, error) {
 					stats.NoContent++
 				case db.EnrichStatusError:
 					stats.Failed++
+				}
+				done++
+				if opts.OnProgress != nil {
+					opts.OnProgress(done, total)
 				}
 				mu.Unlock()
 			}
