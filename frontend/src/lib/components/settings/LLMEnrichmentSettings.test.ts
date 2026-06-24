@@ -283,4 +283,43 @@ describe("LLMEnrichmentSettings", () => {
 
     expect(mocks.triggerEnrich).not.toHaveBeenCalled();
   });
+
+  it("provider presets auto-fill base URL and model", async () => {
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+
+    const chatProvider = document.querySelector(
+      "select[name=chat_provider]",
+    ) as HTMLSelectElement;
+    const embedProvider = document.querySelector(
+      "select[name=embed_provider]",
+    ) as HTMLSelectElement;
+    expect(chatProvider).toBeTruthy();
+    expect(embedProvider).toBeTruthy();
+
+    chatProvider.value = "deepseek";
+    chatProvider.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    embedProvider.value = "openrouter";
+    embedProvider.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    const baseUrl = document.querySelector(
+      "input[name=base_url]",
+    ) as HTMLInputElement;
+    const model = document.querySelector(
+      "input[name=model]",
+    ) as HTMLInputElement;
+    const embedBaseUrl = document.querySelector(
+      "input[name=embed_base_url]",
+    ) as HTMLInputElement;
+    const embedModel = document.querySelector(
+      "input[name=embed_model]",
+    ) as HTMLInputElement;
+
+    expect(baseUrl.value).toBe("https://api.deepseek.com");
+    expect(model.value).toBe("deepseek-chat");
+    expect(embedBaseUrl.value).toBe("https://openrouter.ai/api/v1");
+    expect(embedModel.value).toBe("text-embedding-3-large");
+  });
 });

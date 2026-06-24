@@ -42,6 +42,62 @@
   const keySentinel = "********";
   const reasoningOptions = ["", "low", "medium", "high"];
 
+  type ProviderPreset = {
+    id: string;
+    label: string;
+    baseUrl: string;
+    models: string[];
+  };
+
+  // Known OpenAI-compatible providers. Selecting one fills the base URL and
+  // suggests models; "Custom" leaves the fields for manual entry. OpenRouter
+  // embeddings are confirmed working (proxies text-embedding-3-large; it
+  // ignores the dimensions param and returns 3072-dim vectors, which is fine
+  // here since we store the full vector + dimension).
+  const chatProviders: ProviderPreset[] = [
+    { id: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com", models: ["deepseek-chat", "deepseek-reasoner"] },
+    { id: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", models: ["gpt-4o-mini", "gpt-4o"] },
+    { id: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", models: ["deepseek/deepseek-chat", "openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet"] },
+    { id: "moonshot", label: "Moonshot (Kimi)", baseUrl: "https://api.moonshot.cn/v1", models: ["moonshot-v1-8k", "moonshot-v1-32k"] },
+    { id: "ollama", label: "Ollama (local)", baseUrl: "http://localhost:11434/v1", models: ["qwen2.5", "llama3.1"] },
+    { id: "custom", label: "Custom", baseUrl: "", models: [] },
+  ];
+  const embedProviders: ProviderPreset[] = [
+    { id: "openai", label: "OpenAI", baseUrl: "https://api.openai.com/v1", models: ["text-embedding-3-small", "text-embedding-3-large"] },
+    { id: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", models: ["text-embedding-3-large", "text-embedding-3-small"] },
+    { id: "ollama", label: "Ollama (local)", baseUrl: "http://localhost:11434/v1", models: ["bge-m3", "nomic-embed-text"] },
+    { id: "custom", label: "Custom", baseUrl: "", models: [] },
+  ];
+
+  function matchProvider(presets: ProviderPreset[], baseUrl: string): string {
+    const url = baseUrl.trim().replace(/\/+$/, "");
+    const hit = presets.find((p) => p.baseUrl && p.baseUrl.replace(/\/+$/, "") === url);
+    return hit ? hit.id : "custom";
+  }
+  // Picking a preset (an explicit user action; not fired on initial load)
+  // fills the base URL and the provider's default model. The user can then
+  // edit the model via the datalist. "Custom" leaves both fields untouched.
+  function applyChatProvider(id: string) {
+    const p = chatProviders.find((x) => x.id === id);
+    if (!p || p.id === "custom") return;
+    form.baseUrl = p.baseUrl;
+    form.model = p.models[0] ?? "";
+  }
+  function applyEmbedProvider(id: string) {
+    const p = embedProviders.find((x) => x.id === id);
+    if (!p || p.id === "custom") return;
+    form.embedBaseUrl = p.baseUrl;
+    form.embedModel = p.models[0] ?? "";
+  }
+  const chatModelSuggestions = $derived(
+    chatProviders.find((p) => p.id === matchProvider(chatProviders, form.baseUrl))
+      ?.models ?? [],
+  );
+  const embedModelSuggestions = $derived(
+    embedProviders.find((p) => p.id === matchProvider(embedProviders, form.embedBaseUrl))
+      ?.models ?? [],
+  );
+
   let form = $state({
     enabled: false,
     baseUrl: "",
@@ -219,6 +275,18 @@
       <div class="field-group">
         <h4>Chat provider</h4>
         <label>
+          <span>Provider</span>
+          <select
+            name="chat_provider"
+            value={matchProvider(chatProviders, form.baseUrl)}
+            onchange={(e) => applyChatProvider(e.currentTarget.value)}
+          >
+            {#each chatProviders as p}
+              <option value={p.id}>{p.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label>
           <span>Base URL</span>
           <input name="base_url" type="url" bind:value={form.baseUrl} placeholder="https://api.deepseek.com/v1" />
         </label>
@@ -228,7 +296,12 @@
         </label>
         <label>
           <span>Model</span>
-          <input name="model" type="text" bind:value={form.model} placeholder="deepseek-chat" />
+          <input name="model" type="text" bind:value={form.model} placeholder="deepseek-chat" list="chat-model-options" />
+          <datalist id="chat-model-options">
+            {#each chatModelSuggestions as m}
+              <option value={m}></option>
+            {/each}
+          </datalist>
         </label>
         <label>
           <span>Reasoning effort</span>
@@ -243,6 +316,18 @@
       <div class="field-group">
         <h4>Embedding provider</h4>
         <label>
+          <span>Provider</span>
+          <select
+            name="embed_provider"
+            value={matchProvider(embedProviders, form.embedBaseUrl)}
+            onchange={(e) => applyEmbedProvider(e.currentTarget.value)}
+          >
+            {#each embedProviders as p}
+              <option value={p.id}>{p.label}</option>
+            {/each}
+          </select>
+        </label>
+        <label>
           <span>Base URL</span>
           <input name="embed_base_url" type="url" bind:value={form.embedBaseUrl} placeholder="defaults to chat base URL" />
         </label>
@@ -252,7 +337,12 @@
         </label>
         <label>
           <span>Model</span>
-          <input name="embed_model" type="text" bind:value={form.embedModel} placeholder="leave empty to disable embeddings" />
+          <input name="embed_model" type="text" bind:value={form.embedModel} placeholder="leave empty to disable embeddings" list="embed-model-options" />
+          <datalist id="embed-model-options">
+            {#each embedModelSuggestions as m}
+              <option value={m}></option>
+            {/each}
+          </datalist>
         </label>
       </div>
 
