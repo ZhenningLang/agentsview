@@ -15,6 +15,16 @@ const (
 	EnrichStatusSkippedTooShort = "skipped_too_short"
 )
 
+type EnrichmentStatusReport struct {
+	Total           int            `json:"total"`
+	Enriched        int            `json:"enriched"`
+	Pending         int            `json:"pending"`
+	SkippedTooShort int            `json:"skipped_too_short"`
+	NoContent       int            `json:"no_content"`
+	Errors          int            `json:"errors"`
+	ByStatus        map[string]int `json:"by_status"`
+}
+
 type EnrichCandidateOptions struct {
 	Project             string
 	Force               bool
@@ -201,6 +211,51 @@ func (db *DB) WriteEnrichment(
 		return requireRowsAffected(res, "write enrichment skipped", sessionID)
 	default:
 		return fmt.Errorf("write enrichment %s: unsupported status %q", sessionID, status)
+	}
+}
+
+func (db *DB) GetEnrichmentStatus(ctx context.Context) (EnrichmentStatusReport, error) {
+	rows, err := db.getReader().QueryContext(ctx, `
+		SELECT COALESCE(enrich_status, ''), COUNT(*)
+		FROM sessions
+		WHERE deleted_at IS NULL
+		GROUP BY COALESCE(enrich_status, '')`)
+	if err != nil {
+		return EnrichmentStatusReport{}, fmt.Errorf("query enrichment status: %w", err)
+	}
+	defer rows.Close()
+	report := EnrichmentStatusReport{ByStatus: map[string]int{}}
+	for rows.Next() {
+		var status string
+		var count int
+		if err := rows.Scan(&status, &count); err != nil {
+			return EnrichmentStatusReport{}, fmt.Errorf("scan enrichment status: %w", err)
+		}
+		AccumulateEnrichmentStatus(&report, status, count)
+	}
+	if err := rows.Err(); err != nil {
+		return EnrichmentStatusReport{}, fmt.Errorf("iterate enrichment status: %w", err)
+	}
+	return report, nil
+}
+
+func AccumulateEnrichmentStatus(report *EnrichmentStatusReport, status string, count int) {
+	if report.ByStatus == nil {
+		report.ByStatus = map[string]int{}
+	}
+	report.Total += count
+	report.ByStatus[status] = count
+	switch status {
+	case "":
+		report.Pending += count
+	case EnrichStatusOK:
+		report.Enriched += count
+	case EnrichStatusSkippedTooShort:
+		report.SkippedTooShort += count
+	case EnrichStatusNoContent:
+		report.NoContent += count
+	case EnrichStatusError:
+		report.Errors += count
 	}
 }
 

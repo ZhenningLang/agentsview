@@ -41,6 +41,7 @@ type Store interface {
 	Search(ctx context.Context, f SearchFilter) (SearchPage, error)
 	SearchSession(ctx context.Context, sessionID, query string) ([]int, error)
 	SearchContent(ctx context.Context, f ContentSearchFilter) (ContentSearchPage, error)
+	GetEnrichmentStatus(ctx context.Context) (EnrichmentStatusReport, error)
 	ListSecretFindings(ctx context.Context, f SecretFindingFilter) (SecretFindingPage, error)
 	SecretFindingSource(ctx context.Context, f SecretFinding) (string, bool, error)
 

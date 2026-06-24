@@ -170,6 +170,48 @@ func TestWriteEnrichmentSuccessAndFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "session not found")
 }
 
+func TestGetEnrichmentStatus(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		id     string
+		status string
+	}{
+		{id: "pending"},
+		{id: "ok", status: EnrichStatusOK},
+		{id: "short", status: EnrichStatusSkippedTooShort},
+		{id: "empty", status: EnrichStatusNoContent},
+		{id: "error", status: EnrichStatusError},
+	} {
+		insertSession(t, d, tc.id, "proj")
+		switch tc.status {
+		case "":
+		case EnrichStatusOK:
+			require.NoError(t, d.WriteEnrichment(ctx, tc.id, EnrichmentWrite{
+				Title: "title", Summary: "summary", Keywords: []string{"key"}, Model: "model", MessageCnt: 1,
+			}))
+		default:
+			require.NoError(t, d.WriteEnrichment(ctx, tc.id, EnrichmentWrite{
+				Status: tc.status, Error: "err",
+			}))
+		}
+	}
+	insertSession(t, d, "deleted", "proj")
+	_, err := d.getWriter().Exec(`UPDATE sessions SET deleted_at = ? WHERE id = ?`, "2026-06-24T10:00:00Z", "deleted")
+	require.NoError(t, err)
+
+	status, err := d.GetEnrichmentStatus(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 5, status.Total)
+	assert.Equal(t, 1, status.Enriched)
+	assert.Equal(t, 1, status.Pending)
+	assert.Equal(t, 1, status.SkippedTooShort)
+	assert.Equal(t, 1, status.NoContent)
+	assert.Equal(t, 1, status.Errors)
+	assert.Equal(t, 1, status.ByStatus[""])
+	assert.Equal(t, 1, status.ByStatus[EnrichStatusOK])
+}
+
 func candidateIDSet(candidates []EnrichCandidate) map[string]bool {
 	out := map[string]bool{}
 	for _, c := range candidates {
