@@ -19,6 +19,15 @@ var (
 	ErrEmbeddingsUnsupported = errors.New("embeddings unsupported")
 )
 
+// Usage holds the token accounting an OpenAI-compatible provider
+// reports for a single request. Fields are zero when the provider
+// omits the usage object.
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+}
+
 type Client struct {
 	cfg        config.LLMConfig
 	httpClient *http.Client
@@ -42,17 +51,24 @@ func NewWithHTTPClient(cfg config.LLMConfig, httpClient *http.Client) *Client {
 }
 
 func (c *Client) ChatJSON(ctx context.Context, system, user string) (string, error) {
+	content, _, err := c.ChatJSONUsage(ctx, system, user)
+	return content, err
+}
+
+// ChatJSONUsage is ChatJSON that also returns the provider-reported
+// token usage for the successful request.
+func (c *Client) ChatJSONUsage(ctx context.Context, system, user string) (string, Usage, error) {
 	if strings.TrimSpace(c.cfg.BaseURL) == "" || strings.TrimSpace(c.cfg.Model) == "" {
-		return "", ErrNotConfigured
+		return "", Usage{}, ErrNotConfigured
 	}
 	endpoint := joinEndpoint(c.cfg.BaseURL, "chat/completions")
 	withReasoning := strings.TrimSpace(c.cfg.ReasoningEffort) != ""
 	triedWithoutReasoning := false
 
 	for attempt := 0; attempt < 3; attempt++ {
-		content, status, err := c.postChat(ctx, endpoint, system, user, withReasoning)
+		content, usage, status, err := c.postChat(ctx, endpoint, system, user, withReasoning)
 		if err == nil {
-			return content, nil
+			return content, usage, nil
 		}
 		if status >= 400 && status < 500 {
 			if withReasoning && !triedWithoutReasoning && isReasoningRejection(err.Error()) {
@@ -60,22 +76,29 @@ func (c *Client) ChatJSON(ctx context.Context, system, user string) (string, err
 				triedWithoutReasoning = true
 				continue
 			}
-			return "", err
+			return "", Usage{}, err
 		}
 		if attempt == 2 || !isRetryable(status, err) {
-			return "", err
+			return "", Usage{}, err
 		}
 		c.sleep(time.Duration(attempt+1) * 10 * time.Millisecond)
 	}
-	return "", fmt.Errorf("chat completions: exhausted retries")
+	return "", Usage{}, fmt.Errorf("chat completions: exhausted retries")
 }
 
 func (c *Client) Embed(ctx context.Context, input string) ([]float32, error) {
+	vector, _, err := c.EmbedUsage(ctx, input)
+	return vector, err
+}
+
+// EmbedUsage is Embed that also returns the provider-reported token
+// usage for the successful request.
+func (c *Client) EmbedUsage(ctx context.Context, input string) ([]float32, Usage, error) {
 	if strings.TrimSpace(c.cfg.Embed.Model) == "" {
-		return nil, ErrNotConfigured
+		return nil, Usage{}, ErrNotConfigured
 	}
 	if strings.TrimSpace(c.cfg.Embed.BaseURL) == "" {
-		return nil, ErrNotConfigured
+		return nil, Usage{}, ErrNotConfigured
 	}
 	body := map[string]any{
 		"model": c.cfg.Embed.Model,
@@ -83,49 +106,66 @@ func (c *Client) Embed(ctx context.Context, input string) ([]float32, error) {
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
-		return nil, fmt.Errorf("embedding request: %w", err)
+		return nil, Usage{}, fmt.Errorf("embedding request: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, joinEndpoint(c.cfg.Embed.BaseURL, "embeddings"), bytes.NewReader(data))
 	if err != nil {
-		return nil, fmt.Errorf("embedding request: %w", err)
+		return nil, Usage{}, fmt.Errorf("embedding request: %w", err)
 	}
 	setHeaders(req, c.cfg.Embed.APIKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("embeddings: %w", err)
+		return nil, Usage{}, fmt.Errorf("embeddings: %w", err)
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return nil, fmt.Errorf("embeddings: reading response: %w", err)
+		return nil, Usage{}, fmt.Errorf("embeddings: reading response: %w", err)
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, ErrEmbeddingsUnsupported
+		return nil, Usage{}, ErrEmbeddingsUnsupported
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("embeddings: provider returned status %d", resp.StatusCode)
+		return nil, Usage{}, fmt.Errorf("embeddings: provider returned status %d", resp.StatusCode)
 	}
 
 	var parsed struct {
 		Data []struct {
 			Embedding []float64 `json:"embedding"`
 		} `json:"data"`
+		Usage usageJSON `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return nil, fmt.Errorf("embeddings: decoding response: %w", err)
+		return nil, Usage{}, fmt.Errorf("embeddings: decoding response: %w", err)
 	}
 	if len(parsed.Data) == 0 || len(parsed.Data[0].Embedding) == 0 {
-		return nil, fmt.Errorf("embeddings: empty embedding")
+		return nil, Usage{}, fmt.Errorf("embeddings: empty embedding")
 	}
 	out := make([]float32, len(parsed.Data[0].Embedding))
 	for i, v := range parsed.Data[0].Embedding {
 		out[i] = float32(v)
 	}
-	return out, nil
+	return out, parsed.Usage.toUsage(), nil
 }
 
-func (c *Client) postChat(ctx context.Context, endpoint, system, user string, withReasoning bool) (string, int, error) {
+// usageJSON mirrors the OpenAI-compatible usage object so chat and
+// embedding responses can decode it uniformly.
+type usageJSON struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
+func (u usageJSON) toUsage() Usage {
+	return Usage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+	}
+}
+
+func (c *Client) postChat(ctx context.Context, endpoint, system, user string, withReasoning bool) (string, Usage, int, error) {
 	body := map[string]any{
 		"model": c.cfg.Model,
 		"messages": []map[string]string{
@@ -140,25 +180,25 @@ func (c *Client) postChat(ctx context.Context, endpoint, system, user string, wi
 	}
 	data, err := json.Marshal(body)
 	if err != nil {
-		return "", 0, fmt.Errorf("chat completions: encoding request: %w", err)
+		return "", Usage{}, 0, fmt.Errorf("chat completions: encoding request: %w", err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
-		return "", 0, fmt.Errorf("chat completions: building request: %w", err)
+		return "", Usage{}, 0, fmt.Errorf("chat completions: building request: %w", err)
 	}
 	setHeaders(req, c.cfg.APIKey)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return "", 0, fmt.Errorf("chat completions: %w", err)
+		return "", Usage{}, 0, fmt.Errorf("chat completions: %w", err)
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", resp.StatusCode, fmt.Errorf("chat completions: reading response: %w", err)
+		return "", Usage{}, resp.StatusCode, fmt.Errorf("chat completions: reading response: %w", err)
 	}
 	if resp.StatusCode >= 400 {
-		return "", resp.StatusCode, fmt.Errorf("chat completions: provider returned status %d: %s", resp.StatusCode, sanitizeProviderError(respBody, c.cfg.APIKey))
+		return "", Usage{}, resp.StatusCode, fmt.Errorf("chat completions: provider returned status %d: %s", resp.StatusCode, sanitizeProviderError(respBody, c.cfg.APIKey))
 	}
 
 	var parsed struct {
@@ -167,14 +207,15 @@ func (c *Client) postChat(ctx context.Context, endpoint, system, user string, wi
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage usageJSON `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", resp.StatusCode, fmt.Errorf("chat completions: decoding response: %w", err)
+		return "", Usage{}, resp.StatusCode, fmt.Errorf("chat completions: decoding response: %w", err)
 	}
 	if len(parsed.Choices) == 0 || parsed.Choices[0].Message.Content == "" {
-		return "", resp.StatusCode, fmt.Errorf("chat completions: missing message content")
+		return "", Usage{}, resp.StatusCode, fmt.Errorf("chat completions: missing message content")
 	}
-	return parsed.Choices[0].Message.Content, resp.StatusCode, nil
+	return parsed.Choices[0].Message.Content, parsed.Usage.toUsage(), resp.StatusCode, nil
 }
 
 func joinEndpoint(baseURL, path string) string {

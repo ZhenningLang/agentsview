@@ -26,6 +26,8 @@ type mockChatClient struct {
 	errs       []error
 	embeddings [][]float32
 	embedErrs  []error
+	chatUsage  llm.Usage
+	embedUsage llm.Usage
 }
 
 func (m *mockChatClient) ChatJSON(context.Context, string, string) (string, error) {
@@ -40,6 +42,18 @@ func (m *mockChatClient) ChatJSON(context.Context, string, string) (string, erro
 		return m.responses[idx], nil
 	}
 	return `{"title":"title","summary":"summary","keywords":["auth"]}`, nil
+}
+
+// chatUsage and embedUsage are returned by the usage-reporting
+// variants; zero by default so existing tests see no token counts.
+func (m *mockChatClient) ChatJSONUsage(ctx context.Context, system, user string) (string, llm.Usage, error) {
+	content, err := m.ChatJSON(ctx, system, user)
+	return content, m.chatUsage, err
+}
+
+func (m *mockChatClient) EmbedUsage(ctx context.Context, input string) ([]float32, llm.Usage, error) {
+	vector, err := m.Embed(ctx, input)
+	return vector, m.embedUsage, err
 }
 
 func (m *mockChatClient) Calls() int {
@@ -104,6 +118,41 @@ func TestEnricherRunSuccessWritesEnrichment(t *testing.T) {
 	assert.Equal(t, "deepseek-chat", s.EnrichModel)
 	assert.Equal(t, db.EnrichStatusOK, s.EnrichStatus)
 	assert.Equal(t, 3, s.EnrichedMsgCount)
+}
+
+func TestEnricherRunAccumulatesTokenUsage(t *testing.T) {
+	d := dbTestDB(t)
+	ctx := context.Background()
+	ended := "2026-06-24T09:00:00Z"
+	const n = 2
+	for i := 0; i < n; i++ {
+		id := fmt.Sprintf("t%d", i)
+		insertEnrichSession(t, d, id, func(s *db.Session) {
+			s.MessageCount = 3
+			s.UserMessageCount = 2
+			s.EndedAt = &ended
+		})
+		insertEnrichMessages(t, d,
+			db.Message{SessionID: id, Ordinal: 0, Role: "user", Content: "Need auth help", ContentLength: 14},
+			db.Message{SessionID: id, Ordinal: 1, Role: "assistant", Content: "Use token login", ContentLength: 15},
+		)
+	}
+	client := &mockChatClient{
+		chatUsage:  llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		embedUsage: llm.Usage{PromptTokens: 7, TotalTokens: 7},
+	}
+	stats, err := New(d, client, config.LLMConfig{
+		Enabled:         true,
+		Model:           "m",
+		MinUserMessages: 2,
+		Concurrency:     2,
+		Embed:           config.LLMEmbedConfig{Model: "embed-model"},
+	}).Run(ctx, Options{Now: time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC)})
+	require.NoError(t, err)
+	assert.Equal(t, n, stats.Succeeded)
+	assert.Equal(t, n*10, stats.PromptTokens)
+	assert.Equal(t, n*5, stats.CompletionTokens)
+	assert.Equal(t, n*7, stats.EmbedTokens)
 }
 
 func TestEnricherRunReportsProgress(t *testing.T) {

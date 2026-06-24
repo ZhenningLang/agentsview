@@ -35,6 +35,13 @@ export interface LLMEnrichJobState {
   started_at?: string;
   done_at?: string;
   error?: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  embed_tokens: number;
+  cost_currency?: string;
+  cost_spent?: string;
+  balance_start?: string;
+  balance_end?: string;
 }
 
 export interface LLMEnrichmentStatusReport {
