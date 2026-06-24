@@ -360,6 +360,51 @@ func TestSaveGithubToken_PreservesExistingKeys(t *testing.T) {
 	assert.Equal(t, "new-token", result["github_token"])
 }
 
+func TestSaveLLMConfig_PersistsLLMSectionAndPreservesExistingKeys(t *testing.T) {
+	tmp := setupTestEnv(t)
+	cfg := Config{DataDir: tmp}
+	writeConfig(t, tmp, map[string]any{
+		"custom_key": "value",
+		"terminal":   map[string]any{"mode": "clipboard"},
+	})
+
+	llm := LLMConfig{
+		Enabled:             true,
+		BaseURL:             "https://chat.example/v1",
+		APIKey:              "chat-secret",
+		Model:               "chat-model",
+		ReasoningEffort:     "low",
+		MinUserMessages:     3,
+		ReenrichMsgDelta:    4,
+		ReenrichIdleMinutes: 5,
+		Concurrency:         2,
+		Periodic:            true,
+		BalanceURL:          "https://chat.example/balance",
+		Embed: LLMEmbedConfig{
+			BaseURL: "https://embed.example/v1",
+			APIKey:  "embed-secret",
+			Model:   "embed-model",
+		},
+	}
+	require.NoError(t, cfg.SaveLLMConfig(llm))
+
+	info, err := os.Stat(filepath.Join(tmp, configFileName))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+
+	var result map[string]any
+	_, err = toml.DecodeFile(filepath.Join(tmp, configFileName), &result)
+	require.NoError(t, err)
+	assert.Equal(t, "value", result["custom_key"])
+	assert.Equal(t, map[string]any{"mode": "clipboard"}, result["terminal"])
+
+	var loaded Config
+	_, err = toml.DecodeFile(filepath.Join(tmp, configFileName), &loaded)
+	require.NoError(t, err)
+	assert.Equal(t, llm, loaded.LLM)
+	assert.Equal(t, llm, cfg.LLM)
+}
+
 func TestLoadFile_ReadsDirArrays(t *testing.T) {
 	dir := setupTestEnv(t)
 	writeConfig(t, dir, map[string]any{

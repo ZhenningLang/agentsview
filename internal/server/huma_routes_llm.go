@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,7 @@ func (s *Server) registerLLMRoutes() {
 	post(s, group, "/enrich", "Trigger LLM enrichment", s.humaTriggerLLMEnrichment)
 	get(s, group, "/enrich/status", "Get LLM enrichment status", s.humaLLMEnrichmentStatus)
 	get(s, group, "/balance", "Get LLM provider balance", s.humaLLMBalance)
+	post(s, group, "/test", "Test LLM connection", s.humaTestLLMConnection)
 }
 
 type llmEnrichInput struct {
@@ -51,6 +53,21 @@ type llmBalanceResponse struct {
 	Currency  string `json:"currency,omitempty"`
 	Amount    string `json:"amount,omitempty"`
 	Available bool   `json:"available"`
+}
+
+type llmTestInput struct {
+	Body llmConfigPatch
+}
+
+type llmTestChannelResult struct {
+	OK       bool   `json:"ok"`
+	Disabled bool   `json:"disabled,omitempty"`
+	Message  string `json:"message"`
+}
+
+type llmTestResponse struct {
+	Chat  llmTestChannelResult `json:"chat"`
+	Embed llmTestChannelResult `json:"embed"`
 }
 
 func (s *Server) humaTriggerLLMEnrichment(
@@ -129,11 +146,123 @@ func (s *Server) humaLLMBalance(
 	return &jsonOutput[llmBalanceResponse]{Body: resp}, nil
 }
 
+func (s *Server) humaTestLLMConnection(
+	ctx context.Context,
+	in *llmTestInput,
+) (*jsonOutput[llmTestResponse], error) {
+	if err := s.requireLocalWritableLLMRequest(ctx); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	llmCfg := s.cfg.ResolveLLM()
+	s.mu.RUnlock()
+	llmCfg = applyLLMConfigPatch(llmCfg, in.Body)
+
+	client := s.llmClient(llmCfg)
+	chat := llmTestChannelResult{OK: true, Message: "ok"}
+	if err := s.pingLLMChat(ctx, llmCfg); err != nil {
+		chat = llmTestChannelResult{OK: false, Message: sanitizeLLMTestError(err, llmCfg)}
+	}
+
+	embed := llmTestChannelResult{OK: false, Disabled: true, Message: "disabled"}
+	if strings.TrimSpace(llmCfg.Embed.Model) != "" {
+		embed = llmTestChannelResult{OK: true, Message: "ok"}
+		if _, err := client.Embed(ctx, "agentsview connection test"); err != nil {
+			embed = llmTestChannelResult{OK: false, Message: sanitizeLLMTestError(err, llmCfg)}
+		}
+	}
+
+	return &jsonOutput[llmTestResponse]{Body: llmTestResponse{Chat: chat, Embed: embed}}, nil
+}
+
 func requireLocalLLMRequest(ctx context.Context) error {
 	if !isLocalhostContext(ctx) {
 		return apiError(http.StatusForbidden, "not available from remote clients")
 	}
 	return nil
+}
+
+func (s *Server) requireLocalWritableLLMRequest(ctx context.Context) error {
+	if err := requireLocalLLMRequest(ctx); err != nil {
+		return err
+	}
+	if s.db.ReadOnly() || s.llmWriter == nil {
+		return apiError(http.StatusForbidden, "not available in read-only mode")
+	}
+	return nil
+}
+
+func (s *Server) pingLLMChat(ctx context.Context, cfg config.LLMConfig) error {
+	if strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.Model) == "" {
+		return errors.New("llm not configured")
+	}
+	body := map[string]any{
+		"model": cfg.Model,
+		"messages": []map[string]string{
+			{"role": "system", "content": `Respond with a JSON object {"ok":true}.`},
+			{"role": "user", "content": "Reply with JSON."},
+		},
+		"response_format": map[string]string{"type": "json_object"},
+		"temperature":     0.2,
+		"max_tokens":      4,
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("chat ping: encoding request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		strings.TrimRight(cfg.BaseURL, "/")+"/chat/completions",
+		bytes.NewReader(data))
+	if err != nil {
+		return fmt.Errorf("chat ping: building request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if strings.TrimSpace(cfg.APIKey) != "" {
+		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	}
+	client := s.llmHTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("chat ping: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("chat ping: reading response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("chat ping: provider returned status %d: %s", resp.StatusCode, sanitizeLLMProviderBody(respBody, cfg.APIKey))
+	}
+	return nil
+}
+
+func sanitizeLLMProviderBody(body []byte, secrets ...string) string {
+	message := strings.TrimSpace(string(body))
+	for _, secret := range secrets {
+		if secret != "" {
+			message = strings.ReplaceAll(message, secret, "[redacted]")
+		}
+	}
+	if len(message) > 300 {
+		message = message[:300]
+	}
+	return message
+}
+
+func sanitizeLLMTestError(err error, cfg config.LLMConfig) string {
+	message := err.Error()
+	for _, secret := range []string{cfg.APIKey, cfg.Embed.APIKey} {
+		if secret != "" {
+			message = strings.ReplaceAll(message, secret, "[redacted]")
+		}
+	}
+	if len(message) > 300 {
+		message = message[:300]
+	}
+	return message
 }
 
 func (s *Server) fetchLLMBalance(ctx context.Context, cfg config.LLMConfig) llmBalanceResponse {
