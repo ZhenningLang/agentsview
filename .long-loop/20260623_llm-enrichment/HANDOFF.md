@@ -170,3 +170,52 @@ Boundary decisions:
   remote clients before DB/provider work.
 - context-surface: balance provider failures return HTTP 200 `{supported:false}`
   so frontend can hide the balance chip without exposing provider errors or API keys.
+
+## Phase 06 frontend
+
+做了什么:
+
+- Added typed frontend LLM API helpers for balance, enrichment trigger, and enrichment status under `frontend/src/lib/api/llm.ts`.
+- Added `llm_title` to frontend session/index types and preserved it through sidebar index hydration and detail merges.
+- Added a pure session-title helper and wired the persisted `ui.useLlmTitle` preference into sidebar row titles and the detail breadcrumb without changing rename seed semantics.
+- Added an Appearance settings toggle for LLM titles, a conditional header balance chip, and a Settings LLM enrichment section with status counts, trigger action, remote-mode gating, and visible backend errors.
+- Added frontend tests for LLM API contract, title fallback/toggle behavior, `ui.useLlmTitle` persistence, balance chip gating, and enrichment settings behavior.
+- Added a Vitest setup storage polyfill and runtime storage guards so tests and runtime local/remote detection tolerate missing or partial `localStorage` implementations.
+- Updated the icon barrel whitelist to include the already-exported `WrenchIcon` used by the header.
+- Wrote phase verifier at `.long-loop/20260623_llm-enrichment/phases/06_frontend/verify.sh`.
+- Review fixes: sidebar index now carries `llm_title` across SQLite,
+  PostgreSQL, and DuckDB; LLM enrichment controls now disable the trigger for
+  read-only backends through a shared `canTrigger` derived state; unused
+  `renameSeed()` was removed and rename safety is covered through the real
+  `SessionItem` rename path.
+
+下一步:
+
+- Phase 06 review blockers were fixed and acknowledged in
+  `.long-loop/20260623_llm-enrichment/phases/06_frontend/ack.md`.
+- Manual QA7-QA10 remain for a real browser/local server pass with sample enriched sessions, optional DeepSeek balance config, and desktop/mobile screenshots.
+
+验证证据:
+
+- `.long-loop/20260623_llm-enrichment/phases/06_frontend/verify.sh` passed after review fixes.
+- Focused frontend evidence:
+  - `src/lib/api/llm.test.ts`: `Test Files 1 passed`, `Tests 4 passed`.
+  - `src/lib/utils/session-title.test.ts src/lib/stores/ui.test.ts src/lib/components/sidebar/SessionItem.test.ts`: `Test Files 3 passed`, `Tests 60 passed`.
+  - `src/lib/components/layout/AppHeader.test.ts`: `Test Files 1 passed`, `Tests 6 passed`.
+  - `src/lib/components/settings/LLMEnrichmentSettings.test.ts`: `Test Files 1 passed`, `Tests 5 passed`.
+- Backend sidebar index parity evidence:
+  - `CGO_ENABLED=1 go test -tags "fts5,kit_posthog_disabled" ./internal/db ./internal/duckdb ./internal/postgres`: `ok` for all three packages.
+  - `make test-postgres`: `ok   go.kenn.io/agentsview/internal/postgres 21.759s`.
+- `npm run check` passed with `svelte-check found 0 errors and 0 warnings`.
+- Full frontend regression: `npm run test` passed with `Test Files 76 passed (76)` and `Tests 1278 passed (1278)`.
+
+Boundary decisions:
+
+- context-surface: frontend never accepts or stores LLM API keys; it only calls server-side `/api/v1/llm/*` routes.
+- context-surface: balance chip and enrichment controls are gated in remote mode because Phase 05 routes reject non-local callers.
+- limit-default-fallback: Settings trigger sends `{ limit: 25 }`, matching the Phase 05 bounded default and avoiding an unbounded synchronous UI action.
+- schema-contract: `llm_title` is used only as optional display metadata; rename seeds remain based on `display_name` or original first-message fallback.
+- schema-contract: sidebar index rows now include optional display metadata
+  `llm_title` so list-level title switching works before detail hydration.
+- operational-side-effect: read-only backends show an unavailable enrichment
+  trigger instead of presenting a write action that can only fail after click.

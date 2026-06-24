@@ -26,6 +26,7 @@
   import { agentColor, agentLabel } from "../../utils/agents.js";
   import { formatCost, formatTokenUsage } from "../../utils/format.js";
   import { normalizeMessagePreview } from "../../utils/messages.js";
+  import { sessionTitle } from "../../utils/session-title.js";
   import { getGradeStyle, getGradeLabel } from "../../utils/grade.js";
   import SignalPanel from "../content/SignalPanel.svelte";
   import { sessions } from "../../stores/sessions.svelte.js";
@@ -195,6 +196,10 @@
 
   const gradeStyle = $derived(
     getGradeStyle(session?.health_grade),
+  );
+
+  const breadcrumbTitle = $derived(
+    session ? sessionTitle(session, ui.useLlmTitle).text : "",
   );
 
   $effect(() => {
@@ -520,7 +525,7 @@
     />
   {:else}
     <span class="breadcrumb-current">
-      {session?.display_name ?? session?.project ?? ""}
+      {breadcrumbTitle}
     </span>
   {/if}
   {#if session}

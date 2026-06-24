@@ -29,14 +29,27 @@ function getGeneratedBase(): string {
 }
 
 export function getServerUrl(): string {
+  if (
+    typeof localStorage === "undefined" ||
+    localStorage == null ||
+    typeof localStorage.getItem !== "function"
+  ) {
+    return "";
+  }
   return localStorage.getItem(SERVER_URL_KEY) ?? "";
 }
 
 export function setServerUrl(url: string): void {
+  if (
+    typeof localStorage === "undefined" ||
+    localStorage == null
+  ) {
+    return;
+  }
   if (url) {
-    localStorage.setItem(SERVER_URL_KEY, url);
+    localStorage.setItem?.(SERVER_URL_KEY, url);
   } else {
-    localStorage.removeItem(SERVER_URL_KEY);
+    localStorage.removeItem?.(SERVER_URL_KEY);
   }
 }
 
@@ -46,15 +59,28 @@ function authTokenKey(): string {
 }
 
 export function getAuthToken(): string {
+  if (
+    typeof localStorage === "undefined" ||
+    localStorage == null ||
+    typeof localStorage.getItem !== "function"
+  ) {
+    return "";
+  }
   return localStorage.getItem(authTokenKey()) ?? "";
 }
 
 export function setAuthToken(token: string): void {
+  if (
+    typeof localStorage === "undefined" ||
+    localStorage == null
+  ) {
+    return;
+  }
   const key = authTokenKey();
   if (token) {
-    localStorage.setItem(key, token);
+    localStorage.setItem?.(key, token);
   } else {
-    localStorage.removeItem(key);
+    localStorage.removeItem?.(key);
   }
 }
 

@@ -73,6 +73,9 @@ func duckContractSessionsCursorsAndMetadata(
 	index, err := store.GetSidebarSessionIndex(ctx, db.SessionFilter{Project: "alpha"})
 	require.NoError(t, err)
 	require.Contains(t, duckSidebarSessionIDs(index.Sessions), fixture.alphaID)
+	indexRows := duckSidebarRowsByID(index.Sessions)
+	require.Contains(t, indexRows, fixture.alphaID)
+	require.Equal(t, "LLM Alpha", indexRows[fixture.alphaID].LLMTitle)
 
 	stats, err := store.GetStats(ctx, false, false)
 	require.NoError(t, err)
@@ -271,6 +274,16 @@ func duckSidebarSessionIDs(sessions []db.SidebarSessionIndexRow) []string {
 		ids[i] = session.ID
 	}
 	return ids
+}
+
+func duckSidebarRowsByID(
+	sessions []db.SidebarSessionIndexRow,
+) map[string]db.SidebarSessionIndexRow {
+	rows := make(map[string]db.SidebarSessionIndexRow, len(sessions))
+	for _, session := range sessions {
+		rows[session.ID] = session
+	}
+	return rows
 }
 
 func duckMessageOrdinals(messages []db.Message) []int {

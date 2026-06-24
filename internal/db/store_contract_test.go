@@ -158,6 +158,9 @@ func contractSessionsCursorFiltersAndDates(
 	})
 	require.NoError(t, err)
 	require.Contains(t, sidebarSessionIDs(index.Sessions), fixture.childID)
+	indexRows := sidebarRowsByID(index.Sessions)
+	require.Contains(t, indexRows, fixture.alphaID)
+	require.Equal(t, "LLM Alpha", indexRows[fixture.alphaID].LLMTitle)
 
 	stats, err := store.GetStats(ctx, false, false)
 	require.NoError(t, err)
@@ -921,6 +924,16 @@ func sidebarSessionIDs(sessions []SidebarSessionIndexRow) []string {
 		ids[i] = session.ID
 	}
 	return ids
+}
+
+func sidebarRowsByID(
+	sessions []SidebarSessionIndexRow,
+) map[string]SidebarSessionIndexRow {
+	rows := make(map[string]SidebarSessionIndexRow, len(sessions))
+	for _, session := range sessions {
+		rows[session.ID] = session
+	}
+	return rows
 }
 
 func messageOrdinals(messages []Message) []int {

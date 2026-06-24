@@ -39,7 +39,10 @@
     downloadExport,
     getMarkdownExportUrl,
   } from "../../api/client.js";
+  import { fetchBalance } from "../../api/llm.js";
+  import { isRemoteConnection } from "../../api/runtime.js";
   import { copyToClipboard } from "../../utils/clipboard.js";
+  import { onMount } from "svelte";
   import ProjectTypeahead from "./ProjectTypeahead.svelte";
   import ImportModal from "../import/ImportModal.svelte";
 
@@ -76,6 +79,7 @@
     $state(undefined);
   let moreDropRef: HTMLDivElement | undefined =
     $state(undefined);
+  let balanceLabel = $state("");
 
   const BLOCK_LABELS: Record<BlockType, string> = {
     user: "User messages",
@@ -92,6 +96,24 @@
     tool: "var(--accent-amber)",
     code: "var(--text-muted)",
   };
+
+  function formatBalance(currency: string | undefined, amount: string): string {
+    if (currency === "CNY") return `¥${amount}`;
+    return currency ? `${currency} ${amount}` : amount;
+  }
+
+  onMount(() => {
+    if (isRemoteConnection()) return;
+    fetchBalance()
+      .then((balance) => {
+        const amount = balance.amount?.trim();
+        if (!balance.supported || !amount) return;
+        balanceLabel = formatBalance(balance.currency, amount);
+      })
+      .catch(() => {
+        balanceLabel = "";
+      });
+  });
 
   async function handleExport() {
     if (sessions.activeSessionId) {
@@ -373,6 +395,12 @@
     <span class="search-hint-text">Search sessions...</span>
     <kbd class="search-hint-kbd">{modKey}+K</kbd>
   </button>
+
+  {#if balanceLabel}
+    <span class="balance-chip" title="LLM balance" data-testid="llm-balance-chip">
+      {balanceLabel}
+    </span>
+  {/if}
 
   <div class="header-right">
     {#if hasActiveSession}
@@ -858,6 +886,24 @@
     line-height: 16px;
   }
 
+  .balance-chip {
+    height: 24px;
+    display: flex;
+    align-items: center;
+    max-width: 96px;
+    padding: 0 8px;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    background: var(--bg-inset);
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 550;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex-shrink: 1;
+  }
+
   .header-right {
     display: flex;
     align-items: center;
@@ -1226,6 +1272,10 @@
     .hamburger {
       display: flex;
     }
+
+    .balance-chip {
+      max-width: 72px;
+    }
   }
 
   /* 767px: Hide nav buttons and typeahead */
@@ -1287,6 +1337,10 @@
 
     .header-left {
       gap: 6px;
+    }
+
+    .balance-chip {
+      display: none;
     }
   }
 

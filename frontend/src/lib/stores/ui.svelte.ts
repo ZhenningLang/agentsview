@@ -38,6 +38,7 @@ const TRANSCRIPT_MODE_KEY = "agentsview-transcript-mode";
 const VITALS_KEY = "agentsview-session-vitals";
 const SIGNAL_PANEL_KEY = "agentsview-signal-panel";
 const FOLLOW_LATEST_KEY = "agentsview-follow-latest";
+const USE_LLM_TITLE_KEY = "agentsview-use-llm-title";
 
 function readBlockFilters(): Set<BlockType> {
   try {
@@ -183,6 +184,9 @@ class UIStore {
   followLatest: boolean = $state(
     readStoredBool(FOLLOW_LATEST_KEY, false),
   );
+  useLlmTitle: boolean = $state(
+    readStoredBool(USE_LLM_TITLE_KEY, false),
+  );
   followLatestRequest: number = $state(0);
 
   /** Set of block types currently visible. */
@@ -283,6 +287,17 @@ class UIStore {
           localStorage?.setItem(
             FOLLOW_LATEST_KEY,
             String(this.followLatest),
+          );
+        } catch {
+          // ignore
+        }
+      });
+
+      $effect(() => {
+        try {
+          localStorage?.setItem(
+            USE_LLM_TITLE_KEY,
+            String(this.useLlmTitle),
           );
         } catch {
           // ignore
@@ -429,6 +444,14 @@ class UIStore {
 
   toggleFollowLatest() {
     this.setFollowLatest(!this.followLatest);
+  }
+
+  setUseLlmTitle(enabled: boolean) {
+    this.useLlmTitle = enabled;
+  }
+
+  toggleUseLlmTitle() {
+    this.useLlmTitle = !this.useLlmTitle;
   }
 
   zoomIn() {
