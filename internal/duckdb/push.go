@@ -326,11 +326,15 @@ func upsertSession(
 			has_tool_calls, has_context_data, data_version,
 			cwd, git_branch, source_session_id, source_version,
 			parser_malformed_lines, is_truncated, deleted_at, created_at,
-			termination_status, secret_leak_count, secrets_rules_version
+			termination_status, secret_leak_count, secrets_rules_version,
+			llm_title, llm_summary, llm_keywords, llm_embedding,
+			llm_embedding_dim, enriched_at, enriched_msg_count,
+			enrich_model, enrich_status, enrich_error
 		) VALUES (
 			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+			?, ?, ?, ?, ?, ?, ?, ?, ?
 		)
 		ON CONFLICT(id) DO UPDATE SET
 			project = excluded.project,
@@ -384,7 +388,17 @@ func upsertSession(
 			created_at = excluded.created_at,
 			termination_status = excluded.termination_status,
 			secret_leak_count = excluded.secret_leak_count,
-			secrets_rules_version = excluded.secrets_rules_version`,
+			secrets_rules_version = excluded.secrets_rules_version,
+			llm_title = excluded.llm_title,
+			llm_summary = excluded.llm_summary,
+			llm_keywords = excluded.llm_keywords,
+			llm_embedding = excluded.llm_embedding,
+			llm_embedding_dim = excluded.llm_embedding_dim,
+			enriched_at = excluded.enriched_at,
+			enriched_msg_count = excluded.enriched_msg_count,
+			enrich_model = excluded.enrich_model,
+			enrich_status = excluded.enrich_status,
+			enrich_error = excluded.enrich_error`,
 		sess.ID, sess.Project, machine, sess.Agent,
 		nilString(sess.FirstMessage), nilString(sess.DisplayName),
 		nilString(sess.SessionName),
@@ -410,6 +424,10 @@ func upsertSession(
 		sess.IsTruncated, nilTime(sess.DeletedAt),
 		timeValue(sess.CreatedAt), nilString(sess.TerminationStatus),
 		sess.SecretLeakCount, sess.SecretsRulesVersion,
+		sess.LLMTitle, sess.LLMSummary, sess.LLMKeywords,
+		sess.LLMEmbedding, sess.LLMEmbeddingDim, sess.EnrichedAt,
+		sess.EnrichedMsgCount, sess.EnrichModel, sess.EnrichStatus,
+		sess.EnrichError,
 	)
 	if err != nil {
 		return fmt.Errorf("upserting duckdb session %s: %w", sess.ID, err)

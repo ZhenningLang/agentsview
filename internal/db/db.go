@@ -701,6 +701,46 @@ func (db *DB) migrateColumns() error {
 			"sessions", "secrets_rules_version",
 			"ALTER TABLE sessions ADD COLUMN secrets_rules_version TEXT NOT NULL DEFAULT ''",
 		},
+		{
+			"sessions", "llm_title",
+			"ALTER TABLE sessions ADD COLUMN llm_title TEXT NOT NULL DEFAULT ''",
+		},
+		{
+			"sessions", "llm_summary",
+			"ALTER TABLE sessions ADD COLUMN llm_summary TEXT NOT NULL DEFAULT ''",
+		},
+		{
+			"sessions", "llm_keywords",
+			"ALTER TABLE sessions ADD COLUMN llm_keywords TEXT NOT NULL DEFAULT ''",
+		},
+		{
+			"sessions", "llm_embedding",
+			"ALTER TABLE sessions ADD COLUMN llm_embedding BLOB",
+		},
+		{
+			"sessions", "llm_embedding_dim",
+			"ALTER TABLE sessions ADD COLUMN llm_embedding_dim INTEGER NOT NULL DEFAULT 0",
+		},
+		{
+			"sessions", "enriched_at",
+			"ALTER TABLE sessions ADD COLUMN enriched_at TEXT NOT NULL DEFAULT ''",
+		},
+		{
+			"sessions", "enriched_msg_count",
+			"ALTER TABLE sessions ADD COLUMN enriched_msg_count INTEGER NOT NULL DEFAULT 0",
+		},
+		{
+			"sessions", "enrich_model",
+			"ALTER TABLE sessions ADD COLUMN enrich_model TEXT NOT NULL DEFAULT ''",
+		},
+		{
+			"sessions", "enrich_status",
+			"ALTER TABLE sessions ADD COLUMN enrich_status TEXT NOT NULL DEFAULT ''",
+		},
+		{
+			"sessions", "enrich_error",
+			"ALTER TABLE sessions ADD COLUMN enrich_error TEXT NOT NULL DEFAULT ''",
+		},
 	}
 
 	for _, m := range migrations {

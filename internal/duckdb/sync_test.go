@@ -103,6 +103,21 @@ func TestDuckSessionFingerprintFieldsDiffer(t *testing.T) {
 				return s
 			},
 		},
+		{
+			name: "llm title change",
+			modify: func(s db.Session) db.Session {
+				s.LLMTitle = "LLM title"
+				return s
+			},
+		},
+		{
+			name: "llm embedding change",
+			modify: func(s db.Session) db.Session {
+				s.LLMEmbedding = []byte{0x00, 0x00, 0x80, 0x3f}
+				s.LLMEmbeddingDim = 1
+				return s
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -110,6 +125,74 @@ func TestDuckSessionFingerprintFieldsDiffer(t *testing.T) {
 			assert.NotEqual(t, fp1, encode(tt.modify(base)))
 		})
 	}
+}
+
+func TestSyncMirrorsLLMFieldsOnInsertAndUpdate(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+	fixture := seedDuckDBSyncFixture(t, local)
+	syncer := newTestSync(t,
+		filepath.Join(t.TempDir(), "mirror.duckdb"),
+		local, SyncOptions{})
+
+	setLocalLLMFields(t, local, fixture.alphaID, llmFixtureValues{
+		Title:            "First LLM title",
+		Summary:          "First summary",
+		Keywords:         "auth,token",
+		Embedding:        []byte{0x00, 0x00, 0x80, 0x3f},
+		EmbeddingDim:     1,
+		EnrichedAt:       "2026-01-10T01:00:00.000Z",
+		EnrichedMsgCount: 2,
+		Model:            "deepseek-chat",
+		Status:           "ok",
+		Error:            "",
+		LocalModifiedAt:  "2026-01-10T01:00:00.000Z",
+	})
+
+	first, err := syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 2, first.SessionsPushed)
+	assertDuckLLMFields(t, syncer.DB(), fixture.alphaID, llmFixtureValues{
+		Title:            "First LLM title",
+		Summary:          "First summary",
+		Keywords:         "auth,token",
+		Embedding:        []byte{0x00, 0x00, 0x80, 0x3f},
+		EmbeddingDim:     1,
+		EnrichedAt:       "2026-01-10T01:00:00.000Z",
+		EnrichedMsgCount: 2,
+		Model:            "deepseek-chat",
+		Status:           "ok",
+		Error:            "",
+	})
+
+	setLocalLLMFields(t, local, fixture.alphaID, llmFixtureValues{
+		Title:            "Updated LLM title",
+		Summary:          "Updated summary",
+		Keywords:         "search,semantic",
+		Embedding:        []byte{0x00, 0x00, 0x00, 0x40},
+		EmbeddingDim:     1,
+		EnrichedAt:       "2026-01-10T02:00:00.000Z",
+		EnrichedMsgCount: 4,
+		Model:            "deepseek-chat",
+		Status:           "error",
+		Error:            "rate limited",
+		LocalModifiedAt:  time.Now().UTC().Format(localSyncTimestampLayout),
+	})
+	second, err := syncer.Push(ctx, false, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, second.SessionsPushed)
+	assertDuckLLMFields(t, syncer.DB(), fixture.alphaID, llmFixtureValues{
+		Title:            "Updated LLM title",
+		Summary:          "Updated summary",
+		Keywords:         "search,semantic",
+		Embedding:        []byte{0x00, 0x00, 0x00, 0x40},
+		EmbeddingDim:     1,
+		EnrichedAt:       "2026-01-10T02:00:00.000Z",
+		EnrichedMsgCount: 4,
+		Model:            "deepseek-chat",
+		Status:           "error",
+		Error:            "rate limited",
+	})
 }
 
 func TestWriteSyncFingerprintsNormalizesRetainedLegacyValues(t *testing.T) {
@@ -813,6 +896,19 @@ func seedDuckDBSyncFixture(t *testing.T, local *db.DB) syncFixture {
 	}
 	_, err := local.WriteSessionBatchAtomic(writes)
 	require.NoError(t, err)
+	setLocalLLMFields(t, local, alphaID, llmFixtureValues{
+		Title:            "LLM Alpha",
+		Summary:          "Alpha summary",
+		Keywords:         "alpha,parity",
+		Embedding:        []byte{0x00, 0x00, 0x80, 0x3f},
+		EmbeddingDim:     1,
+		EnrichedAt:       "2026-01-10T13:00:00.000Z",
+		EnrichedMsgCount: 2,
+		Model:            "deepseek-chat",
+		Status:           "ok",
+		Error:            "",
+		LocalModifiedAt:  "2026-01-10T13:00:00.000Z",
+	})
 	ok, err := local.StarSession(alphaID)
 	require.NoError(t, err)
 	require.True(t, ok)
@@ -884,6 +980,86 @@ func updateSession(t *testing.T, local *db.DB, sessionID, content, modifiedAt st
 		ReplaceMessages: true,
 	}})
 	require.NoError(t, err)
+}
+
+type llmFixtureValues struct {
+	Title            string
+	Summary          string
+	Keywords         string
+	Embedding        []byte
+	EmbeddingDim     int
+	EnrichedAt       string
+	EnrichedMsgCount int
+	Model            string
+	Status           string
+	Error            string
+	LocalModifiedAt  string
+}
+
+func setLocalLLMFields(t *testing.T, local *db.DB, sessionID string, values llmFixtureValues) {
+	t.Helper()
+	raw, err := sql.Open("sqlite3", local.Path())
+	require.NoError(t, err, "open local sqlite")
+	t.Cleanup(func() { _ = raw.Close() })
+	_, err = raw.Exec(`
+		UPDATE sessions SET
+			llm_title = ?,
+			llm_summary = ?,
+			llm_keywords = ?,
+			llm_embedding = ?,
+			llm_embedding_dim = ?,
+			enriched_at = ?,
+			enriched_msg_count = ?,
+			enrich_model = ?,
+			enrich_status = ?,
+			enrich_error = ?,
+			local_modified_at = ?
+		WHERE id = ?`,
+		values.Title,
+		values.Summary,
+		values.Keywords,
+		values.Embedding,
+		values.EmbeddingDim,
+		values.EnrichedAt,
+		values.EnrichedMsgCount,
+		values.Model,
+		values.Status,
+		values.Error,
+		values.LocalModifiedAt,
+		sessionID,
+	)
+	require.NoError(t, err, "updating local LLM fields")
+}
+
+func assertDuckLLMFields(t *testing.T, conn *sql.DB, sessionID string, want llmFixtureValues) {
+	t.Helper()
+	var got llmFixtureValues
+	require.NoError(t, conn.QueryRow(`
+		SELECT llm_title, llm_summary, llm_keywords, llm_embedding,
+			llm_embedding_dim, enriched_at, enriched_msg_count,
+			enrich_model, enrich_status, enrich_error
+		FROM sessions WHERE id = ?`, sessionID).Scan(
+		&got.Title,
+		&got.Summary,
+		&got.Keywords,
+		&got.Embedding,
+		&got.EmbeddingDim,
+		&got.EnrichedAt,
+		&got.EnrichedMsgCount,
+		&got.Model,
+		&got.Status,
+		&got.Error,
+	), "read DuckDB LLM fields")
+	assert.Equal(t, want.Title, got.Title)
+	assert.Equal(t, want.Summary, got.Summary)
+	assert.Equal(t, want.Keywords, got.Keywords)
+	assert.Equal(t, want.Embedding, got.Embedding)
+	assert.Equal(t, want.EmbeddingDim, got.EmbeddingDim)
+	assert.Equal(t, want.EnrichedAt, got.EnrichedAt)
+	assert.Equal(t, want.EnrichedMsgCount, got.EnrichedMsgCount)
+	assert.Equal(t, want.Model, got.Model)
+	assert.Equal(t, want.Status, got.Status)
+	assert.Equal(t, want.Error, got.Error)
 }
 
 func assertDuckDBCount(t *testing.T, conn *sql.DB, table string, want int) {

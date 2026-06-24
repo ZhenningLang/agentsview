@@ -147,6 +147,11 @@ func contractSessionsCursorFiltersAndDates(
 	require.NotNil(t, named)
 	require.NotNil(t, named.DisplayName)
 	require.Equal(t, "Old Contract Name", *named.DisplayName)
+	alphaLLM, err := store.GetSessionFull(ctx, fixture.alphaID)
+	require.NoError(t, err)
+	require.NotNil(t, alphaLLM)
+	require.Equal(t, "LLM Alpha", alphaLLM.LLMTitle)
+	require.Empty(t, alphaLLM.LLMEmbedding)
 
 	index, err := store.GetSidebarSessionIndex(ctx, SessionFilter{
 		Project: "alpha",
@@ -782,6 +787,21 @@ func seedStoreContractSQLite(
 	result, err := store.WriteSessionBatchAtomic(writes)
 	require.NoError(t, err)
 	require.Equal(t, len(writes), result.WrittenSessions)
+	local, ok := store.(*DB)
+	require.True(t, ok, "sqlite contract seed requires *DB")
+	_, err = local.getWriter().Exec(`
+		UPDATE sessions SET
+			llm_title = 'LLM Alpha',
+			llm_summary = 'Alpha summary',
+			llm_keywords = 'alpha,parity',
+			llm_embedding = X'0000803f',
+			llm_embedding_dim = 1,
+			enriched_at = '2026-01-10T13:00:00Z',
+			enriched_msg_count = 5,
+			enrich_model = 'deepseek-chat',
+			enrich_status = 'ok'
+		WHERE id = ?`, fixture.alphaID)
+	require.NoError(t, err, "seed sqlite LLM fields")
 	require.NoError(t, store.SoftDeleteSession(fixture.deletedID))
 	return fixture
 }

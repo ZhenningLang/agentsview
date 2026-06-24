@@ -45,6 +45,9 @@ const sessionBaseCols = `id, project, machine, agent,
 	health_score, health_grade,
 	has_tool_calls, has_context_data,
 	secret_leak_count, secrets_rules_version,
+	llm_title, llm_summary, llm_keywords,
+	llm_embedding_dim, enriched_at, enriched_msg_count,
+	enrich_model, enrich_status, enrich_error,
 	data_version,
 	cwd, git_branch, source_session_id, source_version,
 	parser_malformed_lines, is_truncated,
@@ -69,6 +72,9 @@ const sessionPruneCols = `id, project, machine, agent,
 	health_score, health_grade,
 	has_tool_calls, has_context_data,
 	secret_leak_count, secrets_rules_version,
+	llm_title, llm_summary, llm_keywords,
+	llm_embedding_dim, enriched_at, enriched_msg_count,
+	enrich_model, enrich_status, enrich_error,
 	data_version,
 	cwd, git_branch, source_session_id, source_version,
 	parser_malformed_lines, is_truncated,
@@ -92,6 +98,38 @@ const sessionFullCols = `id, project, machine, agent,
 	health_score, health_grade,
 	has_tool_calls, has_context_data,
 	secret_leak_count, secrets_rules_version,
+	llm_title, llm_summary, llm_keywords,
+	llm_embedding_dim, enriched_at, enriched_msg_count,
+	enrich_model, enrich_status, enrich_error,
+	data_version,
+	cwd, git_branch, source_session_id, source_version,
+	parser_malformed_lines, is_truncated,
+	deleted_at, termination_status, file_path, file_size, file_mtime,
+	file_inode, file_device,
+	file_hash, local_modified_at, created_at`
+
+// sessionSyncCols includes sessionFullCols plus large payloads needed by
+// remote mirror propagation. Keep llm_embedding out of ordinary session reads.
+const sessionSyncCols = `id, project, machine, agent,
+	first_message, display_name, session_name, started_at, ended_at,
+	message_count, user_message_count,
+	parent_session_id, relationship_type,
+	total_output_tokens, peak_context_tokens,
+	has_total_output_tokens, has_peak_context_tokens,
+	is_automated,
+	tool_failure_signal_count, tool_retry_count,
+	edit_churn_count, consecutive_failure_max,
+	outcome, outcome_confidence,
+	ended_with_role, final_failure_streak,
+	signals_pending_since,
+	compaction_count, mid_task_compaction_count,
+	context_pressure_max,
+	health_score, health_grade,
+	has_tool_calls, has_context_data,
+	secret_leak_count, secrets_rules_version,
+	llm_title, llm_summary, llm_keywords, llm_embedding,
+	llm_embedding_dim, enriched_at, enriched_msg_count,
+	enrich_model, enrich_status, enrich_error,
 	data_version,
 	cwd, git_branch, source_session_id, source_version,
 	parser_malformed_lines, is_truncated,
@@ -133,6 +171,9 @@ func scanSessionRow(rs rowScanner) (Session, error) {
 		&s.HealthScore, &s.HealthGrade,
 		&s.HasToolCalls, &s.HasContextData,
 		&s.SecretLeakCount, &s.SecretsRulesVersion,
+		&s.LLMTitle, &s.LLMSummary, &s.LLMKeywords,
+		&s.LLMEmbeddingDim, &s.EnrichedAt, &s.EnrichedMsgCount,
+		&s.EnrichModel, &s.EnrichStatus, &s.EnrichError,
 		&s.DataVersion,
 		&s.Cwd, &s.GitBranch,
 		&s.SourceSessionID, &s.SourceVersion,
@@ -182,6 +223,16 @@ type Session struct {
 	HasContextData         bool     `json:"-"`
 	SecretLeakCount        int      `json:"secret_leak_count"`
 	SecretsRulesVersion    string   `json:"-"`
+	LLMTitle               string   `json:"llm_title"`
+	LLMSummary             string   `json:"llm_summary"`
+	LLMKeywords            string   `json:"llm_keywords"`
+	LLMEmbedding           []byte   `json:"-"`
+	LLMEmbeddingDim        int      `json:"llm_embedding_dim"`
+	EnrichedAt             string   `json:"enriched_at"`
+	EnrichedMsgCount       int      `json:"enriched_msg_count"`
+	EnrichModel            string   `json:"enrich_model"`
+	EnrichStatus           string   `json:"enrich_status"`
+	EnrichError            string   `json:"enrich_error"`
 	DataVersion            int      `json:"-"`
 	Cwd                    string   `json:"cwd,omitempty"`
 	GitBranch              string   `json:"git_branch,omitempty"`
@@ -591,6 +642,9 @@ func (db *DB) GetSessionFull(
 		&s.HealthScore, &s.HealthGrade,
 		&s.HasToolCalls, &s.HasContextData,
 		&s.SecretLeakCount, &s.SecretsRulesVersion,
+		&s.LLMTitle, &s.LLMSummary, &s.LLMKeywords,
+		&s.LLMEmbeddingDim, &s.EnrichedAt, &s.EnrichedMsgCount,
+		&s.EnrichModel, &s.EnrichStatus, &s.EnrichError,
 		&s.DataVersion,
 		&s.Cwd, &s.GitBranch,
 		&s.SourceSessionID, &s.SourceVersion,
@@ -1586,6 +1640,9 @@ func (db *DB) FindPruneCandidates(
 			&s.HealthScore, &s.HealthGrade,
 			&s.HasToolCalls, &s.HasContextData,
 			&s.SecretLeakCount, &s.SecretsRulesVersion,
+			&s.LLMTitle, &s.LLMSummary, &s.LLMKeywords,
+			&s.LLMEmbeddingDim, &s.EnrichedAt, &s.EnrichedMsgCount,
+			&s.EnrichModel, &s.EnrichStatus, &s.EnrichError,
 			&s.DataVersion,
 			&s.Cwd, &s.GitBranch,
 			&s.SourceSessionID, &s.SourceVersion,
@@ -1772,7 +1829,7 @@ func (db *DB) ListSessionsModifiedBetween(
 	ctx context.Context, since, until string,
 	projects, excludeProjects []string,
 ) ([]Session, error) {
-	query := "SELECT " + sessionFullCols + " FROM sessions"
+	query := "SELECT " + sessionSyncCols + " FROM sessions"
 	var (
 		args  []any
 		where []string
@@ -1863,6 +1920,9 @@ func (db *DB) ListSessionsModifiedBetween(
 			&s.HealthScore, &s.HealthGrade,
 			&s.HasToolCalls, &s.HasContextData,
 			&s.SecretLeakCount, &s.SecretsRulesVersion,
+			&s.LLMTitle, &s.LLMSummary, &s.LLMKeywords, &s.LLMEmbedding,
+			&s.LLMEmbeddingDim, &s.EnrichedAt, &s.EnrichedMsgCount,
+			&s.EnrichModel, &s.EnrichStatus, &s.EnrichError,
 			&s.DataVersion,
 			&s.Cwd, &s.GitBranch,
 			&s.SourceSessionID, &s.SourceVersion,
