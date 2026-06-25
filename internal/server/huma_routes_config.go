@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/google/shlex"
 	"go.kenn.io/agentsview/internal/config"
@@ -20,7 +21,10 @@ func (s *Server) registerConfigRoutes() {
 	post(s, group, "/terminal", "Set terminal config", s.humaSetTerminalConfig)
 	get(s, group, "/llm", "Get LLM config", s.humaGetLLMConfig)
 	post(s, group, "/llm", "Set LLM config", s.humaSetLLMConfig)
+	get(s, group, "/llm/providers", "Get LLM providers and usage", s.humaGetLLMProviders)
 	patch(s, group, "/llm/providers", "Set LLM providers and usage", s.humaPatchLLMProviders)
+	get(s, group, "/consolidate", "Get consolidate config", s.humaGetConsolidateConfig)
+	patch(s, group, "/consolidate", "Set consolidate config", s.humaPatchConsolidateConfig)
 }
 
 type terminalMode string
@@ -64,6 +68,10 @@ type llmProvidersInput struct {
 	Body llmProvidersPatch
 }
 
+type consolidateConfigInput struct {
+	Body consolidateConfigPatch
+}
+
 type llmEmbedConfigPatch struct {
 	BaseURL    *string `json:"base_url,omitempty"`
 	APIKey     *string `json:"api_key,omitempty"`
@@ -87,8 +95,13 @@ type llmConfigPatch struct {
 }
 
 type llmProvidersPatch struct {
-	Providers map[string]llmProviderConfigPatch `json:"providers,omitempty"`
-	Usage     map[string]string                 `json:"usage,omitempty"`
+	Providers       map[string]llmProviderConfigPatch `json:"providers,omitempty"`
+	Usage           map[string]string                 `json:"usage,omitempty"`
+	DeleteProviders []string                          `json:"delete_providers,omitempty"`
+}
+
+type consolidateConfigPatch struct {
+	Interval *string `json:"interval,omitempty"`
 }
 
 type llmProviderConfigPatch struct {
@@ -135,6 +148,11 @@ type llmProviderConfigResponse struct {
 	BalanceURL      string `json:"balance_url,omitempty"`
 	HasAPIKey       bool   `json:"has_api_key"`
 	APIKeyPreview   string `json:"api_key_preview,omitempty"`
+}
+
+type consolidateConfigResponse struct {
+	Enabled  bool   `json:"enabled"`
+	Interval string `json:"interval"`
 }
 
 func terminalConfigBodyFromConfig(tc config.TerminalConfig) terminalConfigBody {
@@ -273,6 +291,13 @@ func (s *Server) humaSetLLMConfig(
 	return &jsonOutput[llmConfigResponse]{Body: llmConfigResponseFromConfig(llm)}, nil
 }
 
+func (s *Server) humaGetLLMProviders(
+	ctx context.Context,
+	_ *emptyInput,
+) (*jsonOutput[llmConfigResponse], error) {
+	return s.humaGetLLMConfig(ctx, &emptyInput{})
+}
+
 func (s *Server) humaPatchLLMProviders(
 	ctx context.Context,
 	in *llmProvidersInput,
@@ -281,8 +306,8 @@ func (s *Server) humaPatchLLMProviders(
 		return nil, err
 	}
 	s.mu.Lock()
-	providers := applyLLMProvidersPatch(s.cfg.LLM.Providers, in.Body.Providers)
-	usage := applyLLMUsagePatch(s.cfg.LLM.Usage, in.Body.Usage)
+	providers := applyLLMProvidersPatch(s.cfg.LLM.Providers, in.Body.Providers, in.Body.DeleteProviders)
+	usage := applyLLMUsagePatch(s.cfg.LLM.Usage, in.Body.Usage, in.Body.DeleteProviders)
 	err := s.cfg.SaveLLMProviders(providers, usage)
 	llm := s.cfg.LLM
 	s.mu.Unlock()
@@ -290,6 +315,46 @@ func (s *Server) humaPatchLLMProviders(
 		return nil, internalError("save LLM providers", err)
 	}
 	return &jsonOutput[llmConfigResponse]{Body: llmConfigResponseFromConfig(llm)}, nil
+}
+
+func (s *Server) humaGetConsolidateConfig(
+	ctx context.Context,
+	_ *emptyInput,
+) (*jsonOutput[consolidateConfigResponse], error) {
+	if err := s.requireLocalWritableLLMRequest(ctx); err != nil {
+		return nil, err
+	}
+	s.mu.RLock()
+	resp := consolidateConfigResponseFromConfig(s.cfg)
+	s.mu.RUnlock()
+	return &jsonOutput[consolidateConfigResponse]{Body: resp}, nil
+}
+
+func (s *Server) humaPatchConsolidateConfig(
+	ctx context.Context,
+	in *consolidateConfigInput,
+) (*jsonOutput[consolidateConfigResponse], error) {
+	if err := s.requireLocalWritableLLMRequest(ctx); err != nil {
+		return nil, err
+	}
+	patch := make(map[string]any)
+	if in.Body.Interval != nil {
+		d, err := time.ParseDuration(strings.TrimSpace(*in.Body.Interval))
+		if err != nil || d <= 0 {
+			return nil, apiError(http.StatusBadRequest, "invalid consolidate interval")
+		}
+		patch["consolidate_interval"] = d
+	}
+	s.mu.Lock()
+	if len(patch) > 0 {
+		if err := s.cfg.SaveSettings(patch); err != nil {
+			s.mu.Unlock()
+			return nil, internalError("save consolidate config", err)
+		}
+	}
+	resp := consolidateConfigResponseFromConfig(s.cfg)
+	s.mu.Unlock()
+	return &jsonOutput[consolidateConfigResponse]{Body: resp}, nil
 }
 
 func applyLLMConfigPatch(llm config.LLMConfig, patch llmConfigPatch) config.LLMConfig {
@@ -346,6 +411,7 @@ func applyLLMConfigPatch(llm config.LLMConfig, patch llmConfigPatch) config.LLMC
 func applyLLMProvidersPatch(
 	current map[string]config.LLMConfig,
 	patch map[string]llmProviderConfigPatch,
+	deleteProviders []string,
 ) map[string]config.LLMConfig {
 	out := make(map[string]config.LLMConfig, len(current)+len(patch))
 	for name, provider := range current {
@@ -379,18 +445,30 @@ func applyLLMProvidersPatch(
 		}
 		out[name] = provider
 	}
+	for _, name := range deleteProviders {
+		if name = strings.TrimSpace(name); name != "" {
+			delete(out, name)
+		}
+	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
 }
 
-func applyLLMUsagePatch(current, patch map[string]string) map[string]string {
+func applyLLMUsagePatch(current, patch map[string]string, deleteProviders []string) map[string]string {
 	out := make(map[string]string, len(current)+len(patch))
+	deleted := make(map[string]struct{}, len(deleteProviders))
+	for _, provider := range deleteProviders {
+		if provider = strings.TrimSpace(provider); provider != "" {
+			deleted[provider] = struct{}{}
+		}
+	}
 	for usage, provider := range current {
 		usage = strings.TrimSpace(usage)
 		provider = strings.TrimSpace(provider)
-		if usage != "" && provider != "" {
+		_, isDeleted := deleted[provider]
+		if usage != "" && provider != "" && !isDeleted {
 			out[usage] = provider
 		}
 	}
@@ -401,6 +479,10 @@ func applyLLMUsagePatch(current, patch map[string]string) map[string]string {
 			continue
 		}
 		if provider == "" {
+			delete(out, usage)
+			continue
+		}
+		if _, isDeleted := deleted[provider]; isDeleted {
 			delete(out, usage)
 			continue
 		}
@@ -486,6 +568,13 @@ func danglingLLMUsageWarnings(llm config.LLMConfig) []string {
 	}
 	slices.Sort(warnings)
 	return warnings
+}
+
+func consolidateConfigResponseFromConfig(cfg config.Config) consolidateConfigResponse {
+	return consolidateConfigResponse{
+		Enabled:  cfg.ConsolidateEnabled,
+		Interval: cfg.ResolveConsolidateInterval().String(),
+	}
 }
 
 func apiKeyPreview(value string) string {

@@ -1150,6 +1150,26 @@ func TestMemoryBackup_PersistAndReload(t *testing.T) {
 	assert.True(t, reloaded.MemoryBackupLinked)
 }
 
+func TestConsolidateSettingsReloadAndEnvOverride(t *testing.T) {
+	dir := setupTestEnv(t)
+	writeConfig(t, dir, map[string]any{
+		"consolidate_enabled":  true,
+		"consolidate_interval": "2h",
+	})
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+	assert.True(t, cfg.ConsolidateEnabled)
+	assert.Equal(t, 2*time.Hour, cfg.ConsolidateInterval)
+
+	t.Setenv("AGENTSVIEW_CONSOLIDATE_ENABLED", "false")
+	t.Setenv("AGENTSVIEW_CONSOLIDATE_INTERVAL", "30m")
+	cfg, err = LoadMinimal()
+	require.NoError(t, err)
+	assert.False(t, cfg.ConsolidateEnabled)
+	assert.Equal(t, 30*time.Minute, cfg.ConsolidateInterval)
+}
+
 func TestPGConfig_ProjectFilter(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "config.toml")

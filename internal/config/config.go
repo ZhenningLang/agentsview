@@ -170,6 +170,14 @@ type Config struct {
 	// the environment, so the config file does not override the env's choice.
 	envBackupEnabledSet bool
 
+	// envConsolidateEnabledSet records that AGENTSVIEW_CONSOLIDATE_ENABLED was
+	// present in the environment, so the config file does not override it.
+	envConsolidateEnabledSet bool
+
+	// envConsolidateIntervalSet records that AGENTSVIEW_CONSOLIDATE_INTERVAL was
+	// present in the environment, so the config file does not override it.
+	envConsolidateIntervalSet bool
+
 	// envExtractEnabledSet records that AGENTSVIEW_EXTRACT_ENABLED was present
 	// in the environment, so the config file does not override the env's choice.
 	envExtractEnabledSet bool
@@ -794,6 +802,8 @@ func (c *Config) loadFile() error {
 		BackupWorkspaceDir             string                     `toml:"backup_workspace_dir"`
 		ExtractEnabled                 bool                       `toml:"extract_enabled"`
 		ExtractInterval                time.Duration              `toml:"extract_interval"`
+		ConsolidateEnabled             bool                       `toml:"consolidate_enabled"`
+		ConsolidateInterval            time.Duration              `toml:"consolidate_interval"`
 	}
 	meta, err := toml.DecodeFile(path, &file)
 	if err != nil {
@@ -869,6 +879,12 @@ func (c *Config) loadFile() error {
 	}
 	if file.BackupWorkspaceDir != "" && c.BackupWorkspaceDir == "" {
 		c.BackupWorkspaceDir = file.BackupWorkspaceDir
+	}
+	if !c.envConsolidateEnabledSet && meta.IsDefined("consolidate_enabled") {
+		c.ConsolidateEnabled = file.ConsolidateEnabled
+	}
+	if meta.IsDefined("consolidate_interval") && !c.envConsolidateIntervalSet {
+		c.ConsolidateInterval = file.ConsolidateInterval
 	}
 	if !c.envExtractEnabledSet && meta.IsDefined("extract_enabled") {
 		c.ExtractEnabled = file.ExtractEnabled
@@ -1145,10 +1161,12 @@ func (c *Config) loadEnv() {
 	}
 	if v, ok := os.LookupEnv("AGENTSVIEW_CONSOLIDATE_ENABLED"); ok {
 		c.ConsolidateEnabled = v == "1" || strings.EqualFold(v, "true")
+		c.envConsolidateEnabledSet = true
 	}
 	if v := os.Getenv("AGENTSVIEW_CONSOLIDATE_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			c.ConsolidateInterval = d
+			c.envConsolidateIntervalSet = true
 		} else {
 			log.Printf("config: invalid AGENTSVIEW_CONSOLIDATE_INTERVAL %q: %v", v, err)
 		}
@@ -2119,6 +2137,11 @@ func (c *Config) SaveSettings(patch map[string]any) error {
 	if v, ok := patch["consolidate_enabled"]; ok {
 		if b, ok := v.(bool); ok {
 			c.ConsolidateEnabled = b
+		}
+	}
+	if v, ok := patch["consolidate_interval"]; ok {
+		if d, ok := v.(time.Duration); ok {
+			c.ConsolidateInterval = d
 		}
 	}
 	if v, ok := patch["backup_enabled"]; ok {

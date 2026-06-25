@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/consolidate"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/server"
 )
@@ -94,7 +95,10 @@ func TestLLMRoutesRejectRemoteRequests(t *testing.T) {
 		{method: http.MethodGet, path: "/api/v1/llm/balance"},
 		{method: http.MethodGet, path: "/api/v1/config/llm"},
 		{method: http.MethodPost, path: "/api/v1/config/llm", body: `{}`},
+		{method: http.MethodGet, path: "/api/v1/config/llm/providers"},
 		{method: http.MethodPatch, path: "/api/v1/config/llm/providers", body: `{}`},
+		{method: http.MethodGet, path: "/api/v1/config/consolidate"},
+		{method: http.MethodPatch, path: "/api/v1/config/consolidate", body: `{}`},
 		{method: http.MethodPost, path: "/api/v1/llm/test", body: `{}`},
 	} {
 		w := requestJSON(te, tc.method, tc.path, tc.body, remote)
@@ -218,7 +222,10 @@ func TestLLMConfigAndTestRejectReadOnlyMode(t *testing.T) {
 	}{
 		{method: http.MethodGet, path: "/api/v1/config/llm"},
 		{method: http.MethodPost, path: "/api/v1/config/llm", body: `{}`},
+		{method: http.MethodGet, path: "/api/v1/config/llm/providers"},
 		{method: http.MethodPatch, path: "/api/v1/config/llm/providers", body: `{}`},
+		{method: http.MethodGet, path: "/api/v1/config/consolidate"},
+		{method: http.MethodPatch, path: "/api/v1/config/consolidate", body: `{}`},
 		{method: http.MethodPost, path: "/api/v1/llm/test", body: `{}`},
 	} {
 		w := requestJSON(te, tc.method, tc.path, tc.body)
@@ -347,6 +354,134 @@ func TestLLMConfigProvidersPatchUpdatesHotAndPreservesMaskedKeys(t *testing.T) {
 	usage := resp["usage"].(map[string]any)
 	assert.Equal(t, "deepseek-chat", usage["enrich"])
 	assert.Equal(t, "openrouter-embed", usage["embed"])
+}
+
+func TestLLMProvidersGetReturnsUsageWarnings(t *testing.T) {
+	te := setup(t, withLLMConfig(func(c *config.LLMConfig) {
+		c.Providers = map[string]config.LLMConfig{
+			"deepseek-chat": {BaseURL: "https://deepseek.example/v1", Model: "deepseek-chat"},
+		}
+		c.Usage = map[string]string{"consolidate": "missing-provider"}
+	}))
+
+	w := te.get(t, "/api/v1/config/llm/providers")
+	assertStatus(t, w, http.StatusOK)
+	resp := decode[map[string]any](t, w)
+	warnings := resp["usage_warnings"].([]any)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0].(string), `usage "consolidate"`)
+}
+
+func TestLLMProvidersPatchDeletesProvidersAndClearsUsage(t *testing.T) {
+	te := setup(t, withLLMConfig(func(c *config.LLMConfig) {
+		c.Providers = map[string]config.LLMConfig{
+			"deepseek-chat": {BaseURL: "https://deepseek.example/v1", Model: "deepseek-chat"},
+			"old-chat":      {BaseURL: "https://old.example/v1", Model: "old-model"},
+		}
+		c.Usage = map[string]string{
+			"consolidate": "old-chat",
+			"enrich":      "deepseek-chat",
+		}
+	}))
+
+	w := requestJSON(te, http.MethodPatch, "/api/v1/config/llm/providers", `{
+		"delete_providers": ["old-chat"]
+	}`)
+	assertStatus(t, w, http.StatusOK)
+	resp := decode[map[string]any](t, w)
+	providers := resp["providers"].(map[string]any)
+	assert.NotContains(t, providers, "old-chat")
+	usage := resp["usage"].(map[string]any)
+	assert.Equal(t, "deepseek-chat", usage["enrich"])
+	assert.NotContains(t, usage, "consolidate")
+}
+
+func TestConsolidateConfigGetAndPatchRoundTrip(t *testing.T) {
+	te := setup(t)
+
+	getResp := decode[map[string]any](t, te.get(t, "/api/v1/config/consolidate"))
+	assert.Equal(t, false, getResp["enabled"])
+	assert.Equal(t, "24h0m0s", getResp["interval"])
+
+	w := requestJSON(te, http.MethodPatch, "/api/v1/config/consolidate", `{"interval":"90m"}`)
+	assertStatus(t, w, http.StatusOK)
+	resp := decode[map[string]any](t, w)
+	assert.Equal(t, "1h30m0s", resp["interval"])
+
+	data, err := os.ReadFile(filepath.Join(te.dataDir, "config.toml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `consolidate_interval = "1h30m0s"`)
+
+	got := decode[map[string]any](t, te.get(t, "/api/v1/config/consolidate"))
+	assert.Equal(t, "1h30m0s", got["interval"])
+}
+
+func TestConsolidateConfigPatchRejectsInvalidInterval(t *testing.T) {
+	te := setup(t)
+
+	for _, body := range []string{`{"interval":"soon"}`, `{"interval":"0s"}`} {
+		w := requestJSON(te, http.MethodPatch, "/api/v1/config/consolidate", body)
+		assertStatus(t, w, http.StatusBadRequest)
+		assert.Contains(t, w.Body.String(), "invalid consolidate interval")
+	}
+}
+
+func TestConsolidateEnableThenAuditUsesRealServerRoutes(t *testing.T) {
+	memoryDir := t.TempDir()
+	audit := consolidate.NewAuditLog(consolidate.AuditPath(memoryDir))
+	rec := consolidate.RunRecord{
+		StartedAt:      "2026-06-26T00:00:00Z",
+		CandidateCount: 1,
+		Decisions: []consolidate.DecisionRecord{{
+			CandidateID: "candidate-1",
+			Action:      "ADD",
+			Result:      "write note candidate-1",
+		}},
+		Committed: true,
+	}
+	require.NoError(t, audit.Append(rec))
+	ctl := consolidate.NewController(nil, false)
+	te := setupWithServerOpts(t, []server.Option{server.WithConsolidateController(ctl)}, withMemoryDir(memoryDir))
+
+	enable := requestJSON(te, http.MethodPut, "/api/v1/consolidate/enable", `{"enabled":true}`)
+	assertStatus(t, enable, http.StatusOK)
+	enableResp := decode[map[string]any](t, enable)
+	assert.Equal(t, true, enableResp["enabled"])
+	assert.Equal(t, true, enableResp["available"])
+
+	auditResp := te.get(t, "/api/v1/consolidate/audit?limit=1")
+	assertStatus(t, auditResp, http.StatusOK)
+	body := decode[map[string]any](t, auditResp)
+	assert.Equal(t, true, body["enabled"])
+	assert.Equal(t, true, body["available"])
+	records := body["records"].([]any)
+	require.Len(t, records, 1)
+	first := records[0].(map[string]any)
+	assert.Equal(t, float64(1), first["candidate_count"])
+}
+
+func TestLLMConfigProvidersGetUsesDedicatedRegistryEndpoint(t *testing.T) {
+	te := setup(t, withLLMConfig(func(c *config.LLMConfig) {
+		c.Providers = map[string]config.LLMConfig{
+			"deepseek-chat": {
+				BaseURL: "https://deepseek.example/v1",
+				APIKey:  "provider-secret-9999",
+				Model:   "deepseek-chat",
+			},
+		}
+		c.Usage = map[string]string{"consolidate": "deepseek-chat"}
+	}))
+
+	w := te.get(t, "/api/v1/config/llm/providers")
+	assertStatus(t, w, http.StatusOK)
+	assert.NotContains(t, w.Body.String(), "provider-secret-9999")
+	resp := decode[map[string]any](t, w)
+	providers := resp["providers"].(map[string]any)
+	deepseek := providers["deepseek-chat"].(map[string]any)
+	assert.Equal(t, "https://deepseek.example/v1", deepseek["base_url"])
+	assert.Equal(t, true, deepseek["has_api_key"])
+	usage := resp["usage"].(map[string]any)
+	assert.Equal(t, "deepseek-chat", usage["consolidate"])
 }
 
 func TestLLMConnectionTestReportsChatAndEmbed(t *testing.T) {
