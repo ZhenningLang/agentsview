@@ -192,6 +192,31 @@ CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
         VALUES('delete', old.id, old.content);
     INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
 END;
+
+-- Memory full-text index. Standalone (own-content) FTS5 over the memory
+-- body, keyed back to memory.rel_path via an UNINDEXED column. The memory
+-- table has a TEXT primary key (rel_path) rather than an integer rowid we
+-- can pin, so an external-content table is awkward; a standalone table
+-- kept in sync by AFTER INSERT/DELETE triggers is simpler and matches the
+-- full-replace (DELETE + INSERT) write pattern of the syncer.
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+    rel_path UNINDEXED,
+    body,
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS memory_ai AFTER INSERT ON memory BEGIN
+    INSERT INTO memory_fts(rel_path, body) VALUES (new.rel_path, new.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_ad AFTER DELETE ON memory BEGIN
+    DELETE FROM memory_fts WHERE rel_path = old.rel_path;
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_au AFTER UPDATE ON memory BEGIN
+    DELETE FROM memory_fts WHERE rel_path = old.rel_path;
+    INSERT INTO memory_fts(rel_path, body) VALUES (new.rel_path, new.body);
+END;
 `
 
 // DB manages a write connection and a read-only pool.

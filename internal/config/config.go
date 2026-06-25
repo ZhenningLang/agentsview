@@ -190,6 +190,12 @@ type Config struct {
 	// empty, New() probes the default ~/.dotfiles/coding-skills; when
 	// nothing is found the skills feature stays empty and fail-open.
 	SkillsCatalogDir string `json:"skills_catalog_dir,omitempty" toml:"skills_catalog_dir"`
+
+	// MemoryDir is the user-memory SSOT directory containing the *.md
+	// notes used by the read-only memory views. When empty, New() probes
+	// the default ~/.dotfiles/memory/user; when nothing is found the
+	// memory feature stays empty and fail-open.
+	MemoryDir string `json:"memory_dir,omitempty" toml:"memory_dir"`
 }
 
 type dirSource int
@@ -498,6 +504,7 @@ func (c *Config) loadFile() error {
 		CustomModelPricing             map[string]CustomModelRate `toml:"custom_model_pricing"`
 		RemoteHosts                    []RemoteHost               `toml:"remote_hosts"`
 		SkillsCatalogDir               string                     `toml:"skills_catalog_dir"`
+		MemoryDir                      string                     `toml:"memory_dir"`
 	}
 	meta, err := toml.DecodeFile(path, &file)
 	if err != nil {
@@ -539,6 +546,11 @@ func (c *Config) loadFile() error {
 	// config file only fills the value when env left it unset.
 	if file.SkillsCatalogDir != "" && c.SkillsCatalogDir == "" {
 		c.SkillsCatalogDir = file.SkillsCatalogDir
+	}
+	// env (loadEnv, AGENTSVIEW_MEMORY_DIR) runs first and wins; the
+	// config file only fills the value when env left it unset.
+	if file.MemoryDir != "" && c.MemoryDir == "" {
+		c.MemoryDir = file.MemoryDir
 	}
 	// Merge pg field-by-field so env vars override only
 	// the fields they set, preserving config-file settings.
@@ -781,6 +793,9 @@ func (c *Config) loadEnv() {
 	if v := os.Getenv("AGENTSVIEW_LLM_MODEL"); v != "" {
 		c.LLM.Model = v
 	}
+	if v := os.Getenv("AGENTSVIEW_MEMORY_DIR"); v != "" {
+		c.MemoryDir = v
+	}
 }
 
 func mergeLLMConfig(c *Config, file LLMConfig, meta toml.MetaData) {
@@ -843,6 +858,27 @@ func (c *Config) ResolveSkillsCatalogDir() string {
 	}
 	for _, dir := range candidates {
 		if _, err := os.Stat(filepath.Join(dir, "catalog.json")); err == nil {
+			return dir
+		}
+	}
+	return ""
+}
+
+// ResolveMemoryDir returns the effective user-memory directory. It
+// prefers an explicit config/env value, then probes the default
+// ~/.dotfiles/memory/user. It returns "" (fail-open: memory feature
+// disabled) when no candidate directory exists on disk.
+func (c *Config) ResolveMemoryDir() string {
+	candidates := make([]string, 0, 2)
+	if c.MemoryDir != "" {
+		candidates = append(candidates, c.MemoryDir)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".dotfiles", "memory", "user"))
+	}
+	for _, dir := range candidates {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
 			return dir
 		}
 	}
