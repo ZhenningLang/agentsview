@@ -5413,3 +5413,52 @@ func TestUpsertWithDisplayNameInsteadOfSessionNameDropsName(t *testing.T) {
 	assert.Nil(t, s.DisplayName,
 		"upsert must not write display_name; only RenameSession should")
 }
+
+// TestOpenMigratesLegacyMemoryWithoutSourceColumn reproduces the real-world
+// upgrade crash: a database created before the memory.source column existed
+// must migrate on Open, not abort schema init with "no such column: source".
+// The regression was that schema.sql created idx_memory_source on
+// memory(source) during init() — which runs BEFORE migrateColumns adds the
+// column — so opening any pre-source database failed before the migration
+// could run.
+func TestOpenMigratesLegacyMemoryWithoutSourceColumn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sessions.db")
+
+	// Build a complete, current database, then strip the memory.source column
+	// to faithfully simulate a database created before P1 added it: a fully
+	// populated schema (so needsSchemaRebuild does NOT trigger a full rebuild
+	// that would hide the bug) that is missing only memory.source. This is the
+	// exact shape that crashed in the field.
+	seed, err := Open(path)
+	require.NoError(t, err)
+	require.NoError(t, seed.Close())
+
+	strip, err := sql.Open("sqlite3", makeDSN(path, false))
+	require.NoError(t, err)
+	// The index must be dropped before the indexed column can be dropped.
+	_, err = strip.Exec(`DROP INDEX IF EXISTS idx_memory_source`)
+	require.NoError(t, err)
+	_, err = strip.Exec(`ALTER TABLE memory DROP COLUMN source`)
+	require.NoError(t, err)
+	require.NoError(t, strip.Close())
+
+	// Open must migrate the column back in, not crash during schema init. This
+	// is the assertion that catches the regression: before the fix, Open
+	// returned "initializing schema: no such column: source" here because
+	// schema.sql created idx_memory_source before migrateColumns added source.
+	d, err := Open(path)
+	require.NoError(t, err,
+		"Open on a pre-source-column database must migrate, not fail schema init")
+	require.NoError(t, d.Close())
+
+	// The migration must have added the source column to the legacy table.
+	verify, err := sql.Open("sqlite3", makeDSN(path, true))
+	require.NoError(t, err)
+	defer verify.Close()
+	var hasSource int
+	require.NoError(t, verify.QueryRow(
+		`SELECT count(*) FROM pragma_table_info('memory') WHERE name='source'`,
+	).Scan(&hasSource))
+	require.Equal(t, 1, hasSource, "memory.source column must exist after migration")
+}
