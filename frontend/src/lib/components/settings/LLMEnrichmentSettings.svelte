@@ -124,6 +124,7 @@
     embedBaseUrl: "",
     embedApiKey: "",
     embedModel: "",
+    embedBalanceUrl: "",
   });
 
   type CountCard = readonly [string, number];
@@ -161,6 +162,7 @@
     form.embedBaseUrl = config.embed?.base_url ?? "";
     form.embedApiKey = maskedValue(config.embed?.has_api_key ?? false, config.embed?.api_key_preview);
     form.embedModel = config.embed?.model ?? "";
+    form.embedBalanceUrl = config.embed?.balance_url ?? "";
   }
 
   async function loadConfig() {
@@ -198,6 +200,7 @@
         base_url: form.embedBaseUrl.trim(),
         api_key: keyPayload(form.embedApiKey),
         model: form.embedModel.trim(),
+        balance_url: form.embedBalanceUrl.trim(),
       },
     };
   }
@@ -494,6 +497,12 @@
             {#if job.cost_spent}
               Chat spend this run: {job.cost_currency}
               {job.cost_spent}{job.balance_end ? ` (balance now ${job.cost_currency} ${job.balance_end})` : ""}.
+            {/if}
+            {#if job.embed_cost_spent}
+              Embed spend this run: {job.embed_cost_currency}
+              {job.embed_cost_spent}{job.embed_balance_end
+                ? ` (balance now ${job.embed_cost_currency} ${job.embed_balance_end})`
+                : ""}.
             {/if}
           </p>
         {/if}

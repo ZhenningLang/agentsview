@@ -44,6 +44,15 @@ type enrichJobState struct {
 	CostSpent    string `json:"cost_spent,omitempty"`
 	BalanceStart string `json:"balance_start,omitempty"`
 	BalanceEnd   string `json:"balance_end,omitempty"`
+
+	// Embedding-provider balance delta, tracked independently from chat
+	// because the embedding provider is configured separately (its own
+	// base URL, key, and balance endpoint). Populated only when the embed
+	// provider exposes a balance endpoint.
+	EmbedCostCurrency string `json:"embed_cost_currency,omitempty"`
+	EmbedCostSpent    string `json:"embed_cost_spent,omitempty"`
+	EmbedBalanceStart string `json:"embed_balance_start,omitempty"`
+	EmbedBalanceEnd   string `json:"embed_balance_end,omitempty"`
 }
 
 // enrichJob is the single-flight background enrichment job tracker.
@@ -116,6 +125,20 @@ func (s *Server) runEnrichJob(
 		j.mu.Unlock()
 	}
 
+	// Snapshot the embedding-provider balance independently. The embed
+	// provider is configured separately, so its spend is its own balance
+	// delta rather than part of the chat delta. Only attempted when an
+	// embed balance endpoint is explicitly configured (no fallback to the
+	// chat account, to avoid double-counting a shared balance).
+	if embedCfg, ok := embedBalanceConfig(cfg); ok {
+		if startEmbed := s.fetchLLMBalance(ctx, embedCfg); startEmbed.Supported {
+			j.mu.Lock()
+			j.state.EmbedCostCurrency = startEmbed.Currency
+			j.state.EmbedBalanceStart = startEmbed.Amount
+			j.mu.Unlock()
+		}
+	}
+
 	runner := enrich.New(s.llmWriter, client, cfg)
 	stats, err := runner.Run(ctx, enrich.Options{
 		Limit: 0,
@@ -131,6 +154,10 @@ func (s *Server) runEnrichJob(
 	// or cancelled run still reports its cost.
 	balCtx, balCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	endBal := s.fetchLLMBalance(balCtx, cfg)
+	var endEmbed llmBalanceResponse
+	if embedCfg, ok := embedBalanceConfig(cfg); ok {
+		endEmbed = s.fetchLLMBalance(balCtx, embedCfg)
+	}
 	balCancel()
 
 	j.mu.Lock()
@@ -155,6 +182,15 @@ func (s *Server) runEnrichJob(
 			j.state.CostSpent = spent
 		}
 	}
+	if endEmbed.Supported {
+		j.state.EmbedBalanceEnd = endEmbed.Amount
+		if j.state.EmbedCostCurrency == "" {
+			j.state.EmbedCostCurrency = endEmbed.Currency
+		}
+		if spent, ok := balanceSpent(j.state.EmbedBalanceStart, endEmbed.Amount); ok {
+			j.state.EmbedCostSpent = spent
+		}
+	}
 	if err != nil && !errors.Is(err, context.Canceled) {
 		j.state.Error = err.Error()
 	} else {
@@ -163,6 +199,34 @@ func (s *Server) runEnrichJob(
 	j.cancel = nil
 	j.mu.Unlock()
 	cancel()
+}
+
+// embedBalanceConfig builds a balance-only LLMConfig view of the embed
+// provider so the shared fetchLLMBalance path can query its balance, the
+// same way chat balance is resolved (explicit balance_url, else derived
+// from a known base URL host like DeepSeek).
+//
+// It reports ok=false when the embed provider has no resolvable balance
+// endpoint, or when that endpoint plus API key is identical to the chat
+// account's — in the shared-account case the chat balance delta already
+// covers embed spend, so tracking it again would double-count.
+func embedBalanceConfig(cfg config.LLMConfig) (config.LLMConfig, bool) {
+	embed := config.LLMConfig{
+		Enabled:    cfg.Enabled,
+		BaseURL:    cfg.Embed.BaseURL,
+		APIKey:     cfg.Embed.APIKey,
+		BalanceURL: cfg.Embed.BalanceURL,
+	}
+	embedEP, ok := llmBalanceEndpoint(embed)
+	if !ok {
+		return config.LLMConfig{}, false
+	}
+	if chatEP, chatOK := llmBalanceEndpoint(cfg); chatOK &&
+		embedEP == chatEP &&
+		strings.TrimSpace(embed.APIKey) == strings.TrimSpace(cfg.APIKey) {
+		return config.LLMConfig{}, false
+	}
+	return embed, true
 }
 
 // balanceSpent returns the formatted start-minus-end amount when both
