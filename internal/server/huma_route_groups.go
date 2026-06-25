@@ -15,6 +15,7 @@ func (s *Server) registerTypedAPIRoutes() {
 	s.registerSkillRoutes()
 	s.registerLLMRoutes()
 	s.registerMemoryRoutes()
+	s.registerVaultRoutes()
 	s.registerSearchRoutes()
 	s.registerSecretsRoutes()
 	s.registerMetadataRoutes()

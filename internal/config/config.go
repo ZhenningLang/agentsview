@@ -196,6 +196,12 @@ type Config struct {
 	// the default ~/.dotfiles/memory/user; when nothing is found the
 	// memory feature stays empty and fail-open.
 	MemoryDir string `json:"memory_dir,omitempty" toml:"memory_dir"`
+
+	// VaultRoots are the roots scanned for dev-workflow run records under
+	// `.long-loop/<slug>/`. When empty, ResolveVaultRoots probes the
+	// default ~/.dotfiles. Multiple roots may be configured; via env they
+	// are comma-separated (AGENTSVIEW_VAULT_ROOTS).
+	VaultRoots []string `json:"vault_roots,omitempty" toml:"vault_roots"`
 }
 
 type dirSource int
@@ -505,6 +511,7 @@ func (c *Config) loadFile() error {
 		RemoteHosts                    []RemoteHost               `toml:"remote_hosts"`
 		SkillsCatalogDir               string                     `toml:"skills_catalog_dir"`
 		MemoryDir                      string                     `toml:"memory_dir"`
+		VaultRoots                     []string                   `toml:"vault_roots"`
 	}
 	meta, err := toml.DecodeFile(path, &file)
 	if err != nil {
@@ -551,6 +558,11 @@ func (c *Config) loadFile() error {
 	// config file only fills the value when env left it unset.
 	if file.MemoryDir != "" && c.MemoryDir == "" {
 		c.MemoryDir = file.MemoryDir
+	}
+	// env (loadEnv, AGENTSVIEW_VAULT_ROOTS) runs first and wins; the
+	// config file only fills the value when env left it unset.
+	if len(file.VaultRoots) > 0 && len(c.VaultRoots) == 0 {
+		c.VaultRoots = file.VaultRoots
 	}
 	// Merge pg field-by-field so env vars override only
 	// the fields they set, preserving config-file settings.
@@ -796,6 +808,17 @@ func (c *Config) loadEnv() {
 	if v := os.Getenv("AGENTSVIEW_MEMORY_DIR"); v != "" {
 		c.MemoryDir = v
 	}
+	if v := os.Getenv("AGENTSVIEW_VAULT_ROOTS"); v != "" {
+		roots := make([]string, 0, 2)
+		for part := range strings.SplitSeq(v, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				roots = append(roots, p)
+			}
+		}
+		if len(roots) > 0 {
+			c.VaultRoots = roots
+		}
+	}
 }
 
 func mergeLLMConfig(c *Config, file LLMConfig, meta toml.MetaData) {
@@ -883,6 +906,30 @@ func (c *Config) ResolveMemoryDir() string {
 		}
 	}
 	return ""
+}
+
+// ResolveVaultRoots returns the effective roots scanned for dev-workflow
+// run records (`<root>/.long-loop/<slug>/`). It prefers explicit
+// config/env values, then falls back to the default ~/.dotfiles. Roots are
+// returned even when they do not yet contain a `.long-loop` directory; the
+// VaultSyncer is fail-soft and simply finds no runs. Returns an empty slice
+// (vault feature disabled) only when no candidate can be resolved.
+func (c *Config) ResolveVaultRoots() []string {
+	if len(c.VaultRoots) > 0 {
+		out := make([]string, 0, len(c.VaultRoots))
+		for _, r := range c.VaultRoots {
+			if r = strings.TrimSpace(r); r != "" {
+				out = append(out, r)
+			}
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return []string{filepath.Join(home, ".dotfiles")}
+	}
+	return nil
 }
 
 type stringListFlag []string

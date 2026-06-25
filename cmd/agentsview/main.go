@@ -24,6 +24,7 @@ import (
 	"go.kenn.io/agentsview/internal/skills"
 	"go.kenn.io/agentsview/internal/sync"
 	"go.kenn.io/agentsview/internal/telemetry"
+	"go.kenn.io/agentsview/internal/vault"
 )
 
 var (
@@ -217,6 +218,11 @@ func runServe(cfg config.Config) {
 	// dimension table. Independent of session sync and fail-open in the
 	// same way as skills.
 	startMemorySync(ctx, cfg, database)
+
+	// Vault views: sync dev-workflow .long-loop run records into the
+	// read-only vault dimension tables. Independent of session sync and
+	// fail-open in the same way as memory.
+	startVaultSync(ctx, cfg, database)
 
 	rtOpts := serveRuntimeOptions{
 		Mode:          "serve",
@@ -695,6 +701,41 @@ func startMemorySync(
 			case <-ticker.C:
 				if err := syncer.Sync(ctx); err != nil {
 					log.Printf("memory sync: %v", err)
+				}
+			}
+		}
+	}()
+}
+
+// startVaultSync runs the dev-workflow vault sync once at startup and then
+// on the periodic interval. It is fail-open: it no-ops when no roots can be
+// resolved, or when the store is not a local writer (PG/DuckDB serve modes
+// receive vault rows via the SQLite mirror).
+func startVaultSync(
+	ctx context.Context, cfg config.Config, database db.Store,
+) {
+	roots := cfg.ResolveVaultRoots()
+	if len(roots) == 0 {
+		return
+	}
+	writer, ok := database.(vault.Writer)
+	if !ok {
+		return
+	}
+	syncer := vault.NewSyncer(roots, writer)
+	if err := syncer.Sync(ctx); err != nil {
+		log.Printf("vault sync: %v", err)
+	}
+	go func() {
+		ticker := time.NewTicker(periodicSyncInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := syncer.Sync(ctx); err != nil {
+					log.Printf("vault sync: %v", err)
 				}
 			}
 		}

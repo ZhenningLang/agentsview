@@ -323,6 +323,46 @@ CREATE INDEX IF NOT EXISTS idx_memory_problem_type
     ON memory (problem_type);
 CREATE INDEX IF NOT EXISTS idx_memory_type ON memory (type);
 CREATE INDEX IF NOT EXISTS idx_memory_status ON memory (status);
+
+CREATE TABLE IF NOT EXISTS vault_run (
+    slug           TEXT PRIMARY KEY,
+    skill          TEXT NOT NULL DEFAULT '',
+    state          TEXT NOT NULL DEFAULT '',
+    branch         TEXT NOT NULL DEFAULT '',
+    goal           TEXT NOT NULL DEFAULT '',
+    repo_root      TEXT NOT NULL DEFAULT '',
+    workspace_path TEXT NOT NULL DEFAULT '',
+    source_path    TEXT NOT NULL DEFAULT '',
+    acceptance_ok   BOOLEAN,
+    acceptance_exit BIGINT,
+    synced_at      TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS vault_phase (
+    id                     BIGSERIAL PRIMARY KEY,
+    run_slug               TEXT NOT NULL,
+    phase_id               TEXT NOT NULL DEFAULT '',
+    verify_ok              BOOLEAN,
+    verify_exit            BIGINT,
+    stuck_consecutive_fail BIGINT,
+    stuck_fingerprint      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS vault_metric (
+    id          BIGSERIAL PRIMARY KEY,
+    run_slug    TEXT NOT NULL,
+    ts          TEXT NOT NULL DEFAULT '',
+    event       TEXT NOT NULL DEFAULT '',
+    phase       TEXT NOT NULL DEFAULT '',
+    ok          BOOLEAN,
+    exit        BIGINT,
+    fingerprint TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_vault_run_skill ON vault_run (skill);
+CREATE INDEX IF NOT EXISTS idx_vault_phase_run ON vault_phase (run_slug);
+CREATE INDEX IF NOT EXISTS idx_vault_metric_run ON vault_metric (run_slug);
+CREATE INDEX IF NOT EXISTS idx_vault_metric_event ON vault_metric (event);
 `
 
 // EnsureSchema creates the schema (if needed), then runs
