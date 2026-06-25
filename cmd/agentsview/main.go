@@ -15,7 +15,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/consolidate"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/llm"
 	"go.kenn.io/agentsview/internal/memory"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/secrets"
@@ -229,6 +231,16 @@ func runServe(cfg config.Config) {
 	// fail-open in the same way as memory.
 	startVaultSync(ctx, cfg, database)
 
+	// Consolidation worker: background timer that auto-promotes staging
+	// candidates into memory/user (LLM decision + dotfiles safety script +
+	// local commit + immediate resync). The loop always starts when its
+	// prerequisites exist; ConsolidateEnabled (default OFF) only sets the
+	// initial armed state. The returned controller is handed to the server so
+	// the UI can arm it at runtime (immediate first cycle) without a restart.
+	// Fail-open like the syncs above: a nil controller simply leaves the
+	// enable endpoint reporting "not available".
+	consolidateController := startConsolidate(ctx, cfg, database)
+
 	rtOpts := serveRuntimeOptions{
 		Mode:          "serve",
 		RequestedPort: cfg.Port,
@@ -248,6 +260,7 @@ func runServe(cfg config.Config) {
 		server.WithDataDir(cfg.DataDir),
 		server.WithBaseContext(ctx),
 		server.WithBroadcaster(broadcaster),
+		server.WithConsolidateController(consolidateController),
 	)
 
 	rt, err := startServerWithOptionalCaddy(ctx, cfg, srv, rtOpts)
@@ -783,6 +796,51 @@ func startVaultSync(
 			}
 		}
 	}()
+}
+
+// startConsolidate starts the background consolidation worker and returns a
+// Controller so the server can arm/disarm it at runtime. The loop is ALWAYS
+// started (when the prerequisites are present) so that enabling it from the UI
+// takes effect without a process restart; ConsolidateEnabled (default OFF) only
+// sets the initial armed state. While disarmed every tick/trigger is a no-op,
+// so auto-LLM-writes into memory/user never happen without an explicit opt-in;
+// arming fires one immediate cycle (locked decision A2: "UI 能开启 + 开启后自动跑").
+//
+// It returns nil (and starts nothing) when no memory dir is configured/found or
+// when the store is not a local writer (PG/DuckDB serve modes never own the
+// SSOT files) — fail-open like the syncs above. A nil controller leaves the
+// server's enable endpoint reporting "not available", never panicking.
+func startConsolidate(
+	ctx context.Context, cfg config.Config, database db.Store,
+) *consolidate.Controller {
+	dir := cfg.ResolveMemoryDir()
+	if dir == "" {
+		return nil
+	}
+	root := cfg.ResolveDotfilesRoot()
+	if root == "" {
+		return nil
+	}
+	writer, ok := database.(memory.Writer)
+	if !ok {
+		return nil
+	}
+	stagingDir := filepath.Join(root, "memory", ".staging")
+	rawDir := filepath.Join(stagingDir, "raw_memories")
+	resync := consolidate.ResyncFunc(func(c context.Context) error {
+		return memory.NewSyncer(dir, writer, nil).Sync(c)
+	})
+	worker := consolidate.NewWorker(
+		stagingDir, rawDir, root,
+		llm.New(cfg.ConsolidateLLM()),
+		consolidate.PythonScriptRunner{},
+		consolidate.GitCommitter{Dir: dir},
+		resync,
+		consolidate.NewAuditLog(consolidate.AuditPath(dir)),
+	)
+	ctrl := consolidate.NewController(worker, cfg.ConsolidateEnabled)
+	go ctrl.Run(ctx, cfg.ResolveConsolidateInterval())
+	return ctrl
 }
 
 func recomputePendingSessions(

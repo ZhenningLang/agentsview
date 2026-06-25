@@ -210,6 +210,83 @@ type Config struct {
 	// default ~/.dotfiles. Multiple roots may be configured; via env they
 	// are comma-separated (AGENTSVIEW_VAULT_ROOTS).
 	VaultRoots []string `json:"vault_roots,omitempty" toml:"vault_roots"`
+
+	// Consolidate holds the optional independent LLM settings used by the
+	// background staging->memory/user consolidation worker. Any unset field
+	// falls back to the corresponding LLM field (see ConsolidateLLM). Env:
+	// AGENTSVIEW_CONSOLIDATE_BASE_URL / _API_KEY / _MODEL.
+	Consolidate LLMConfig `json:"consolidate,omitempty" toml:"consolidate"`
+
+	// ConsolidateEnabled gates the background consolidation worker. It
+	// defaults to OFF: auto-writing LLM-decided notes into memory/user is a
+	// side-effecting action, so the first run must be an explicit opt-in
+	// (UI/config/env AGENTSVIEW_CONSOLIDATE_ENABLED). Once enabled the worker
+	// runs fully automatically on the configured interval.
+	ConsolidateEnabled bool `json:"consolidate_enabled" toml:"consolidate_enabled"`
+
+	// ConsolidateInterval is the period between consolidation runs once
+	// enabled. Zero selects the default (24h). Env:
+	// AGENTSVIEW_CONSOLIDATE_INTERVAL (a Go duration string).
+	ConsolidateInterval time.Duration `json:"consolidate_interval,omitempty" toml:"consolidate_interval"`
+
+	// DotfilesRoot is the dotfiles repository root passed to
+	// assist_consolidate.py as --root. When empty it is derived from the
+	// resolved memory dir (its two-levels-up parent), so the script writes
+	// into the same memory/user the existing syncer scans. Env:
+	// AGENTSVIEW_DOTFILES_ROOT (override only; normally derived).
+	DotfilesRoot string `json:"dotfiles_root,omitempty" toml:"dotfiles_root"`
+}
+
+// defaultConsolidateInterval is the period between consolidation runs when
+// ConsolidateInterval is left at its zero value.
+const defaultConsolidateInterval = 24 * time.Hour
+
+// ResolveConsolidateInterval returns the effective consolidation interval,
+// substituting the 24h default for a non-positive configured value.
+func (c *Config) ResolveConsolidateInterval() time.Duration {
+	if c.ConsolidateInterval > 0 {
+		return c.ConsolidateInterval
+	}
+	return defaultConsolidateInterval
+}
+
+// ConsolidateLLM returns the effective LLM settings for the consolidation
+// worker: the independent Consolidate config with each unset connection field
+// filled from the main LLM config. Enabled/periodic gating is handled
+// separately via ConsolidateEnabled, so only the connection fields are merged.
+func (c *Config) ConsolidateLLM() LLMConfig {
+	out := c.LLM
+	if c.Consolidate.BaseURL != "" {
+		out.BaseURL = c.Consolidate.BaseURL
+	}
+	if c.Consolidate.APIKey != "" {
+		out.APIKey = c.Consolidate.APIKey
+	}
+	if c.Consolidate.Model != "" {
+		out.Model = c.Consolidate.Model
+	}
+	if c.Consolidate.ReasoningEffort != "" {
+		out.ReasoningEffort = c.Consolidate.ReasoningEffort
+	}
+	return out
+}
+
+// ResolveDotfilesRoot returns the dotfiles repository root used as
+// assist_consolidate.py --root. It honors an explicit DotfilesRoot override,
+// otherwise derives it from the resolved memory dir: memory/user lives at
+// <dotfiles>/memory/user, so the root is the dir's two-levels-up parent. This
+// keeps the script's write target bound to the exact memory dir the existing
+// syncer scans (locked decision B1). Returns "" when neither is resolvable.
+func (c *Config) ResolveDotfilesRoot() string {
+	if strings.TrimSpace(c.DotfilesRoot) != "" {
+		return c.DotfilesRoot
+	}
+	dir := c.ResolveMemoryDir()
+	if dir == "" {
+		return ""
+	}
+	// <dotfiles>/memory/user -> <dotfiles>
+	return filepath.Dir(filepath.Dir(dir))
 }
 
 type dirSource int
@@ -835,6 +912,28 @@ func (c *Config) loadEnv() {
 		if len(roots) > 0 {
 			c.VaultRoots = roots
 		}
+	}
+	if v := os.Getenv("AGENTSVIEW_CONSOLIDATE_BASE_URL"); v != "" {
+		c.Consolidate.BaseURL = v
+	}
+	if v := os.Getenv("AGENTSVIEW_CONSOLIDATE_API_KEY"); v != "" {
+		c.Consolidate.APIKey = v
+	}
+	if v := os.Getenv("AGENTSVIEW_CONSOLIDATE_MODEL"); v != "" {
+		c.Consolidate.Model = v
+	}
+	if v, ok := os.LookupEnv("AGENTSVIEW_CONSOLIDATE_ENABLED"); ok {
+		c.ConsolidateEnabled = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("AGENTSVIEW_CONSOLIDATE_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.ConsolidateInterval = d
+		} else {
+			log.Printf("config: invalid AGENTSVIEW_CONSOLIDATE_INTERVAL %q: %v", v, err)
+		}
+	}
+	if v := os.Getenv("AGENTSVIEW_DOTFILES_ROOT"); v != "" {
+		c.DotfilesRoot = v
 	}
 }
 
@@ -1708,6 +1807,11 @@ func (c *Config) SaveSettings(patch map[string]any) error {
 	if v, ok := patch["require_auth"]; ok {
 		if b, ok := v.(bool); ok {
 			c.RequireAuth = b
+		}
+	}
+	if v, ok := patch["consolidate_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			c.ConsolidateEnabled = b
 		}
 	}
 	return nil

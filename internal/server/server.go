@@ -19,6 +19,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/consolidate"
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/insight"
 	"go.kenn.io/agentsview/internal/llm"
@@ -82,6 +83,13 @@ type Server struct {
 	// under this prefix and a <base href> tag is injected
 	// into the SPA's index.html.
 	basePath string
+
+	// consolidateCtl is the runtime handle to the background
+	// consolidation worker, used by the enable endpoint to arm/
+	// disarm it without a process restart. Nil when the worker
+	// was not started (no memory dir / read-only store), in which
+	// case the enable endpoint reports "not available".
+	consolidateCtl *consolidate.Controller
 }
 
 // New creates a new Server.
@@ -188,6 +196,14 @@ func WithBroadcaster(b *Broadcaster) Option {
 // allowing tests to substitute a deterministic stub.
 func WithUpdateChecker(f UpdateCheckFunc) Option {
 	return func(s *Server) { s.updateCheckFn = f }
+}
+
+// WithConsolidateController injects the background consolidation
+// controller so the enable endpoint can arm/disarm the worker at
+// runtime. Nil is allowed (worker not started); the endpoint then
+// reports the feature as unavailable.
+func WithConsolidateController(c *consolidate.Controller) Option {
+	return func(s *Server) { s.consolidateCtl = c }
 }
 
 // WithLLMHTTPClient overrides LLM provider HTTP calls for tests.
