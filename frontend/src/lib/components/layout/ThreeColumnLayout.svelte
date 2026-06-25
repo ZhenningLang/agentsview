@@ -351,6 +351,14 @@
       </button>
       <button
         class="mobile-nav-btn"
+        class:active={router.route === "memory"}
+        onclick={() => mobileNav("memory")}
+      >
+        <LogsIcon size="12" strokeWidth="2" aria-hidden="true" />
+        Memory
+      </button>
+      <button
+        class="mobile-nav-btn"
         class:active={router.route === "trash"}
         onclick={() => mobileNav("trash")}
       >

@@ -74,6 +74,10 @@ type Store interface {
 	GetSkillHealth(ctx context.Context, f SkillHealthFilter) (SkillHealthReport, error)
 	GetSkillTokenCost(ctx context.Context) (SkillTokenCostReport, error)
 
+	// Memory (read-only dimension mirrored from the user-memory SSOT).
+	ListMemories(ctx context.Context, f MemoryFilter) ([]Memory, error)
+	GetMemory(ctx context.Context, relPath string) (*Memory, error)
+
 	// Usage (token cost).
 	GetDailyUsage(ctx context.Context, f UsageFilter) (DailyUsageResult, error)
 	GetTopSessionsByCost(ctx context.Context, f UsageFilter, limit int) ([]TopSessionEntry, error)

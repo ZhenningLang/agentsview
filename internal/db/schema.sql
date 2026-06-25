@@ -438,3 +438,30 @@ CREATE INDEX IF NOT EXISTS idx_skill_health_skill
     ON skill_health(skill_name);
 CREATE INDEX IF NOT EXISTS idx_skill_health_type
     ON skill_health(check_type);
+
+-- Memory dimension table: read-only mirror of the user-memory SSOT
+-- (~/.dotfiles/memory/user/*.md). Like skills it is slowly-changing
+-- reference data populated by a dedicated MemorySyncer that runs
+-- independently of the session sync engine, so it never touches the
+-- sessions/messages/tool_calls fact domain or the stats triggers above.
+-- Full-replace semantics on sync. rel_path is the file path relative to
+-- the memory directory and serves as the stable natural key.
+CREATE TABLE IF NOT EXISTS memory (
+    rel_path       TEXT PRIMARY KEY,
+    title          TEXT NOT NULL DEFAULT '',
+    date           TEXT NOT NULL DEFAULT '',
+    problem_type   TEXT NOT NULL DEFAULT '',
+    type           TEXT NOT NULL DEFAULT '',
+    status         TEXT NOT NULL DEFAULT '',
+    origin_session TEXT NOT NULL DEFAULT '',
+    body           TEXT NOT NULL DEFAULT '',
+    body_tokens    INTEGER NOT NULL DEFAULT 0,
+    source_mtime   INTEGER NOT NULL DEFAULT 0,
+    synced_at      TEXT NOT NULL
+        DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_problem_type
+    ON memory(problem_type);
+CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(type);
+CREATE INDEX IF NOT EXISTS idx_memory_status ON memory(status);

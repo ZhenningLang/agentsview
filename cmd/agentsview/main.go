@@ -16,6 +16,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/memory"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/secrets"
 	"go.kenn.io/agentsview/internal/server"
@@ -211,6 +212,11 @@ func runServe(cfg config.Config) {
 	// and fail-open: a missing catalog directory or a write-only PG/
 	// DuckDB store simply leaves the skills feature empty.
 	startSkillSync(ctx, cfg, database)
+
+	// Memory views: sync the user-memory SSOT into the read-only memory
+	// dimension table. Independent of session sync and fail-open in the
+	// same way as skills.
+	startMemorySync(ctx, cfg, database)
 
 	rtOpts := serveRuntimeOptions{
 		Mode:          "serve",
@@ -654,6 +660,41 @@ func startSkillSync(
 			case <-ticker.C:
 				if err := syncer.Sync(ctx); err != nil {
 					log.Printf("skill sync: %v", err)
+				}
+			}
+		}
+	}()
+}
+
+// startMemorySync runs the user-memory SSOT sync once at startup and
+// then on the periodic interval. It is fail-open: it no-ops when no
+// memory directory is configured/found, or when the store is not a local
+// writer (PG/DuckDB serve modes receive memory via the SQLite mirror).
+func startMemorySync(
+	ctx context.Context, cfg config.Config, database db.Store,
+) {
+	dir := cfg.ResolveMemoryDir()
+	if dir == "" {
+		return
+	}
+	writer, ok := database.(memory.Writer)
+	if !ok {
+		return
+	}
+	syncer := memory.NewSyncer(dir, writer, nil)
+	if err := syncer.Sync(ctx); err != nil {
+		log.Printf("memory sync: %v", err)
+	}
+	go func() {
+		ticker := time.NewTicker(periodicSyncInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := syncer.Sync(ctx); err != nil {
+					log.Printf("memory sync: %v", err)
 				}
 			}
 		}
