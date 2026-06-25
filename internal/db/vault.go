@@ -29,8 +29,8 @@ type VaultRun struct {
 	SourcePath    string `json:"source_path"`
 	// AcceptanceOK/AcceptanceExit mirror the workspace acceptance.json
 	// snapshot. Nil when no acceptance.json was present (incomplete run).
-	AcceptanceOK   *bool `json:"acceptance_ok,omitempty"`
-	AcceptanceExit *int  `json:"acceptance_exit,omitempty"`
+	AcceptanceOK   *bool  `json:"acceptance_ok,omitempty"`
+	AcceptanceExit *int   `json:"acceptance_exit,omitempty"`
 	SyncedAt       string `json:"synced_at"`
 	// Phases and Metrics are populated by GetVaultRun only; ListVaultRuns
 	// returns the run header without children.
@@ -44,11 +44,11 @@ type VaultRun struct {
 // corresponding optional file was absent.
 type VaultPhase struct {
 	RunSlug              string  `json:"run_slug"`
-	PhaseID             string  `json:"phase_id"`
-	VerifyOK            *bool   `json:"verify_ok,omitempty"`
-	VerifyExit          *int    `json:"verify_exit,omitempty"`
+	PhaseID              string  `json:"phase_id"`
+	VerifyOK             *bool   `json:"verify_ok,omitempty"`
+	VerifyExit           *int    `json:"verify_exit,omitempty"`
 	StuckConsecutiveFail *int    `json:"stuck_consecutive_fail,omitempty"`
-	StuckFingerprint    *string `json:"stuck_fingerprint,omitempty"`
+	StuckFingerprint     *string `json:"stuck_fingerprint,omitempty"`
 }
 
 // VaultMetric is one event record from metrics.jsonl (header rows excluded).
