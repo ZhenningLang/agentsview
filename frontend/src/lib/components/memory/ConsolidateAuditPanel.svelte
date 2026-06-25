@@ -171,7 +171,7 @@
 <style>
   .consolidate-audit {
     margin: 0.5rem 0 1rem;
-    border: 1px solid var(--border, #2a2a2a);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
   }
   .toggle {
@@ -212,7 +212,7 @@
     gap: 0.6rem;
     flex-wrap: wrap;
     padding: 0.5rem 0 0.6rem;
-    border-bottom: 1px solid var(--border, #2a2a2a);
+    border-bottom: 1px solid var(--border-default);
     margin-bottom: 0.5rem;
   }
   .enable-toggle {
@@ -220,7 +220,7 @@
     align-items: center;
     gap: 0.45rem;
     padding: 0.3rem 0.6rem 0.3rem 0.35rem;
-    border: 1px solid var(--border, #2a2a2a);
+    border: 1px solid var(--border-default);
     border-radius: 999px;
     background: none;
     color: inherit;
@@ -268,7 +268,7 @@
   }
   .run {
     padding: 0.4rem 0;
-    border-top: 1px solid var(--border, #2a2a2a);
+    border-top: 1px solid var(--border-default);
   }
   .run-head {
     display: flex;
