@@ -170,6 +170,10 @@ type Config struct {
 	// the environment, so the config file does not override the env's choice.
 	envBackupEnabledSet bool
 
+	// envExtractEnabledSet records that AGENTSVIEW_EXTRACT_ENABLED was present
+	// in the environment, so the config file does not override the env's choice.
+	envExtractEnabledSet bool
+
 	ResultContentBlockedCategories []string `json:"result_content_blocked_categories,omitempty" toml:"result_content_blocked_categories"`
 
 	// EventsCoalesceInterval is the minimum wall-clock time between
@@ -234,6 +238,14 @@ type Config struct {
 	// enabled. Zero selects the default (24h). Env:
 	// AGENTSVIEW_CONSOLIDATE_INTERVAL (a Go duration string).
 	ConsolidateInterval time.Duration `json:"consolidate_interval,omitempty" toml:"consolidate_interval"`
+
+	// ExtractEnabled gates the background LLM extraction worker. It defaults to
+	// OFF so no LLM/file side effect happens without explicit opt-in.
+	ExtractEnabled bool `json:"extract_enabled" toml:"extract_enabled"`
+
+	// ExtractInterval is the period between extraction runs once enabled. Zero
+	// selects the default (24h). Env: AGENTSVIEW_EXTRACT_INTERVAL.
+	ExtractInterval time.Duration `json:"extract_interval,omitempty" toml:"extract_interval"`
 
 	// DotfilesRoot is the dotfiles repository root passed to
 	// assist_consolidate.py as --root. When empty it is derived from the
@@ -302,6 +314,10 @@ func (c *Config) ResolveBackupWorkspaceDir() string {
 // ConsolidateInterval is left at its zero value.
 const defaultConsolidateInterval = 24 * time.Hour
 
+// defaultExtractInterval is the period between extraction runs when
+// ExtractInterval is left at its zero value.
+const defaultExtractInterval = 24 * time.Hour
+
 // ResolveConsolidateInterval returns the effective consolidation interval,
 // substituting the 24h default for a non-positive configured value.
 func (c *Config) ResolveConsolidateInterval() time.Duration {
@@ -309,6 +325,15 @@ func (c *Config) ResolveConsolidateInterval() time.Duration {
 		return c.ConsolidateInterval
 	}
 	return defaultConsolidateInterval
+}
+
+// ResolveExtractInterval returns the effective extraction interval,
+// substituting the 24h default for a non-positive configured value.
+func (c *Config) ResolveExtractInterval() time.Duration {
+	if c.ExtractInterval > 0 {
+		return c.ExtractInterval
+	}
+	return defaultExtractInterval
 }
 
 // ConsolidateLLM returns the effective LLM settings for the consolidation
@@ -767,6 +792,8 @@ func (c *Config) loadFile() error {
 		BackupEnabled                  bool                       `toml:"backup_enabled"`
 		BackupInterval                 time.Duration              `toml:"backup_interval"`
 		BackupWorkspaceDir             string                     `toml:"backup_workspace_dir"`
+		ExtractEnabled                 bool                       `toml:"extract_enabled"`
+		ExtractInterval                time.Duration              `toml:"extract_interval"`
 	}
 	meta, err := toml.DecodeFile(path, &file)
 	if err != nil {
@@ -842,6 +869,12 @@ func (c *Config) loadFile() error {
 	}
 	if file.BackupWorkspaceDir != "" && c.BackupWorkspaceDir == "" {
 		c.BackupWorkspaceDir = file.BackupWorkspaceDir
+	}
+	if !c.envExtractEnabledSet && meta.IsDefined("extract_enabled") {
+		c.ExtractEnabled = file.ExtractEnabled
+	}
+	if file.ExtractInterval > 0 && c.ExtractInterval == 0 {
+		c.ExtractInterval = file.ExtractInterval
 	}
 	// Merge pg field-by-field so env vars override only
 	// the fields they set, preserving config-file settings.
@@ -1118,6 +1151,17 @@ func (c *Config) loadEnv() {
 			c.ConsolidateInterval = d
 		} else {
 			log.Printf("config: invalid AGENTSVIEW_CONSOLIDATE_INTERVAL %q: %v", v, err)
+		}
+	}
+	if v, ok := os.LookupEnv("AGENTSVIEW_EXTRACT_ENABLED"); ok {
+		c.ExtractEnabled = v == "1" || strings.EqualFold(v, "true")
+		c.envExtractEnabledSet = true
+	}
+	if v := os.Getenv("AGENTSVIEW_EXTRACT_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.ExtractInterval = d
+		} else {
+			log.Printf("config: invalid AGENTSVIEW_EXTRACT_INTERVAL %q: %v", v, err)
 		}
 	}
 	if v := os.Getenv("AGENTSVIEW_DOTFILES_ROOT"); v != "" {
@@ -2080,6 +2124,16 @@ func (c *Config) SaveSettings(patch map[string]any) error {
 	if v, ok := patch["backup_enabled"]; ok {
 		if b, ok := v.(bool); ok {
 			c.BackupEnabled = b
+		}
+	}
+	if v, ok := patch["extract_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			c.ExtractEnabled = b
+		}
+	}
+	if v, ok := patch["extract_interval"]; ok {
+		if d, ok := v.(time.Duration); ok {
+			c.ExtractInterval = d
 		}
 	}
 	if v, ok := patch["memory_backup_repo"]; ok {

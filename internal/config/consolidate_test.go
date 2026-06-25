@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // spec verify ⑤: memory/user is the same dir AGENTSVIEW_MEMORY_DIR resolves to,
@@ -56,12 +59,38 @@ func TestResolveConsolidateInterval_Default(t *testing.T) {
 // spec verify ④: ConsolidateEnabled defaults OFF.
 func TestConsolidateEnabled_DefaultsOff(t *testing.T) {
 	cfg, err := Default()
-	if err != nil {
-		t.Fatalf("Default: %v", err)
-	}
-	if cfg.ConsolidateEnabled {
-		t.Fatal("ConsolidateEnabled must default to OFF")
-	}
+	require.NoError(t, err)
+	assert.False(t, cfg.ConsolidateEnabled)
+}
+
+func TestExtractEnabled_DefaultsOffAndInterval(t *testing.T) {
+	cfg, err := Default()
+	require.NoError(t, err)
+	assert.False(t, cfg.ExtractEnabled)
+	assert.Equal(t, 24*time.Hour, cfg.ResolveExtractInterval())
+
+	cfg.ExtractInterval = 90 * time.Minute
+	assert.Equal(t, 90*time.Minute, cfg.ResolveExtractInterval())
+}
+
+func TestExtractSettingsPersistAndEnvOverride(t *testing.T) {
+	dir := setupTestEnv(t)
+	writeConfig(t, dir, map[string]any{
+		"extract_enabled":  true,
+		"extract_interval": "2h",
+	})
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+	assert.True(t, cfg.ExtractEnabled)
+	assert.Equal(t, 2*time.Hour, cfg.ExtractInterval)
+
+	t.Setenv("AGENTSVIEW_EXTRACT_ENABLED", "false")
+	t.Setenv("AGENTSVIEW_EXTRACT_INTERVAL", "30m")
+	cfg, err = LoadMinimal()
+	require.NoError(t, err)
+	assert.False(t, cfg.ExtractEnabled)
+	assert.Equal(t, 30*time.Minute, cfg.ExtractInterval)
 }
 
 // The consolidate LLM config falls back to the main LLM connection fields when

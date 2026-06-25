@@ -135,6 +135,9 @@ func copyTree(src, dst string, skipGit bool) (int, error) {
 		if !d.Type().IsRegular() {
 			return nil
 		}
+		if isAuditJSONL(d.Name()) {
+			return nil
+		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
@@ -154,6 +157,10 @@ func copyTree(src, dst string, skipGit bool) (int, error) {
 		return nil
 	})
 	return count, err
+}
+
+func isAuditJSONL(name string) bool {
+	return strings.HasPrefix(name, ".") && strings.HasSuffix(name, "-audit.jsonl")
 }
 
 // copyFile copies a single regular file's contents.

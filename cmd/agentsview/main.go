@@ -19,6 +19,7 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/consolidate"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/extract"
 	"go.kenn.io/agentsview/internal/llm"
 	"go.kenn.io/agentsview/internal/memory"
 	"go.kenn.io/agentsview/internal/parser"
@@ -243,6 +244,13 @@ func runServe(cfg config.Config) {
 	// enable endpoint reporting "not available".
 	consolidateController := startConsolidate(ctx, cfg, database)
 
+	// Extraction worker: background timer that reads sessions/messages,
+	// asks the extract LLM usage for raw candidates, and writes only
+	// memory/.staging/raw_memories. It is default-OFF and fail-open like the
+	// other side-effecting workers; a nil controller means prerequisites were
+	// missing and the enable endpoint reports unavailable.
+	extractController := startExtract(ctx, cfg, database)
+
 	// Backup-push worker: background timer (bound to this process — no system
 	// cron) that snapshots memory/user + CC-native into an isolated git
 	// workspace and pushes to the Phase 04 private repo. Always started when a
@@ -272,6 +280,7 @@ func runServe(cfg config.Config) {
 		server.WithBaseContext(ctx),
 		server.WithBroadcaster(broadcaster),
 		server.WithConsolidateController(consolidateController),
+		server.WithExtractController(extractController),
 		server.WithBackupController(backupController),
 	)
 
@@ -852,6 +861,31 @@ func startConsolidate(
 	)
 	ctrl := consolidate.NewController(worker, cfg.ConsolidateEnabled)
 	go ctrl.Run(ctx, cfg.ResolveConsolidateInterval())
+	return ctrl
+}
+
+// startExtract starts the background LLM extraction worker and returns a
+// Controller so the server can arm/disarm it at runtime. It only starts when
+// a writable local store and the dotfiles/memory staging roots are available.
+// Otherwise it returns nil and fails open.
+func startExtract(
+	ctx context.Context, cfg config.Config, database db.Store,
+) *extract.Controller {
+	memDir := cfg.ResolveMemoryDir()
+	if memDir == "" {
+		return nil
+	}
+	root := cfg.ResolveDotfilesRoot()
+	if root == "" {
+		return nil
+	}
+	if _, ok := database.(memory.Writer); !ok {
+		return nil
+	}
+	audit := extract.NewAuditLog(extract.AuditPath(cfg.DataDir))
+	worker := extract.NewWorker(database, llm.New(cfg.ResolveUsageLLM("extract")), root, audit)
+	ctrl := extract.NewController(worker, cfg.ExtractEnabled)
+	go ctrl.Run(ctx, cfg.ResolveExtractInterval())
 	return ctrl
 }
 
