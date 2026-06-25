@@ -198,6 +198,13 @@ type Config struct {
 	// memory feature stays empty and fail-open.
 	MemoryDir string `json:"memory_dir,omitempty" toml:"memory_dir"`
 
+	// CCMemoryDir is the root of CC-native auto-memory: a directory whose
+	// immediate children are project dirs each holding a memory/ subdir
+	// (<project>/memory/*.md). When empty, ResolveCCMemoryDir probes the
+	// default ~/.claude/projects; when nothing is found the CC-native memory
+	// source stays empty and fail-open. Override via AGENTSVIEW_CC_MEMORY_DIR.
+	CCMemoryDir string `json:"cc_memory_dir,omitempty" toml:"cc_memory_dir"`
+
 	// VaultRoots are the roots scanned for dev-workflow run records under
 	// `.long-loop/<slug>/`. When empty, ResolveVaultRoots probes the
 	// default ~/.dotfiles. Multiple roots may be configured; via env they
@@ -512,6 +519,7 @@ func (c *Config) loadFile() error {
 		RemoteHosts                    []RemoteHost               `toml:"remote_hosts"`
 		SkillsCatalogDir               string                     `toml:"skills_catalog_dir"`
 		MemoryDir                      string                     `toml:"memory_dir"`
+		CCMemoryDir                    string                     `toml:"cc_memory_dir"`
 		VaultRoots                     []string                   `toml:"vault_roots"`
 	}
 	meta, err := toml.DecodeFile(path, &file)
@@ -559,6 +567,11 @@ func (c *Config) loadFile() error {
 	// config file only fills the value when env left it unset.
 	if file.MemoryDir != "" && c.MemoryDir == "" {
 		c.MemoryDir = file.MemoryDir
+	}
+	// env (loadEnv, AGENTSVIEW_CC_MEMORY_DIR) runs first and wins; the
+	// config file only fills the value when env left it unset.
+	if file.CCMemoryDir != "" && c.CCMemoryDir == "" {
+		c.CCMemoryDir = file.CCMemoryDir
 	}
 	// env (loadEnv, AGENTSVIEW_VAULT_ROOTS) runs first and wins; the
 	// config file only fills the value when env left it unset.
@@ -809,6 +822,9 @@ func (c *Config) loadEnv() {
 	if v := os.Getenv("AGENTSVIEW_MEMORY_DIR"); v != "" {
 		c.MemoryDir = v
 	}
+	if v := os.Getenv("AGENTSVIEW_CC_MEMORY_DIR"); v != "" {
+		c.CCMemoryDir = v
+	}
 	if v := os.Getenv("AGENTSVIEW_VAULT_ROOTS"); v != "" {
 		roots := make([]string, 0, 2)
 		for part := range strings.SplitSeq(v, ",") {
@@ -903,6 +919,28 @@ func (c *Config) ResolveMemoryDir() string {
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates,
 			filepath.Join(home, ".dotfiles", "memory", "user"))
+	}
+	for _, dir := range candidates {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
+	}
+	return ""
+}
+
+// ResolveCCMemoryDir returns the effective root for CC-native auto-memory
+// (the directory whose children are project dirs each holding a memory/
+// subdir). It prefers an explicit config/env value, then probes the default
+// ~/.claude/projects. It returns "" (fail-open: CC-native source disabled)
+// when no candidate directory exists on disk.
+func (c *Config) ResolveCCMemoryDir() string {
+	candidates := make([]string, 0, 2)
+	if c.CCMemoryDir != "" {
+		candidates = append(candidates, c.CCMemoryDir)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".claude", "projects"))
 	}
 	for _, dir := range candidates {
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {

@@ -27,6 +27,7 @@ func (s *Server) registerMemoryRoutes() {
 }
 
 type memoriesListInput struct {
+	Source        string `query:"source" doc:"Filter by data source (cross-agent | cc-native)"`
 	ProblemType   string `query:"problem_type" doc:"Filter by frontmatter problem_type"`
 	Type          string `query:"type" doc:"Filter by frontmatter type"`
 	Status        string `query:"status" doc:"Filter by frontmatter status"`
@@ -42,6 +43,7 @@ func (s *Server) humaListMemories(
 	ctx context.Context, in *memoriesListInput,
 ) (*jsonOutput[memoriesListOutput], error) {
 	memories, err := s.db.ListMemories(ctx, db.MemoryFilter{
+		Source:        in.Source,
 		ProblemType:   in.ProblemType,
 		Type:          in.Type,
 		Status:        in.Status,

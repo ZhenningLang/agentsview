@@ -316,10 +316,10 @@ func TestEnsureSchemaGroupsMissingColumnMigrationsByTable(t *testing.T) {
 
 	require.NoError(t, EnsureSchema(context.Background(), db, "agentsview"))
 
-	// Two tables have missing columns (sessions: termination_status,
+	// Four tables have missing columns (sessions: termination_status,
 	// LLM enrichment columns, and other late-added session columns;
 	// messages: source_parent_uuid, is_sidechain, is_compact_boundary,
-	// thinking_text; skills: prompt, prompt_tokens). Per-table batching
-	// means one ALTER each.
-	assert.Equal(t, 3, state.alterTableExecCount(), "ALTER TABLE execs")
+	// thinking_text; skills: prompt, prompt_tokens; memory: source).
+	// Per-table batching means one ALTER each.
+	assert.Equal(t, 4, state.alterTableExecCount(), "ALTER TABLE execs")
 }

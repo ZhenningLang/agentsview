@@ -13,11 +13,20 @@ import (
 
 type fakeWriter struct {
 	memories []db.Memory
+	source   string
 }
 
 func (w *fakeWriter) ReplaceMemories(
 	_ context.Context, m []db.Memory,
 ) error {
+	w.memories = m
+	return nil
+}
+
+func (w *fakeWriter) ReplaceMemoriesBySource(
+	_ context.Context, source string, m []db.Memory,
+) error {
+	w.source = source
 	w.memories = m
 	return nil
 }

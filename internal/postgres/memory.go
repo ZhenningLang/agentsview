@@ -14,7 +14,7 @@ import (
 // an FTS5 MATCH for the full-text Q filter; PG has no FTS5 module, so it
 // uses ILIKE substring search (same dialect the message search uses).
 
-const pgMemoryCols = `rel_path, title, date, problem_type, type, status,
+const pgMemoryCols = `rel_path, source, title, date, problem_type, type, status,
 	origin_session, body, body_tokens, source_mtime, synced_at`
 
 // ListMemories returns memory notes ordered by date descending then
@@ -24,6 +24,9 @@ func (s *Store) ListMemories(
 ) ([]db.Memory, error) {
 	pb := &paramBuilder{}
 	var preds []string
+	if f.Source != "" {
+		preds = append(preds, "source = "+pb.add(f.Source))
+	}
 	if f.ProblemType != "" {
 		preds = append(preds, "problem_type = "+pb.add(f.ProblemType))
 	}
@@ -87,7 +90,7 @@ func scanPGMemory(
 ) (db.Memory, error) {
 	var m db.Memory
 	if err := rows.Scan(
-		&m.RelPath, &m.Title, &m.Date, &m.ProblemType, &m.Type,
+		&m.RelPath, &m.Source, &m.Title, &m.Date, &m.ProblemType, &m.Type,
 		&m.Status, &m.OriginSession, &m.Body, &m.BodyTokens,
 		&m.SourceMtime, &m.SyncedAt,
 	); err != nil {

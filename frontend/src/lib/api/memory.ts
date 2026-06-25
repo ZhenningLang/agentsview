@@ -4,6 +4,9 @@ import { getBase, authHeaders, ApiError, responseErrorMessage } from "./runtime"
 // memory SSOT) with YAML frontmatter fields plus a body and sync metadata.
 export interface Memory {
   rel_path: string;
+  // Data source: "cross-agent" (the user-memory SSOT) or "cc-native"
+  // (CC auto-memory scanned across project dirs).
+  source: string;
   title: string;
   date: string;
   problem_type: string;
@@ -19,6 +22,7 @@ export interface Memory {
 // MemoryFilter narrows the listing. Empty / undefined fields = no filter. q is
 // a full-text query over the note body.
 export interface MemoryFilter {
+  source?: string;
   problem_type?: string;
   type?: string;
   status?: string;
@@ -60,6 +64,7 @@ export async function fetchMemories(
   signal?: AbortSignal,
 ): Promise<Memory[]> {
   const params = new URLSearchParams();
+  if (filter.source) params.set("source", filter.source);
   if (filter.problem_type) params.set("problem_type", filter.problem_type);
   if (filter.type) params.set("type", filter.type);
   if (filter.status) params.set("status", filter.status);

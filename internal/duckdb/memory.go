@@ -14,7 +14,7 @@ import (
 // for the full-text Q filter; DuckDB has no FTS5 table here, so it uses
 // ILIKE substring search (same dialect the message search uses).
 
-const duckMemoryCols = `rel_path, title, date, problem_type, type, status,
+const duckMemoryCols = `rel_path, source, title, date, problem_type, type, status,
 	origin_session, body, body_tokens, source_mtime, synced_at`
 
 func (s *Store) ListMemories(
@@ -22,6 +22,10 @@ func (s *Store) ListMemories(
 ) ([]db.Memory, error) {
 	var preds []string
 	var args []any
+	if f.Source != "" {
+		preds = append(preds, "source = ?")
+		args = append(args, f.Source)
+	}
 	if f.ProblemType != "" {
 		preds = append(preds, "problem_type = ?")
 		args = append(args, f.ProblemType)
@@ -88,7 +92,7 @@ func scanDuckMemory(
 ) (db.Memory, error) {
 	var m db.Memory
 	if err := rows.Scan(
-		&m.RelPath, &m.Title, &m.Date, &m.ProblemType, &m.Type,
+		&m.RelPath, &m.Source, &m.Title, &m.Date, &m.ProblemType, &m.Type,
 		&m.Status, &m.OriginSession, &m.Body, &m.BodyTokens,
 		&m.SourceMtime, &m.SyncedAt,
 	); err != nil {

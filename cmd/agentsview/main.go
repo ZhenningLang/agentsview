@@ -219,6 +219,11 @@ func runServe(cfg config.Config) {
 	// same way as skills.
 	startMemorySync(ctx, cfg, database)
 
+	// CC-native memory: sync the second memory data source (CC auto-memory
+	// across project dirs) into the same read-only memory dimension table,
+	// tagged source=cc-native. Fail-open like the cross-agent memory sync.
+	startCCMemorySync(ctx, cfg, database)
+
 	// Vault views: sync dev-workflow .long-loop run records into the
 	// read-only vault dimension tables. Independent of session sync and
 	// fail-open in the same way as memory.
@@ -701,6 +706,44 @@ func startMemorySync(
 			case <-ticker.C:
 				if err := syncer.Sync(ctx); err != nil {
 					log.Printf("memory sync: %v", err)
+				}
+			}
+		}
+	}()
+}
+
+// startCCMemorySync runs the CC-native memory sync once at startup and then on
+// the periodic interval. CC-native auto-memory is the second memory data
+// source; it lands in the same memory dimension table tagged source=cc-native
+// and full-replaces only that source on each run, so it never disturbs the
+// cross-agent rows. Fail-open: it no-ops when no CC root is configured/found,
+// or when the store is not a local writer (PG/DuckDB serve modes receive
+// memory via the SQLite mirror).
+func startCCMemorySync(
+	ctx context.Context, cfg config.Config, database db.Store,
+) {
+	root := cfg.ResolveCCMemoryDir()
+	if root == "" {
+		return
+	}
+	writer, ok := database.(memory.Writer)
+	if !ok {
+		return
+	}
+	syncer := memory.NewCCSyncer(root, writer, nil)
+	if err := syncer.Sync(ctx); err != nil {
+		log.Printf("cc memory sync: %v", err)
+	}
+	go func() {
+		ticker := time.NewTicker(periodicSyncInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := syncer.Sync(ctx); err != nil {
+					log.Printf("cc memory sync: %v", err)
 				}
 			}
 		}
