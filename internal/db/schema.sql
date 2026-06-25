@@ -466,7 +466,13 @@ CREATE INDEX IF NOT EXISTS idx_memory_problem_type
     ON memory(problem_type);
 CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(type);
 CREATE INDEX IF NOT EXISTS idx_memory_status ON memory(status);
-CREATE INDEX IF NOT EXISTS idx_memory_source ON memory(source);
+-- NOTE: idx_memory_source is intentionally NOT created here. On an
+-- existing database the memory table predates the `source` column, and
+-- this schema runs (in init) BEFORE migrateColumns adds that column, so
+-- indexing memory(source) here fails with "no such column: source" and
+-- aborts startup. The index is created in migrateColumns() right after the
+-- ALTER TABLE ... ADD COLUMN source migration, which covers both fresh and
+-- migrated databases.
 
 -- Vault dimension tables: read-only mirror of dev workflow run records
 -- discovered by scanning configured roots for .long-loop/<slug>/
