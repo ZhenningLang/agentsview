@@ -9,11 +9,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata"
 
 	"github.com/spf13/cobra"
+	"go.kenn.io/agentsview/internal/backup"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/consolidate"
 	"go.kenn.io/agentsview/internal/db"
@@ -241,6 +243,15 @@ func runServe(cfg config.Config) {
 	// enable endpoint reporting "not available".
 	consolidateController := startConsolidate(ctx, cfg, database)
 
+	// Backup-push worker: background timer (bound to this process — no system
+	// cron) that snapshots memory/user + CC-native into an isolated git
+	// workspace and pushes to the Phase 04 private repo. Always started when a
+	// backup repo is configured and the store is a local writer; BackupEnabled
+	// (default OFF) only sets the initial armed state, so enabling from the UI
+	// takes effect (with an immediate first push) without a restart. Fail-open:
+	// a nil controller leaves the enable endpoint reporting "not available".
+	backupController := startBackupPush(ctx, cfg, database)
+
 	rtOpts := serveRuntimeOptions{
 		Mode:          "serve",
 		RequestedPort: cfg.Port,
@@ -261,6 +272,7 @@ func runServe(cfg config.Config) {
 		server.WithBaseContext(ctx),
 		server.WithBroadcaster(broadcaster),
 		server.WithConsolidateController(consolidateController),
+		server.WithBackupController(backupController),
 	)
 
 	rt, err := startServerWithOptionalCaddy(ctx, cfg, srv, rtOpts)
@@ -840,6 +852,49 @@ func startConsolidate(
 	)
 	ctrl := consolidate.NewController(worker, cfg.ConsolidateEnabled)
 	go ctrl.Run(ctx, cfg.ResolveConsolidateInterval())
+	return ctrl
+}
+
+// startBackupPush starts the background backup-push worker and returns a
+// Controller so the server can arm/disarm it at runtime. The loop is ALWAYS
+// started (when prerequisites are present) so enabling it from the UI takes
+// effect without a process restart; BackupEnabled (default OFF) only sets the
+// initial armed state. While disarmed every tick/trigger is a no-op, so a push
+// never happens without an explicit opt-in; arming fires one immediate cycle.
+//
+// It returns nil (and starts nothing) when no backup repo is configured/linked
+// or when the store is not a local writer (PG/DuckDB serve modes never own the
+// SSOT files) — fail-open like the syncs above. A nil controller leaves the
+// enable endpoint reporting "not available", never panicking. The timer is
+// bound to this process (no system cron), so backups run only while agentsview
+// runs.
+func startBackupPush(
+	ctx context.Context, cfg config.Config, database db.Store,
+) *backup.Controller {
+	repo := strings.TrimSpace(cfg.MemoryBackupRepo)
+	if repo == "" {
+		return nil
+	}
+	workspace := cfg.ResolveBackupWorkspaceDir()
+	if workspace == "" {
+		return nil
+	}
+	if _, ok := database.(memory.Writer); !ok {
+		return nil
+	}
+	worker := backup.NewWorker(
+		backup.Config{
+			Workspace:     workspace,
+			Repo:          repo,
+			CrossAgentDir: cfg.ResolveMemoryDir(),
+			CCRoot:        cfg.ResolveCCMemoryDir(),
+		},
+		backup.CLIGitRunner{},
+		backup.CLIGHRunner{},
+		backup.NewStatusStore(backup.StatusPath(cfg.DataDir)),
+	)
+	ctrl := backup.NewController(worker, cfg.BackupEnabled)
+	go ctrl.Run(ctx, cfg.ResolveBackupInterval())
 	return ctrl
 }
 

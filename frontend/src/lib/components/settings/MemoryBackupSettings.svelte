@@ -4,6 +4,9 @@
   import {
     fetchMemoryBackupStatus,
     connectMemoryBackup,
+    fetchBackupPushStatus,
+    setBackupPushEnabled,
+    type BackupPushStatus,
   } from "../../api/memoryBackup";
 
   let repoInput: string = $state("");
@@ -13,6 +16,20 @@
   let error: string | null = $state(null);
   let success: string | null = $state(null);
 
+  // Background backup-push state.
+  let push: BackupPushStatus | null = $state(null);
+  let togglingPush: boolean = $state(false);
+  let pushError: string | null = $state(null);
+
+  async function loadPushStatus() {
+    try {
+      push = await fetchBackupPushStatus();
+    } catch {
+      // Fail-soft: leave the push status hidden if it is unreachable.
+      push = null;
+    }
+  }
+
   onMount(async () => {
     try {
       const status = await fetchMemoryBackupStatus();
@@ -21,7 +38,24 @@
     } catch {
       // Fail-open: an unreachable status endpoint just leaves the form blank.
     }
+    await loadPushStatus();
   });
+
+  async function handleTogglePush() {
+    if (!push) return;
+    togglingPush = true;
+    pushError = null;
+    try {
+      const res = await setBackupPushEnabled(!push.enabled);
+      // Reload to pick up the immediate-cycle result (last success / error).
+      push = { ...push, enabled: res.enabled, available: res.available };
+      await loadPushStatus();
+    } catch (e) {
+      pushError = e instanceof Error ? e.message : "Failed to toggle backup push";
+    } finally {
+      togglingPush = false;
+    }
+  }
 
   async function handleConnect() {
     const target = repoInput.trim();
@@ -88,6 +122,53 @@
   {/if}
   {#if success}
     <p class="msg success">{success}</p>
+  {/if}
+
+  {#if push}
+    <div class="push-block">
+      <div class="push-header">
+        <span class="status-label">Auto push</span>
+        <button
+          class="toggle-btn"
+          class:on={push.enabled}
+          disabled={togglingPush || !push.available}
+          onclick={handleTogglePush}
+          title={!push.available
+            ? "Connect a private repo first (and run a writable, local store)"
+            : ""}
+        >
+          {#if togglingPush}
+            ...
+          {:else}
+            {push.enabled ? "On" : "Off"}
+          {/if}
+        </button>
+      </div>
+
+      {#if push.last_success_at}
+        <p class="push-line ok">
+          Last push succeeded at {push.last_success_at}.
+        </p>
+      {/if}
+      {#if push.last_error}
+        <p class="push-line bad">
+          Last push failed{push.last_error_at
+            ? ` at ${push.last_error_at}`
+            : ""}: {push.last_error}
+        </p>
+      {/if}
+      {#if !push.last_success_at && !push.last_error}
+        <p class="push-line muted">No backup pushed yet.</p>
+      {/if}
+      {#if pushError}
+        <p class="msg error">{pushError}</p>
+      {/if}
+
+      <p class="hint">
+        The timer is bound to the agentsview process (no system cron): backups
+        run only while agentsview is running. Memory never goes to a public repo.
+      </p>
+    </div>
   {/if}
 </SettingsSection>
 
@@ -180,5 +261,63 @@
 
   .msg.success {
     color: var(--accent-green, #22c55e);
+  }
+
+  .push-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-muted);
+  }
+
+  .push-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .toggle-btn {
+    height: 26px;
+    padding: 0 12px;
+    border-radius: var(--radius-sm);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-primary);
+    background: var(--bg-inset);
+    border: 1px solid var(--border-muted);
+    cursor: pointer;
+    transition:
+      background 0.12s,
+      color 0.12s;
+  }
+
+  .toggle-btn.on {
+    color: white;
+    background: var(--accent-green, #22c55e);
+    border-color: transparent;
+  }
+
+  .toggle-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+
+  .push-line {
+    font-size: 11px;
+    margin: 0;
+  }
+
+  .push-line.ok {
+    color: var(--accent-green, #22c55e);
+  }
+
+  .push-line.bad {
+    color: var(--accent-red, #ef4444);
+  }
+
+  .push-line.muted {
+    color: var(--text-muted);
   }
 </style>

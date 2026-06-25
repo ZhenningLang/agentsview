@@ -18,6 +18,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
+	"go.kenn.io/agentsview/internal/backup"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/consolidate"
 	"go.kenn.io/agentsview/internal/db"
@@ -96,6 +97,13 @@ type Server struct {
 	// endpoint (Phase 04). Nil defaults to the real CLIRunner; tests
 	// inject a mock via WithGHRunner so no real gh/network call occurs.
 	ghRunner ghconnect.Runner
+
+	// backupCtl is the runtime handle to the background backup-push worker
+	// (Phase 05), used by the enable endpoint to arm/disarm it without a
+	// process restart. Nil when the worker was not started (no backup repo
+	// configured / read-only store), in which case the enable endpoint reports
+	// "not available".
+	backupCtl *backup.Controller
 }
 
 // New creates a new Server.
@@ -210,6 +218,13 @@ func WithUpdateChecker(f UpdateCheckFunc) Option {
 // reports the feature as unavailable.
 func WithConsolidateController(c *consolidate.Controller) Option {
 	return func(s *Server) { s.consolidateCtl = c }
+}
+
+// WithBackupController injects the background backup-push controller so the
+// enable endpoint can arm/disarm the worker at runtime. Nil is allowed (worker
+// not started); the endpoint then reports the feature as unavailable.
+func WithBackupController(c *backup.Controller) Option {
+	return func(s *Server) { s.backupCtl = c }
 }
 
 // WithLLMHTTPClient overrides LLM provider HTTP calls for tests.

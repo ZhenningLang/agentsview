@@ -58,3 +58,53 @@ export async function connectMemoryBackup(
   }
   return (await res.json()) as MemoryBackupConnectResult;
 }
+
+// BackupPushStatus mirrors the server backupPushStatusResponse: the live armed
+// state plus the latest cycle outcome (last success / last error) so the UI can
+// show a green/red indicator for the background backup-push worker.
+export interface BackupPushStatus {
+  enabled: boolean;
+  available: boolean;
+  repo?: string;
+  last_attempt_at?: string;
+  last_success_at?: string;
+  last_error?: string;
+  last_error_at?: string;
+}
+
+// fetchBackupPushStatus loads the background backup-push status. Read-only and
+// fail-soft: callers treat a thrown error as "status unavailable".
+export async function fetchBackupPushStatus(
+  signal?: AbortSignal,
+): Promise<BackupPushStatus> {
+  const res = await fetch(
+    `${getBase()}/config/memory-backup/push-status`,
+    authHeaders({ signal }),
+  );
+  if (!res.ok) {
+    throw new ApiError(res.status, await responseErrorMessage(res));
+  }
+  return (await res.json()) as BackupPushStatus;
+}
+
+// setBackupPushEnabled arms or disarms the background backup-push worker.
+// Enabling persists the choice and fires one immediate push cycle (server-side);
+// it never pushes from the browser. Returns the resulting live state.
+export async function setBackupPushEnabled(
+  enabled: boolean,
+  signal?: AbortSignal,
+): Promise<{ enabled: boolean; available: boolean }> {
+  const res = await fetch(
+    `${getBase()}/config/memory-backup/enable`,
+    authHeaders({
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+      signal,
+    }),
+  );
+  if (!res.ok) {
+    throw new ApiError(res.status, await responseErrorMessage(res));
+  }
+  return (await res.json()) as { enabled: boolean; available: boolean };
+}

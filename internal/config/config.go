@@ -164,6 +164,10 @@ type Config struct {
 	// set so loadFile doesn't override env-set values.
 	agentDirSource map[parser.AgentType]dirSource
 
+	// envBackupEnabledSet records that AGENTSVIEW_BACKUP_ENABLED was present in
+	// the environment, so the config file does not override the env's choice.
+	envBackupEnabledSet bool
+
 	ResultContentBlockedCategories []string `json:"result_content_blocked_categories,omitempty" toml:"result_content_blocked_categories"`
 
 	// EventsCoalesceInterval is the minimum wall-clock time between
@@ -245,6 +249,51 @@ type Config struct {
 	// validated/claimed (private + marker) so the UI can show a connected
 	// status. It is set together with MemoryBackupRepo on a successful connect.
 	MemoryBackupLinked bool `json:"memory_backup_linked" toml:"memory_backup_linked"`
+
+	// BackupEnabled gates the background backup-push worker (Phase 05). It
+	// defaults to OFF: pushing memory to a remote is a side-effecting action, so
+	// the first run is an explicit opt-in (UI/config/env
+	// AGENTSVIEW_BACKUP_ENABLED). Once enabled the worker pushes automatically
+	// on the configured interval while agentsview runs (timer bound to the
+	// process, no system cron).
+	BackupEnabled bool `json:"backup_enabled" toml:"backup_enabled"`
+
+	// BackupInterval is the period between backup pushes once enabled. Zero
+	// selects the default (1h). Env: AGENTSVIEW_BACKUP_INTERVAL (a Go duration
+	// string).
+	BackupInterval time.Duration `json:"backup_interval,omitempty" toml:"backup_interval"`
+
+	// BackupWorkspaceDir is the isolated git working dir the backup worker owns
+	// (its .git, remote, and pushes). When empty it defaults to
+	// <DataDir>/memory-backup. Env: AGENTSVIEW_BACKUP_WORKSPACE.
+	BackupWorkspaceDir string `json:"backup_workspace_dir,omitempty" toml:"backup_workspace_dir"`
+}
+
+// defaultBackupInterval is the period between backup pushes when BackupInterval
+// is left at its zero value.
+const defaultBackupInterval = time.Hour
+
+// ResolveBackupInterval returns the effective backup-push interval, substituting
+// the 1h default for a non-positive configured value.
+func (c *Config) ResolveBackupInterval() time.Duration {
+	if c.BackupInterval > 0 {
+		return c.BackupInterval
+	}
+	return defaultBackupInterval
+}
+
+// ResolveBackupWorkspaceDir returns the isolated backup working dir. It honors
+// an explicit BackupWorkspaceDir, otherwise defaults to <DataDir>/memory-backup
+// — a directory entirely outside any source repo, so the backup's git never
+// touches memory/user's .git, the main repo, or the dotfiles repo.
+func (c *Config) ResolveBackupWorkspaceDir() string {
+	if strings.TrimSpace(c.BackupWorkspaceDir) != "" {
+		return c.BackupWorkspaceDir
+	}
+	if c.DataDir == "" {
+		return ""
+	}
+	return filepath.Join(c.DataDir, "memory-backup")
 }
 
 // defaultConsolidateInterval is the period between consolidation runs when
@@ -610,6 +659,9 @@ func (c *Config) loadFile() error {
 		VaultRoots                     []string                   `toml:"vault_roots"`
 		MemoryBackupRepo               string                     `toml:"memory_backup_repo"`
 		MemoryBackupLinked             bool                       `toml:"memory_backup_linked"`
+		BackupEnabled                  bool                       `toml:"backup_enabled"`
+		BackupInterval                 time.Duration              `toml:"backup_interval"`
+		BackupWorkspaceDir             string                     `toml:"backup_workspace_dir"`
 	}
 	meta, err := toml.DecodeFile(path, &file)
 	if err != nil {
@@ -673,6 +725,18 @@ func (c *Config) loadFile() error {
 	if file.MemoryBackupRepo != "" && c.MemoryBackupRepo == "" {
 		c.MemoryBackupRepo = file.MemoryBackupRepo
 		c.MemoryBackupLinked = file.MemoryBackupLinked
+	}
+	// Backup-push settings (Phase 05). env (loadEnv) runs first and wins; the
+	// config file only fills a value the env left unset. BackupEnabled is set
+	// from the file unless an env override already pinned it (see envBackupSet).
+	if !c.envBackupEnabledSet && meta.IsDefined("backup_enabled") {
+		c.BackupEnabled = file.BackupEnabled
+	}
+	if file.BackupInterval > 0 && c.BackupInterval == 0 {
+		c.BackupInterval = file.BackupInterval
+	}
+	if file.BackupWorkspaceDir != "" && c.BackupWorkspaceDir == "" {
+		c.BackupWorkspaceDir = file.BackupWorkspaceDir
 	}
 	// Merge pg field-by-field so env vars override only
 	// the fields they set, preserving config-file settings.
@@ -953,6 +1017,20 @@ func (c *Config) loadEnv() {
 	}
 	if v := os.Getenv("AGENTSVIEW_DOTFILES_ROOT"); v != "" {
 		c.DotfilesRoot = v
+	}
+	if v, ok := os.LookupEnv("AGENTSVIEW_BACKUP_ENABLED"); ok {
+		c.BackupEnabled = v == "1" || strings.EqualFold(v, "true")
+		c.envBackupEnabledSet = true
+	}
+	if v := os.Getenv("AGENTSVIEW_BACKUP_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.BackupInterval = d
+		} else {
+			log.Printf("config: invalid AGENTSVIEW_BACKUP_INTERVAL %q: %v", v, err)
+		}
+	}
+	if v := os.Getenv("AGENTSVIEW_BACKUP_WORKSPACE"); v != "" {
+		c.BackupWorkspaceDir = v
 	}
 }
 
@@ -1831,6 +1909,11 @@ func (c *Config) SaveSettings(patch map[string]any) error {
 	if v, ok := patch["consolidate_enabled"]; ok {
 		if b, ok := v.(bool); ok {
 			c.ConsolidateEnabled = b
+		}
+	}
+	if v, ok := patch["backup_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			c.BackupEnabled = b
 		}
 	}
 	if v, ok := patch["memory_backup_repo"]; ok {

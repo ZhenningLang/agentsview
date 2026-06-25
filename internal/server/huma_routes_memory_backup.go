@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"go.kenn.io/agentsview/internal/backup"
 	"go.kenn.io/agentsview/internal/ghconnect"
 )
 
@@ -17,6 +18,8 @@ func (s *Server) registerMemoryBackupRoutes() {
 	group := newRouteGroup(s.api, "/api/v1/config/memory-backup", "MemoryBackup")
 	get(s, group, "", "Get memory backup link status", s.humaGetMemoryBackup)
 	post(s, group, "/connect", "Validate/create/claim the memory backup repo", s.humaConnectMemoryBackup)
+	get(s, group, "/push-status", "Get background backup-push status", s.humaBackupPushStatus)
+	put(s, group, "/enable", "Enable or disable background backup push", s.humaBackupPushEnable)
 }
 
 type memoryBackupStatusResponse struct {
@@ -117,6 +120,105 @@ func (s *Server) humaConnectMemoryBackup(
 			Private:       res.Private,
 			MarkerWritten: res.MarkerWritten,
 			Linked:        true,
+		},
+	}, nil
+}
+
+type backupPushStatusResponse struct {
+	// Enabled reflects the live runtime armed state when a worker controller is
+	// running, otherwise the persisted config value.
+	Enabled bool `json:"enabled"`
+	// Available reports whether runtime enable/disable is wired (a running
+	// worker exists). When false the UI shows config/env as the only way to arm.
+	Available bool `json:"available"`
+	// Repo is the configured backup target (informational).
+	Repo string `json:"repo,omitempty"`
+	// LastAttemptAt / LastSuccessAt / LastError* surface the latest cycle so the
+	// UI can show a green (last success) or red (last error) indicator.
+	LastAttemptAt string `json:"last_attempt_at,omitempty"`
+	LastSuccessAt string `json:"last_success_at,omitempty"`
+	LastError     string `json:"last_error,omitempty"`
+	LastErrorAt   string `json:"last_error_at,omitempty"`
+}
+
+type backupPushEnableInput struct {
+	Body backupPushEnableRequest
+}
+
+type backupPushEnableRequest struct {
+	// Enabled is the desired armed state. Enabling persists the choice and fires
+	// one immediate backup-push cycle; disabling stops further cycles.
+	Enabled bool `json:"enabled"`
+}
+
+type backupPushEnableOutput struct {
+	Enabled   bool `json:"enabled"`
+	Available bool `json:"available"`
+}
+
+// humaBackupPushStatus returns the latest backup-push status (last success /
+// last error) plus the live enabled/available flags. It is fail-open: a missing
+// status file reads as the never-run zero state rather than an error.
+func (s *Server) humaBackupPushStatus(
+	_ context.Context, _ *emptyInput,
+) (*jsonOutput[backupPushStatusResponse], error) {
+	s.mu.RLock()
+	enabled := s.cfg.BackupEnabled
+	dataDir := s.cfg.DataDir
+	repo := s.cfg.MemoryBackupRepo
+	s.mu.RUnlock()
+
+	available := s.backupCtl != nil
+	if available {
+		enabled = s.backupCtl.Enabled()
+	}
+	out := backupPushStatusResponse{Enabled: enabled, Available: available, Repo: repo}
+
+	st, err := backup.NewStatusStore(backup.StatusPath(dataDir)).Read()
+	if err != nil {
+		return nil, apiError(http.StatusInternalServerError, err.Error())
+	}
+	out.LastAttemptAt = st.LastAttemptAt
+	out.LastSuccessAt = st.LastSuccessAt
+	out.LastError = st.LastError
+	out.LastErrorAt = st.LastErrorAt
+	if st.Repo != "" {
+		out.Repo = st.Repo
+	}
+	return &jsonOutput[backupPushStatusResponse]{Body: out}, nil
+}
+
+// humaBackupPushEnable arms or disarms the background backup-push worker at
+// runtime. It persists the choice to config (so it survives a restart) and then
+// flips the live controller — enabling fires one immediate push cycle. A running
+// controller is required (a configured backup repo + writable local store), so
+// the toggle has a real effect rather than silently doing nothing.
+func (s *Server) humaBackupPushEnable(
+	ctx context.Context, in *backupPushEnableInput,
+) (*jsonOutput[backupPushEnableOutput], error) {
+	if err := requireLocalLLMRequest(ctx); err != nil {
+		return nil, err
+	}
+	if s.backupCtl == nil {
+		return nil, apiError(http.StatusNotImplemented,
+			"background backup push is not available in this mode "+
+				"(no backup repo configured or read-only store); "+
+				"connect a private repo and set AGENTSVIEW_BACKUP_ENABLED via config")
+	}
+	if s.db.ReadOnly() {
+		return nil, apiError(http.StatusForbidden, "not available in read-only mode")
+	}
+	s.mu.Lock()
+	err := s.cfg.SaveSettings(map[string]any{"backup_enabled": in.Body.Enabled})
+	s.mu.Unlock()
+	if err != nil {
+		return nil, internalError("save backup setting", err)
+	}
+	s.backupCtl.SetEnabled(in.Body.Enabled)
+	return &jsonOutput[backupPushEnableOutput]{
+		Body: backupPushEnableOutput{
+			Enabled:   s.backupCtl.Enabled(),
+			Available: true,
 		},
 	}, nil
 }
