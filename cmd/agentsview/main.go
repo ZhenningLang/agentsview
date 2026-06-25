@@ -726,7 +726,8 @@ func startMemorySync(
 	if !ok {
 		return
 	}
-	syncer := memory.NewSyncer(dir, writer, nil)
+	embedder := llm.New(cfg.ResolveUsageLLM("embed"))
+	syncer := memory.NewSyncerWithEmbedder(dir, writer, nil, embedder)
 	if err := syncer.Sync(ctx); err != nil {
 		log.Printf("memory sync: %v", err)
 	}
@@ -764,7 +765,8 @@ func startCCMemorySync(
 	if !ok {
 		return
 	}
-	syncer := memory.NewCCSyncer(root, writer, nil)
+	embedder := llm.New(cfg.ResolveUsageLLM("embed"))
+	syncer := memory.NewCCSyncerWithEmbedder(root, writer, nil, embedder)
 	if err := syncer.Sync(ctx); err != nil {
 		log.Printf("cc memory sync: %v", err)
 	}
@@ -849,7 +851,7 @@ func startConsolidate(
 	stagingDir := filepath.Join(root, "memory", ".staging")
 	rawDir := filepath.Join(stagingDir, "raw_memories")
 	resync := consolidate.ResyncFunc(func(c context.Context) error {
-		return memory.NewSyncer(dir, writer, nil).Sync(c)
+		return memory.NewSyncerWithEmbedder(dir, writer, nil, llm.New(cfg.ResolveUsageLLM("embed"))).Sync(c)
 	})
 	worker := consolidate.NewWorker(
 		stagingDir, rawDir, root,

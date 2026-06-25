@@ -120,3 +120,16 @@ func TestSyncSources_SkipsAuditJsonl(t *testing.T) {
 	mustExist(t, filepath.Join(ws, crossAgentSubdir, "note.md"))
 	mustNotExist(t, filepath.Join(ws, crossAgentSubdir, ".extract-audit.jsonl"))
 }
+
+func TestSyncSources_SkipsDatabaseFiles(t *testing.T) {
+	cross := t.TempDir()
+	writeFile(t, filepath.Join(cross, "memory.db"), "llm_embedding bytes")
+	writeFile(t, filepath.Join(cross, "note.md"), "keep")
+
+	ws := t.TempDir()
+	if _, err := SyncSources(ws, cross, ""); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	mustExist(t, filepath.Join(ws, crossAgentSubdir, "note.md"))
+	mustNotExist(t, filepath.Join(ws, crossAgentSubdir, "memory.db"))
+}

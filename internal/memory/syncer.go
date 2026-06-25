@@ -33,6 +33,10 @@ type Writer interface {
 	) error
 }
 
+type embeddingReader interface {
+	MemoryEmbeddings(ctx context.Context, f db.MemoryFilter) ([]db.Memory, error)
+}
+
 // indexBasename is the on-disk index file used as a hint and excluded
 // from the synced note set (it is generated, not a memory note itself).
 const indexBasename = "INDEX.md"
@@ -54,7 +58,12 @@ type Syncer struct {
 	dir       string
 	tokenizer skills.Tokenizer
 	writer    Writer
+	embedder  Embedder
 	now       func() time.Time
+}
+
+type Embedder interface {
+	Embed(ctx context.Context, input string) ([]float32, error)
 }
 
 // NewSyncer builds a Syncer. dir is the memory directory containing the
@@ -72,6 +81,15 @@ func NewSyncer(dir string, w Writer, tk skills.Tokenizer) *Syncer {
 	}
 }
 
+// NewSyncerWithEmbedder keeps the default sync path fail-open when embedder is
+// nil, while allowing agentsview to persist local-only memory embeddings when
+// the usage binding is available.
+func NewSyncerWithEmbedder(dir string, w Writer, tk skills.Tokenizer, e Embedder) *Syncer {
+	s := NewSyncer(dir, w, tk)
+	s.embedder = e
+	return s
+}
+
 // Sync scans the memory directory for *.md notes, parses each one, and
 // full-replaces the memory table. It is fail-soft per file: a single
 // unreadable or unparseable note is skipped rather than aborting the
@@ -82,6 +100,7 @@ func (s *Syncer) Sync(ctx context.Context) error {
 		return fmt.Errorf("reading memory dir: %w", err)
 	}
 	syncedAt := s.now().UTC().Format("2006-01-02T15:04:05.000Z")
+	previous := loadPreviousEmbeddings(ctx, s.writer, db.SourceCrossAgent, s.embedder)
 
 	memories := make([]db.Memory, 0, len(entries))
 	for _, e := range entries {
@@ -105,11 +124,52 @@ func (s *Syncer) Sync(ctx context.Context) error {
 			continue
 		}
 		m.SyncedAt = syncedAt
+		if err := populateMemoryEmbedding(ctx, s.embedder, &m, previous); err != nil {
+			return err
+		}
 		memories = append(memories, m)
 	}
 
 	return s.writer.ReplaceMemoriesBySource(
 		ctx, db.SourceCrossAgent, memories)
+}
+
+func loadPreviousEmbeddings(
+	ctx context.Context, writer Writer, source string, embedder Embedder,
+) map[string]db.Memory {
+	reader, ok := writer.(embeddingReader)
+	if !ok || embedder == nil {
+		return nil
+	}
+	memories, err := reader.MemoryEmbeddings(ctx, db.MemoryFilter{Source: source})
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]db.Memory, len(memories))
+	for _, m := range memories {
+		out[m.RelPath] = m
+	}
+	return out
+}
+
+func populateMemoryEmbedding(
+	ctx context.Context, embedder Embedder, m *db.Memory, previous map[string]db.Memory,
+) error {
+	if embedder == nil {
+		return nil
+	}
+	if old, ok := previous[m.RelPath]; ok && old.Source == m.Source && old.SourceMtime == m.SourceMtime && old.Body == m.Body && len(old.LLMEmbedding) > 0 {
+		m.LLMEmbedding = old.LLMEmbedding
+		m.LLMEmbeddingDim = old.LLMEmbeddingDim
+		return nil
+	}
+	vector, err := embedder.Embed(ctx, m.Body)
+	if err != nil {
+		return fmt.Errorf("embedding memory %q: %w", m.RelPath, err)
+	}
+	m.LLMEmbedding = vector
+	m.LLMEmbeddingDim = len(vector)
+	return nil
 }
 
 // parseFile reads one memory note, splitting YAML frontmatter from the

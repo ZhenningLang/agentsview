@@ -138,6 +138,9 @@ func copyTree(src, dst string, skipGit bool) (int, error) {
 		if isAuditJSONL(d.Name()) {
 			return nil
 		}
+		if isSQLiteDatabaseFile(d.Name()) {
+			return nil
+		}
 		rel, err := filepath.Rel(src, path)
 		if err != nil {
 			return err
@@ -161,6 +164,11 @@ func copyTree(src, dst string, skipGit bool) (int, error) {
 
 func isAuditJSONL(name string) bool {
 	return strings.HasPrefix(name, ".") && strings.HasSuffix(name, "-audit.jsonl")
+}
+
+func isSQLiteDatabaseFile(name string) bool {
+	name = strings.ToLower(name)
+	return strings.HasSuffix(name, ".db") || strings.HasSuffix(name, ".sqlite") || strings.HasSuffix(name, ".sqlite3")
 }
 
 // copyFile copies a single regular file's contents.
