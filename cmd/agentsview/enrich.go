@@ -46,7 +46,7 @@ func newEnrichCommand() *cobra.Command {
 }
 
 func runEnrich(cmd *cobra.Command, cfg config.Config, opts enrichCLIOptions) error {
-	llmCfg := cfg.ResolveLLM()
+	llmCfg := resolveEnrichLLM(cfg)
 	if !llmCfg.Enabled {
 		return fmt.Errorf("LLM enrichment is disabled; set [llm].enabled=true and configure an API key before running enrich")
 	}
@@ -67,4 +67,8 @@ func runEnrich(cmd *cobra.Command, cfg config.Config, opts enrichCLIOptions) err
 	_, err = fmt.Fprintf(cmd.OutOrStdout(), "LLM enrichment complete: candidates=%d succeeded=%d failed=%d no_content=%d skipped_too_short=%d\n",
 		stats.Candidates, stats.Succeeded, stats.Failed, stats.NoContent, stats.SkippedTooShort)
 	return err
+}
+
+func resolveEnrichLLM(cfg config.Config) config.LLMConfig {
+	return cfg.ResolveUsageLLM("enrich")
 }

@@ -86,18 +86,20 @@ type LLMEmbedConfig struct {
 
 // LLMConfig holds OpenAI-compatible enrichment settings.
 type LLMConfig struct {
-	Enabled             bool           `toml:"enabled" json:"enabled"`
-	BaseURL             string         `toml:"base_url" json:"base_url,omitempty"`
-	APIKey              string         `toml:"api_key" json:"-"`
-	Model               string         `toml:"model" json:"model,omitempty"`
-	ReasoningEffort     string         `toml:"reasoning_effort" json:"reasoning_effort,omitempty"`
-	MinUserMessages     int            `toml:"min_user_messages" json:"min_user_messages"`
-	ReenrichMsgDelta    int            `toml:"reenrich_msg_delta" json:"reenrich_msg_delta"`
-	ReenrichIdleMinutes int            `toml:"reenrich_idle_minutes" json:"reenrich_idle_minutes"`
-	Concurrency         int            `toml:"concurrency" json:"concurrency"`
-	Periodic            bool           `toml:"periodic" json:"periodic"`
-	BalanceURL          string         `toml:"balance_url" json:"balance_url,omitempty"`
-	Embed               LLMEmbedConfig `toml:"embed" json:"embed,omitempty"`
+	Enabled             bool                 `toml:"enabled" json:"enabled"`
+	BaseURL             string               `toml:"base_url" json:"base_url,omitempty"`
+	APIKey              string               `toml:"api_key" json:"-"`
+	Model               string               `toml:"model" json:"model,omitempty"`
+	ReasoningEffort     string               `toml:"reasoning_effort" json:"reasoning_effort,omitempty"`
+	MinUserMessages     int                  `toml:"min_user_messages" json:"min_user_messages"`
+	ReenrichMsgDelta    int                  `toml:"reenrich_msg_delta" json:"reenrich_msg_delta"`
+	ReenrichIdleMinutes int                  `toml:"reenrich_idle_minutes" json:"reenrich_idle_minutes"`
+	Concurrency         int                  `toml:"concurrency" json:"concurrency"`
+	Periodic            bool                 `toml:"periodic" json:"periodic"`
+	BalanceURL          string               `toml:"balance_url" json:"balance_url,omitempty"`
+	Embed               LLMEmbedConfig       `toml:"embed" json:"embed,omitempty"`
+	Providers           map[string]LLMConfig `toml:"providers" json:"providers,omitempty"`
+	Usage               map[string]string    `toml:"usage" json:"usage,omitempty"`
 	llmEnvEnabledSet    bool
 }
 
@@ -314,6 +316,14 @@ func (c *Config) ResolveConsolidateInterval() time.Duration {
 // filled from the main LLM config. Enabled/periodic gating is handled
 // separately via ConsolidateEnabled, so only the connection fields are merged.
 func (c *Config) ConsolidateLLM() LLMConfig {
+	out := c.resolveLegacyConsolidateLLM()
+	if provider, ok := c.resolveBoundProvider("consolidate"); ok {
+		out = overlayProvider(out, provider)
+	}
+	return out
+}
+
+func (c *Config) resolveLegacyConsolidateLLM() LLMConfig {
 	out := c.LLM
 	if c.Consolidate.BaseURL != "" {
 		out.BaseURL = c.Consolidate.BaseURL
@@ -328,6 +338,101 @@ func (c *Config) ConsolidateLLM() LLMConfig {
 		out.ReasoningEffort = c.Consolidate.ReasoningEffort
 	}
 	return out
+}
+
+// ResolveUsageLLM returns the effective LLM settings for a named usage. A
+// usage binding selects a named provider from [llm.providers]; unbound usages
+// preserve the legacy resolver behavior so existing config.toml files keep
+// their previous effective values.
+func (c *Config) ResolveUsageLLM(usage string) LLMConfig {
+	usage = strings.TrimSpace(usage)
+	if usage == "consolidate" {
+		return c.ConsolidateLLM()
+	}
+	base := c.ResolveLLM()
+	if provider, ok := c.resolveBoundProvider(usage); ok {
+		base = overlayProvider(base, provider)
+	}
+	if usage == "embed" {
+		return c.resolveUsageEmbed(base, usage)
+	}
+	return base
+}
+
+// DanglingLLMUsageBindings returns usage names that point to missing providers.
+// This keeps fail-open fallback behavior while making configuration errors
+// observable to callers that render the config surface.
+func (c *Config) DanglingLLMUsageBindings() []string {
+	if c == nil || len(c.LLM.Usage) == 0 {
+		return nil
+	}
+	out := make([]string, 0)
+	for usage, providerName := range c.LLM.Usage {
+		usage = strings.TrimSpace(usage)
+		providerName = strings.TrimSpace(providerName)
+		if usage == "" || providerName == "" {
+			continue
+		}
+		if _, ok := c.LLM.Providers[providerName]; !ok {
+			out = append(out, usage)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	slices.Sort(out)
+	return out
+}
+
+func (c *Config) resolveUsageEmbed(base LLMConfig, usage string) LLMConfig {
+	provider, ok := c.resolveBoundProvider(usage)
+	if !ok {
+		return base
+	}
+	base.Embed = LLMEmbedConfig{
+		BaseURL:    provider.BaseURL,
+		APIKey:     provider.APIKey,
+		Model:      provider.Model,
+		BalanceURL: provider.BalanceURL,
+	}
+	return base
+}
+
+func (c *Config) resolveBoundProvider(usage string) (LLMConfig, bool) {
+	if c == nil || len(c.LLM.Usage) == 0 || len(c.LLM.Providers) == 0 {
+		return LLMConfig{}, false
+	}
+	providerName := strings.TrimSpace(c.LLM.Usage[strings.TrimSpace(usage)])
+	if providerName == "" {
+		return LLMConfig{}, false
+	}
+	provider, ok := c.LLM.Providers[providerName]
+	if !ok {
+		return LLMConfig{}, false
+	}
+	return provider, true
+}
+
+func overlayProvider(base, provider LLMConfig) LLMConfig {
+	if provider.Enabled {
+		base.Enabled = true
+	}
+	if provider.BaseURL != "" {
+		base.BaseURL = provider.BaseURL
+	}
+	if provider.APIKey != "" {
+		base.APIKey = provider.APIKey
+	}
+	if provider.Model != "" {
+		base.Model = provider.Model
+	}
+	if provider.ReasoningEffort != "" {
+		base.ReasoningEffort = provider.ReasoningEffort
+	}
+	if provider.BalanceURL != "" {
+		base.BalanceURL = provider.BalanceURL
+	}
+	return base
 }
 
 // ResolveDotfilesRoot returns the dotfiles repository root used as
@@ -1080,6 +1185,51 @@ func mergeLLMConfig(c *Config, file LLMConfig, meta toml.MetaData) {
 	if file.Embed.BalanceURL != "" && c.LLM.Embed.BalanceURL == "" {
 		c.LLM.Embed.BalanceURL = file.Embed.BalanceURL
 	}
+	if len(file.Providers) > 0 {
+		c.LLM.Providers = normalizeLLMProviders(file.Providers)
+	}
+	if len(file.Usage) > 0 {
+		c.LLM.Usage = normalizeLLMUsage(file.Usage)
+	}
+}
+
+func normalizeLLMProviders(in map[string]LLMConfig) map[string]LLMConfig {
+	out := make(map[string]LLMConfig, len(in))
+	for name, provider := range in {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		provider.BaseURL = strings.TrimSpace(provider.BaseURL)
+		provider.APIKey = strings.TrimSpace(provider.APIKey)
+		provider.Model = strings.TrimSpace(provider.Model)
+		provider.ReasoningEffort = strings.TrimSpace(provider.ReasoningEffort)
+		provider.BalanceURL = strings.TrimSpace(provider.BalanceURL)
+		provider.Embed = LLMEmbedConfig{}
+		provider.Providers = nil
+		provider.Usage = nil
+		out[name] = provider
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func normalizeLLMUsage(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	for usage, provider := range in {
+		usage = strings.TrimSpace(usage)
+		provider = strings.TrimSpace(provider)
+		if usage == "" || provider == "" {
+			continue
+		}
+		out[usage] = provider
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // ResolveSkillsCatalogDir returns the effective coding-skills catalog
@@ -1842,12 +1992,28 @@ func (c *Config) SaveLLMConfig(llm LLMConfig) error {
 		return fmt.Errorf("reading config file: %w", err)
 	}
 
+	if llm.Providers == nil {
+		llm.Providers = c.LLM.Providers
+	}
+	if llm.Usage == nil {
+		llm.Usage = c.LLM.Usage
+	}
 	existing["llm"] = llm
 	if err := c.writeConfigMap(existing); err != nil {
 		return err
 	}
 	c.LLM = llm
 	return nil
+}
+
+// SaveLLMProviders persists named provider and usage bindings without touching
+// legacy LLM fields. Existing provider API keys survive masked or empty patch
+// values so the config API can round-trip redacted responses safely.
+func (c *Config) SaveLLMProviders(providers map[string]LLMConfig, usage map[string]string) error {
+	llm := c.LLM
+	llm.Providers = normalizeLLMProviders(providers)
+	llm.Usage = normalizeLLMUsage(usage)
+	return c.SaveLLMConfig(llm)
 }
 
 // SaveSettings persists a partial settings update to the config file.

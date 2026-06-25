@@ -281,7 +281,7 @@ func (s *Server) maybeStartPeriodicEnrichment() {
 		return
 	}
 	s.mu.RLock()
-	cfg := s.cfg.ResolveLLM()
+	cfg := s.cfg.ResolveUsageLLM("enrich")
 	s.mu.RUnlock()
 	if !enrichConfigReady(cfg) || !cfg.Periodic {
 		return

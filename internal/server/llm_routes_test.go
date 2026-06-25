@@ -94,6 +94,7 @@ func TestLLMRoutesRejectRemoteRequests(t *testing.T) {
 		{method: http.MethodGet, path: "/api/v1/llm/balance"},
 		{method: http.MethodGet, path: "/api/v1/config/llm"},
 		{method: http.MethodPost, path: "/api/v1/config/llm", body: `{}`},
+		{method: http.MethodPatch, path: "/api/v1/config/llm/providers", body: `{}`},
 		{method: http.MethodPost, path: "/api/v1/llm/test", body: `{}`},
 	} {
 		w := requestJSON(te, tc.method, tc.path, tc.body, remote)
@@ -121,12 +122,21 @@ func TestLLMConfigGetMasksAPIKeys(t *testing.T) {
 			APIKey:  "embed-secret-5678",
 			Model:   "embed-model",
 		}
+		c.Providers = map[string]config.LLMConfig{
+			"deepseek-chat": {
+				BaseURL: "https://deepseek.example/v1",
+				APIKey:  "provider-secret-9999",
+				Model:   "deepseek-chat",
+			},
+		}
+		c.Usage = map[string]string{"enrich": "deepseek-chat"}
 	}))
 
 	w := te.get(t, "/api/v1/config/llm")
 	assertStatus(t, w, http.StatusOK)
 	assert.NotContains(t, w.Body.String(), "chat-secret-1234")
 	assert.NotContains(t, w.Body.String(), "embed-secret-5678")
+	assert.NotContains(t, w.Body.String(), "provider-secret-9999")
 	resp := decode[map[string]any](t, w)
 	assert.Equal(t, true, resp["enabled"])
 	assert.Equal(t, "https://chat.example/v1", resp["base_url"])
@@ -135,6 +145,29 @@ func TestLLMConfigGetMasksAPIKeys(t *testing.T) {
 	embed := resp["embed"].(map[string]any)
 	assert.Equal(t, true, embed["has_api_key"])
 	assert.Equal(t, "5678", embed["api_key_preview"])
+	providers := resp["providers"].(map[string]any)
+	deepseek := providers["deepseek-chat"].(map[string]any)
+	assert.Equal(t, true, deepseek["has_api_key"])
+	assert.Equal(t, "9999", deepseek["api_key_preview"])
+	usage := resp["usage"].(map[string]any)
+	assert.Equal(t, "deepseek-chat", usage["enrich"])
+}
+
+func TestLLMConfigGetReportsDanglingUsageBindings(t *testing.T) {
+	te := setup(t, withLLMConfig(func(c *config.LLMConfig) {
+		c.Providers = map[string]config.LLMConfig{
+			"deepseek-chat": {BaseURL: "https://deepseek.example/v1", Model: "deepseek-chat"},
+		}
+		c.Usage = map[string]string{"embed": "typo-provider"}
+	}))
+
+	w := te.get(t, "/api/v1/config/llm")
+	assertStatus(t, w, http.StatusOK)
+	resp := decode[map[string]any](t, w)
+	warnings := resp["usage_warnings"].([]any)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0].(string), `usage "embed"`)
+	assert.Contains(t, warnings[0].(string), `"typo-provider"`)
 }
 
 func TestLLMConfigGetDoesNotPreviewShortAPIKeys(t *testing.T) {
@@ -185,6 +218,7 @@ func TestLLMConfigAndTestRejectReadOnlyMode(t *testing.T) {
 	}{
 		{method: http.MethodGet, path: "/api/v1/config/llm"},
 		{method: http.MethodPost, path: "/api/v1/config/llm", body: `{}`},
+		{method: http.MethodPatch, path: "/api/v1/config/llm/providers", body: `{}`},
 		{method: http.MethodPost, path: "/api/v1/llm/test", body: `{}`},
 	} {
 		w := requestJSON(te, tc.method, tc.path, tc.body)
@@ -260,6 +294,59 @@ func TestLLMConfigPostUpdatesHotAndPreservesMaskedKeys(t *testing.T) {
 	assert.Contains(t, string(data), "new-embed-secret")
 	assert.NotContains(t, w.Body.String(), "new-chat-secret")
 	assert.NotContains(t, w.Body.String(), "new-embed-secret")
+}
+
+func TestLLMConfigProvidersPatchUpdatesHotAndPreservesMaskedKeys(t *testing.T) {
+	te := setup(t, withLLMConfig(func(c *config.LLMConfig) {
+		c.Providers = map[string]config.LLMConfig{
+			"deepseek-chat": {
+				BaseURL: "https://old.example/v1",
+				APIKey:  "old-provider-secret",
+				Model:   "old-model",
+			},
+		}
+		c.Usage = map[string]string{"enrich": "deepseek-chat"}
+	}))
+
+	body := `{
+		"providers": {
+			"deepseek-chat": {
+				"base_url": "https://new.example/v1",
+				"api_key": "********",
+				"model": "new-model",
+				"reasoning_effort": "medium"
+			},
+			"openrouter-embed": {
+				"base_url": "https://embed.example/v1",
+				"api_key": "embed-provider-secret",
+				"model": "text-embedding-3-large"
+			}
+		},
+		"usage": {
+			"enrich": "deepseek-chat",
+			"embed": "openrouter-embed"
+		}
+	}`
+	w := requestJSON(te, http.MethodPatch, "/api/v1/config/llm/providers", body)
+	assertStatus(t, w, http.StatusOK)
+	assert.NotContains(t, w.Body.String(), "old-provider-secret")
+	assert.NotContains(t, w.Body.String(), "embed-provider-secret")
+
+	data, err := os.ReadFile(filepath.Join(te.dataDir, "config.toml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "old-provider-secret")
+	assert.Contains(t, string(data), "embed-provider-secret")
+	assert.Contains(t, string(data), "openrouter-embed")
+
+	resp := decode[map[string]any](t, te.get(t, "/api/v1/config/llm"))
+	providers := resp["providers"].(map[string]any)
+	deepseek := providers["deepseek-chat"].(map[string]any)
+	assert.Equal(t, "https://new.example/v1", deepseek["base_url"])
+	assert.Equal(t, "new-model", deepseek["model"])
+	assert.Equal(t, true, deepseek["has_api_key"])
+	usage := resp["usage"].(map[string]any)
+	assert.Equal(t, "deepseek-chat", usage["enrich"])
+	assert.Equal(t, "openrouter-embed", usage["embed"])
 }
 
 func TestLLMConnectionTestReportsChatAndEmbed(t *testing.T) {

@@ -40,3 +40,40 @@ func TestEnrichCommandDisabled(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "disabled")
 }
+
+func TestEnrichCommandUsesEnrichUsageProvider(t *testing.T) {
+	cfg := config.Config{LLM: config.LLMConfig{
+		Enabled: true,
+		BaseURL: "http://legacy.test/v1",
+		APIKey:  "legacy-key",
+		Model:   "legacy-model",
+		Providers: map[string]config.LLMConfig{
+			"deepseek-chat": {
+				Enabled: true,
+				BaseURL: "http://provider.test/v1",
+				APIKey:  "provider-key",
+				Model:   "provider-model",
+			},
+		},
+		Usage: map[string]string{"enrich": "deepseek-chat"},
+	}}
+
+	got := resolveEnrichLLM(cfg)
+	assert.Equal(t, "http://provider.test/v1", got.BaseURL)
+	assert.Equal(t, "provider-key", got.APIKey)
+	assert.Equal(t, "provider-model", got.Model)
+}
+
+func TestResolveEnrichLLMFallsBackWhenUnbound(t *testing.T) {
+	cfg := config.Config{LLM: config.LLMConfig{
+		Enabled: true,
+		BaseURL: "http://legacy.test/v1",
+		APIKey:  "legacy-key",
+		Model:   "legacy-model",
+	}}
+
+	got := resolveEnrichLLM(cfg)
+	assert.Equal(t, "http://legacy.test/v1", got.BaseURL)
+	assert.Equal(t, "legacy-key", got.APIKey)
+	assert.Equal(t, "legacy-model", got.Model)
+}
