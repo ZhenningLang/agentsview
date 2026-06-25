@@ -21,6 +21,7 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/consolidate"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/ghconnect"
 	"go.kenn.io/agentsview/internal/insight"
 	"go.kenn.io/agentsview/internal/llm"
 	"go.kenn.io/agentsview/internal/service"
@@ -90,6 +91,11 @@ type Server struct {
 	// was not started (no memory dir / read-only store), in which
 	// case the enable endpoint reports "not available".
 	consolidateCtl *consolidate.Controller
+
+	// ghRunner is the gh CLI runner used by the memory-backup connect
+	// endpoint (Phase 04). Nil defaults to the real CLIRunner; tests
+	// inject a mock via WithGHRunner so no real gh/network call occurs.
+	ghRunner ghconnect.Runner
 }
 
 // New creates a new Server.
@@ -209,6 +215,13 @@ func WithConsolidateController(c *consolidate.Controller) Option {
 // WithLLMHTTPClient overrides LLM provider HTTP calls for tests.
 func WithLLMHTTPClient(c *http.Client) Option {
 	return func(s *Server) { s.llmHTTPClient = c }
+}
+
+// WithGHRunner injects a gh CLI runner for the memory-backup connect
+// endpoint. Tests pass a mock so the gh state machine is exercised without a
+// real gh process or network mutation.
+func WithGHRunner(r ghconnect.Runner) Option {
+	return func(s *Server) { s.ghRunner = r }
 }
 
 // WithBasePath sets a URL prefix for reverse-proxy deployments.

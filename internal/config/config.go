@@ -235,6 +235,16 @@ type Config struct {
 	// into the same memory/user the existing syncer scans. Env:
 	// AGENTSVIEW_DOTFILES_ROOT (override only; normally derived).
 	DotfilesRoot string `json:"dotfiles_root,omitempty" toml:"dotfiles_root"`
+
+	// MemoryBackupRepo is the resolved `<owner>/<name>` full name of the
+	// PRIVATE GitHub repo claimed for memory backup (Phase 04 gh-connect).
+	// Phase 05 reads it to push. Empty means no backup target is configured.
+	MemoryBackupRepo string `json:"memory_backup_repo,omitempty" toml:"memory_backup_repo"`
+
+	// MemoryBackupLinked reports whether MemoryBackupRepo was successfully
+	// validated/claimed (private + marker) so the UI can show a connected
+	// status. It is set together with MemoryBackupRepo on a successful connect.
+	MemoryBackupLinked bool `json:"memory_backup_linked" toml:"memory_backup_linked"`
 }
 
 // defaultConsolidateInterval is the period between consolidation runs when
@@ -598,6 +608,8 @@ func (c *Config) loadFile() error {
 		MemoryDir                      string                     `toml:"memory_dir"`
 		CCMemoryDir                    string                     `toml:"cc_memory_dir"`
 		VaultRoots                     []string                   `toml:"vault_roots"`
+		MemoryBackupRepo               string                     `toml:"memory_backup_repo"`
+		MemoryBackupLinked             bool                       `toml:"memory_backup_linked"`
 	}
 	meta, err := toml.DecodeFile(path, &file)
 	if err != nil {
@@ -654,6 +666,13 @@ func (c *Config) loadFile() error {
 	// config file only fills the value when env left it unset.
 	if len(file.VaultRoots) > 0 && len(c.VaultRoots) == 0 {
 		c.VaultRoots = file.VaultRoots
+	}
+	// Memory backup target (Phase 04 gh-connect). Persisted via SaveSettings
+	// after a successful connect; the in-memory value (set at runtime) wins,
+	// so the file only fills it on a fresh load.
+	if file.MemoryBackupRepo != "" && c.MemoryBackupRepo == "" {
+		c.MemoryBackupRepo = file.MemoryBackupRepo
+		c.MemoryBackupLinked = file.MemoryBackupLinked
 	}
 	// Merge pg field-by-field so env vars override only
 	// the fields they set, preserving config-file settings.
@@ -1812,6 +1831,16 @@ func (c *Config) SaveSettings(patch map[string]any) error {
 	if v, ok := patch["consolidate_enabled"]; ok {
 		if b, ok := v.(bool); ok {
 			c.ConsolidateEnabled = b
+		}
+	}
+	if v, ok := patch["memory_backup_repo"]; ok {
+		if s, ok := v.(string); ok {
+			c.MemoryBackupRepo = s
+		}
+	}
+	if v, ok := patch["memory_backup_linked"]; ok {
+		if b, ok := v.(bool); ok {
+			c.MemoryBackupLinked = b
 		}
 	}
 	return nil
