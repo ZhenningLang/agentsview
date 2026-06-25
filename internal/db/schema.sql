@@ -465,3 +465,69 @@ CREATE INDEX IF NOT EXISTS idx_memory_problem_type
     ON memory(problem_type);
 CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(type);
 CREATE INDEX IF NOT EXISTS idx_memory_status ON memory(status);
+
+-- Vault dimension tables: read-only mirror of dev workflow run records
+-- discovered by scanning configured roots for .long-loop/<slug>/
+-- directories. Like skills and memory this is slowly-changing reference
+-- data populated by a dedicated VaultSyncer that runs independently of the
+-- session sync engine, so it never touches the sessions/messages/tool_calls
+-- fact domain or the stats triggers above. Full-replace semantics on sync.
+--
+-- A run is either a dev-long-run (multi-phase, has phases/ + metrics.jsonl)
+-- or a dev-complete (single workspace, no phases/metrics). The skill column
+-- distinguishes them; a missing skill field defaults to "dev-long-run".
+-- Missing optional files (phases, metrics, acceptance, stuck) mark a run
+-- incomplete rather than failing it.
+CREATE TABLE IF NOT EXISTS vault_run (
+    slug           TEXT PRIMARY KEY,
+    skill          TEXT NOT NULL DEFAULT '',
+    state          TEXT NOT NULL DEFAULT '',
+    branch         TEXT NOT NULL DEFAULT '',
+    goal           TEXT NOT NULL DEFAULT '',
+    repo_root      TEXT NOT NULL DEFAULT '',
+    workspace_path TEXT NOT NULL DEFAULT '',
+    source_path    TEXT NOT NULL DEFAULT '',
+    -- Workspace-level acceptance.json snapshot (nullable: no file = unknown).
+    acceptance_ok   INTEGER,
+    acceptance_exit INTEGER,
+    synced_at      TEXT NOT NULL
+        DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+
+-- One row per phase directory of a dev-long-run. verify_* come from
+-- phases/<id>/verify.json, stuck_* from phases/<id>/stuck.json. Nullable
+-- integers use -1 sentinels avoided in favor of NOT NULL DEFAULT 0 with a
+-- presence flag; here we keep them nullable so "no verify file" is
+-- distinguishable from "verify exit 0".
+CREATE TABLE IF NOT EXISTS vault_phase (
+    id                     INTEGER PRIMARY KEY,
+    run_slug               TEXT NOT NULL
+        REFERENCES vault_run(slug) ON DELETE CASCADE,
+    phase_id               TEXT NOT NULL DEFAULT '',
+    verify_ok              INTEGER,
+    verify_exit            INTEGER,
+    stuck_consecutive_fail INTEGER,
+    stuck_fingerprint      TEXT
+);
+
+-- One row per metrics.jsonl event record (header rows excluded).
+-- dev-complete runs have no metrics so emit no rows here.
+CREATE TABLE IF NOT EXISTS vault_metric (
+    id          INTEGER PRIMARY KEY,
+    run_slug    TEXT NOT NULL
+        REFERENCES vault_run(slug) ON DELETE CASCADE,
+    ts          TEXT NOT NULL DEFAULT '',
+    event       TEXT NOT NULL DEFAULT '',
+    phase       TEXT NOT NULL DEFAULT '',
+    ok          INTEGER,
+    exit        INTEGER,
+    fingerprint TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_vault_run_skill ON vault_run(skill);
+CREATE INDEX IF NOT EXISTS idx_vault_phase_run
+    ON vault_phase(run_slug);
+CREATE INDEX IF NOT EXISTS idx_vault_metric_run
+    ON vault_metric(run_slug);
+CREATE INDEX IF NOT EXISTS idx_vault_metric_event
+    ON vault_metric(event);

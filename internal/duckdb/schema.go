@@ -599,6 +599,89 @@ var mirrorTables = []tableSpec{
 			"CREATE INDEX IF NOT EXISTS idx_memory_status ON memory(status)",
 		},
 	},
+	{
+		name: "vault_run",
+		create: `CREATE TABLE IF NOT EXISTS vault_run (
+			slug TEXT PRIMARY KEY,
+			skill TEXT NOT NULL DEFAULT '',
+			state TEXT NOT NULL DEFAULT '',
+			branch TEXT NOT NULL DEFAULT '',
+			goal TEXT NOT NULL DEFAULT '',
+			repo_root TEXT NOT NULL DEFAULT '',
+			workspace_path TEXT NOT NULL DEFAULT '',
+			source_path TEXT NOT NULL DEFAULT '',
+			acceptance_ok BOOLEAN,
+			acceptance_exit BIGINT,
+			synced_at TEXT NOT NULL DEFAULT ''
+		)`,
+		columns: []columnSpec{
+			{"slug", "slug TEXT"},
+			{"skill", "skill TEXT NOT NULL DEFAULT ''"},
+			{"state", "state TEXT NOT NULL DEFAULT ''"},
+			{"branch", "branch TEXT NOT NULL DEFAULT ''"},
+			{"goal", "goal TEXT NOT NULL DEFAULT ''"},
+			{"repo_root", "repo_root TEXT NOT NULL DEFAULT ''"},
+			{"workspace_path", "workspace_path TEXT NOT NULL DEFAULT ''"},
+			{"source_path", "source_path TEXT NOT NULL DEFAULT ''"},
+			{"acceptance_ok", "acceptance_ok BOOLEAN"},
+			{"acceptance_exit", "acceptance_exit BIGINT"},
+			{"synced_at", "synced_at TEXT NOT NULL DEFAULT ''"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_vault_run_skill ON vault_run(skill)",
+		},
+	},
+	{
+		name: "vault_phase",
+		create: `CREATE TABLE IF NOT EXISTS vault_phase (
+			id BIGINT,
+			run_slug TEXT NOT NULL,
+			phase_id TEXT NOT NULL DEFAULT '',
+			verify_ok BOOLEAN,
+			verify_exit BIGINT,
+			stuck_consecutive_fail BIGINT,
+			stuck_fingerprint TEXT
+		)`,
+		columns: []columnSpec{
+			{"id", "id BIGINT"},
+			{"run_slug", "run_slug TEXT NOT NULL DEFAULT ''"},
+			{"phase_id", "phase_id TEXT NOT NULL DEFAULT ''"},
+			{"verify_ok", "verify_ok BOOLEAN"},
+			{"verify_exit", "verify_exit BIGINT"},
+			{"stuck_consecutive_fail", "stuck_consecutive_fail BIGINT"},
+			{"stuck_fingerprint", "stuck_fingerprint TEXT"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_vault_phase_run ON vault_phase(run_slug)",
+		},
+	},
+	{
+		name: "vault_metric",
+		create: `CREATE TABLE IF NOT EXISTS vault_metric (
+			id BIGINT,
+			run_slug TEXT NOT NULL,
+			ts TEXT NOT NULL DEFAULT '',
+			event TEXT NOT NULL DEFAULT '',
+			phase TEXT NOT NULL DEFAULT '',
+			ok BOOLEAN,
+			exit BIGINT,
+			fingerprint TEXT
+		)`,
+		columns: []columnSpec{
+			{"id", "id BIGINT"},
+			{"run_slug", "run_slug TEXT NOT NULL DEFAULT ''"},
+			{"ts", "ts TEXT NOT NULL DEFAULT ''"},
+			{"event", "event TEXT NOT NULL DEFAULT ''"},
+			{"phase", "phase TEXT NOT NULL DEFAULT ''"},
+			{"ok", "ok BOOLEAN"},
+			{"exit", "exit BIGINT"},
+			{"fingerprint", "fingerprint TEXT"},
+		},
+		indexes: []string{
+			"CREATE INDEX IF NOT EXISTS idx_vault_metric_run ON vault_metric(run_slug)",
+			"CREATE INDEX IF NOT EXISTS idx_vault_metric_event ON vault_metric(event)",
+		},
+	},
 }
 
 // EnsureSchema creates and additively migrates the DuckDB mirror schema.

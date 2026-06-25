@@ -78,6 +78,10 @@ type Store interface {
 	ListMemories(ctx context.Context, f MemoryFilter) ([]Memory, error)
 	GetMemory(ctx context.Context, relPath string) (*Memory, error)
 
+	// Vault (read-only dimension mirrored from dev-workflow .long-loop runs).
+	ListVaultRuns(ctx context.Context, f VaultFilter) ([]VaultRun, error)
+	GetVaultRun(ctx context.Context, slug string) (*VaultRun, error)
+
 	// Usage (token cost).
 	GetDailyUsage(ctx context.Context, f UsageFilter) (DailyUsageResult, error)
 	GetTopSessionsByCost(ctx context.Context, f UsageFilter, limit int) ([]TopSessionEntry, error)
