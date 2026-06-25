@@ -417,15 +417,15 @@
   .controls select {
     padding: 0.35rem 0.5rem;
     font-size: 0.82rem;
-    border: 1px solid var(--border, #ddd);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
-    background: var(--bg, #fff);
+    background: var(--bg-surface);
     color: var(--text-primary, #1a1a1a);
   }
   .controls .clear,
   .controls .refresh {
     background: none;
-    border: 1px solid var(--border, #ddd);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
     cursor: pointer;
     padding: 0.35rem 0.55rem;
@@ -446,7 +446,7 @@
     color: var(--text-secondary, #666);
   }
   .state.error {
-    color: #b91c1c;
+    color: var(--accent-red);
   }
   table.grid {
     width: 100%;
@@ -457,7 +457,7 @@
   table.grid td {
     text-align: left;
     padding: 0.45rem 0.6rem;
-    border-bottom: 1px solid var(--border, #eee);
+    border-bottom: 1px solid var(--border-default);
     vertical-align: top;
   }
   td.slug {
@@ -486,32 +486,32 @@
     font-size: 0.72rem;
   }
   .badge.facet {
-    background: #e0e7ff;
-    color: #3730a3;
+    background: color-mix(in srgb, var(--accent-indigo) 16%, transparent);
+    color: var(--accent-indigo);
   }
   .badge.state {
-    background: #f3f4f6;
-    color: #374151;
+    background: color-mix(in srgb, var(--text-muted) 20%, transparent);
+    color: var(--text-secondary);
   }
   .badge.ok {
-    background: #dcfce7;
-    color: #166534;
+    background: color-mix(in srgb, var(--accent-green) 16%, transparent);
+    color: var(--accent-green);
   }
   .badge.bad {
-    background: #fee2e2;
-    color: #991b1b;
+    background: color-mix(in srgb, var(--accent-red) 16%, transparent);
+    color: var(--accent-red);
   }
   .badge.neutral {
-    background: #f3f4f6;
-    color: #6b7280;
+    background: color-mix(in srgb, var(--text-muted) 20%, transparent);
+    color: var(--text-secondary);
   }
   .tag {
     display: inline-block;
     padding: 0.05rem 0.35rem;
     border-radius: 4px;
     font-size: 0.72rem;
-    background: #ede9fe;
-    color: #5b21b6;
+    background: color-mix(in srgb, var(--accent-purple) 16%, transparent);
+    color: var(--accent-purple);
   }
   .dim {
     color: var(--text-secondary, #888);
@@ -521,11 +521,11 @@
     cursor: pointer;
   }
   tr.clickable:hover {
-    background: var(--hover-bg, #f3f4f6);
+    background: var(--bg-surface-hover);
   }
   code {
     font-size: 0.78em;
-    background: var(--code-bg, #f3f4f6);
+    background: var(--bg-inset);
     padding: 0.05rem 0.25rem;
     border-radius: 3px;
   }
@@ -540,7 +540,7 @@
     padding: 1.5rem;
   }
   .modal {
-    background: var(--bg, #fff);
+    background: var(--bg-surface);
     color: var(--text-primary, #1a1a1a);
     border-radius: 8px;
     max-width: 760px;
@@ -572,7 +572,7 @@
   }
   .close-btn {
     background: none;
-    border: 1px solid var(--border, #ddd);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
     cursor: pointer;
     padding: 0.2rem 0.5rem;
@@ -596,7 +596,7 @@
   }
   table.meta-grid td {
     padding: 0.3rem 0.5rem;
-    border-bottom: 1px solid var(--border, #eee);
+    border-bottom: 1px solid var(--border-default);
     vertical-align: top;
   }
   .meta-key {
@@ -616,7 +616,7 @@
   table.phase-grid td {
     text-align: left;
     padding: 0.35rem 0.5rem;
-    border-bottom: 1px solid var(--border, #eee);
+    border-bottom: 1px solid var(--border-default);
     vertical-align: top;
   }
   .empty-block {
@@ -628,7 +628,7 @@
     list-style: none;
     margin: 0;
     padding: 0;
-    border-left: 2px solid var(--border, #e5e7eb);
+    border-left: 2px solid var(--border-default);
   }
   .tl-item {
     display: flex;
@@ -647,7 +647,7 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: var(--border, #cbd5e1);
+    background: var(--border-default);
   }
   .tl-ts {
     color: var(--text-secondary, #888);

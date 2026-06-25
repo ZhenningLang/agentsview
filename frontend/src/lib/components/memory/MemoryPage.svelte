@@ -737,23 +737,23 @@
     min-width: 10rem;
     padding: 0.35rem 0.6rem;
     font-size: 0.85rem;
-    border: 1px solid var(--border, #ddd);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
-    background: var(--bg, #fff);
+    background: var(--bg-surface);
     color: var(--text-primary, #1a1a1a);
   }
   .controls select {
     padding: 0.35rem 0.5rem;
     font-size: 0.82rem;
-    border: 1px solid var(--border, #ddd);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
-    background: var(--bg, #fff);
+    background: var(--bg-surface);
     color: var(--text-primary, #1a1a1a);
   }
   .controls .clear,
   .controls .refresh {
     background: none;
-    border: 1px solid var(--border, #ddd);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
     cursor: pointer;
     padding: 0.35rem 0.55rem;
@@ -774,7 +774,7 @@
     color: var(--text-secondary, #666);
   }
   .state.error {
-    color: #b91c1c;
+    color: var(--accent-red);
   }
   table.grid {
     width: 100%;
@@ -785,7 +785,7 @@
   table.grid td {
     text-align: left;
     padding: 0.45rem 0.6rem;
-    border-bottom: 1px solid var(--border, #eee);
+    border-bottom: 1px solid var(--border-default);
     vertical-align: top;
   }
   td.title {
@@ -811,8 +811,8 @@
     font-size: 0.72rem;
   }
   .badge.facet {
-    background: #e0e7ff;
-    color: #3730a3;
+    background: color-mix(in srgb, var(--accent-indigo) 16%, transparent);
+    color: var(--accent-indigo);
   }
   .badge.source {
     white-space: nowrap;
@@ -839,11 +839,11 @@
     cursor: pointer;
   }
   tr.clickable:hover {
-    background: var(--hover-bg, #f3f4f6);
+    background: var(--bg-surface-hover);
   }
   code {
     font-size: 0.78em;
-    background: var(--code-bg, #f3f4f6);
+    background: var(--bg-inset);
     padding: 0.05rem 0.25rem;
     border-radius: 3px;
   }
@@ -858,7 +858,7 @@
     padding: 1.5rem;
   }
   .modal {
-    background: var(--bg, #fff);
+    background: var(--bg-surface);
     color: var(--text-primary, #1a1a1a);
     border-radius: 8px;
     max-width: 760px;
@@ -885,7 +885,7 @@
   }
   .close-btn {
     background: none;
-    border: 1px solid var(--border, #ddd);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
     cursor: pointer;
     padding: 0.2rem 0.5rem;
@@ -903,7 +903,7 @@
   }
   table.fm-grid td {
     padding: 0.3rem 0.5rem;
-    border-bottom: 1px solid var(--border, #eee);
+    border-bottom: 1px solid var(--border-default);
     vertical-align: top;
   }
   .fm-key {
@@ -915,9 +915,9 @@
     word-break: break-word;
   }
   pre.body {
-    background: var(--hover-bg, #f6f8fa);
+    background: var(--bg-surface-hover);
     color: var(--text-primary, #1a1a1a);
-    border: 1px solid var(--border, #e5e7eb);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
     padding: 0.75rem;
     font-size: 0.78rem;
@@ -941,7 +941,7 @@
   }
   .action-btn {
     background: none;
-    border: 1px solid var(--border, #ddd);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
     cursor: pointer;
     padding: 0.25rem 0.6rem;
@@ -950,7 +950,7 @@
   }
   .action-btn:hover:not(:disabled) {
     color: var(--text-primary, #1a1a1a);
-    background: var(--hover-bg, #f3f4f6);
+    background: var(--bg-surface-hover);
   }
   .no-history {
     font-size: 0.75rem;
@@ -963,17 +963,17 @@
     cursor: default;
   }
   .action-btn.active {
-    background: #e0e7ff;
-    color: #3730a3;
-    border-color: #c7d2fe;
+    background: color-mix(in srgb, var(--accent-indigo) 16%, transparent);
+    color: var(--accent-indigo);
+    border-color: color-mix(in srgb, var(--accent-indigo) 40%, transparent);
   }
   .action-btn.primary {
-    background: #4f46e5;
+    background: var(--accent-blue);
     color: #fff;
-    border-color: #4f46e5;
+    border-color: var(--accent-blue);
   }
   .action-btn.primary:hover:not(:disabled) {
-    background: #4338ca;
+    background: color-mix(in srgb, var(--accent-blue) 82%, black);
     color: #fff;
   }
   .edit-bar {
@@ -1001,9 +1001,9 @@
     font-size: 0.78rem;
     line-height: 1.5;
     padding: 0.75rem;
-    border: 1px solid var(--border, #d1d5db);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
-    background: var(--bg, #fff);
+    background: var(--bg-surface);
     color: var(--text-primary, #1a1a1a);
     resize: vertical;
     white-space: pre;
@@ -1014,9 +1014,9 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
-    background: #fef2f2;
-    border: 1px solid #fecaca;
-    color: #b91c1c;
+    background: color-mix(in srgb, var(--accent-red) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent-red) 30%, transparent);
+    color: var(--accent-red);
     border-radius: 6px;
     padding: 0.5rem 0.75rem;
     font-size: 0.8rem;
@@ -1026,7 +1026,7 @@
     list-style: none;
     margin: 0.4rem 0 0;
     padding: 0;
-    border: 1px solid var(--border, #eee);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
     overflow: hidden;
   }
@@ -1034,7 +1034,7 @@
     display: grid;
     grid-template-columns: 1fr auto;
     align-items: center;
-    border-bottom: 1px solid var(--border, #f0f0f0);
+    border-bottom: 1px solid var(--border-default);
   }
   .history-item:last-child {
     border-bottom: none;
@@ -1054,7 +1054,7 @@
   }
   .history-row:hover,
   .history-row.active {
-    background: var(--hover-bg, #f3f4f6);
+    background: var(--bg-surface-hover);
   }
   .hist-date {
     color: var(--text-secondary, #666);
@@ -1088,8 +1088,8 @@
   }
   pre.diff {
     margin: 0;
-    background: var(--hover-bg, #f6f8fa);
-    border: 1px solid var(--border, #e5e7eb);
+    background: var(--bg-surface-hover);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
     font-size: 0.74rem;
     line-height: 1.4;
@@ -1104,11 +1104,11 @@
     word-break: break-word;
   }
   .diff-line.add {
-    background: #e6ffed;
-    color: #044317;
+    background: color-mix(in srgb, var(--accent-green) 16%, transparent);
+    color: var(--accent-green);
   }
   .diff-line.del {
-    background: #ffeef0;
-    color: #86181d;
+    background: color-mix(in srgb, var(--accent-red) 16%, transparent);
+    color: var(--accent-red);
   }
 </style>

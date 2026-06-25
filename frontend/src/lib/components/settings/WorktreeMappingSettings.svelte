@@ -358,7 +358,7 @@
   }
 
   .danger {
-    color: var(--color-danger, #d14);
+    color: var(--accent-red);
   }
 
   button:disabled {
@@ -379,7 +379,7 @@
   }
 
   .error-text {
-    color: var(--color-danger, #d14);
+    color: var(--accent-red);
   }
 
   .success-text {

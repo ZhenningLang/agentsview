@@ -367,7 +367,7 @@
   .tabs {
     display: flex;
     gap: 0.5rem;
-    border-bottom: 1px solid var(--border, #ddd);
+    border-bottom: 1px solid var(--border-default);
     margin-bottom: 1rem;
   }
   .tabs button {
@@ -381,7 +381,7 @@
   }
   .tabs button.active {
     color: var(--text-primary, #1a1a1a);
-    border-bottom-color: var(--accent, #3b82f6);
+    border-bottom-color: var(--accent-blue);
   }
   .tabs .refresh {
     margin-left: auto;
@@ -392,7 +392,7 @@
     color: var(--text-secondary, #666);
   }
   .state.error {
-    color: #b91c1c;
+    color: var(--accent-red);
   }
   table.grid {
     width: 100%;
@@ -403,7 +403,7 @@
   table.grid td {
     text-align: left;
     padding: 0.4rem 0.6rem;
-    border-bottom: 1px solid var(--border, #eee);
+    border-bottom: 1px solid var(--border-default);
   }
   table.grid th.num,
   table.grid td.num {
@@ -420,20 +420,20 @@
     font-size: 0.72rem;
   }
   .badge.ok {
-    background: #dcfce7;
-    color: #166534;
+    background: color-mix(in srgb, var(--accent-green) 16%, transparent);
+    color: var(--accent-green);
   }
   .sev-error {
-    background: #fee2e2;
-    color: #991b1b;
+    background: color-mix(in srgb, var(--accent-red) 16%, transparent);
+    color: var(--accent-red);
   }
   .sev-warn {
-    background: #fef9c3;
-    color: #854d0e;
+    background: color-mix(in srgb, var(--accent-amber) 18%, transparent);
+    color: var(--accent-amber);
   }
   .sev-info {
-    background: #e0e7ff;
-    color: #3730a3;
+    background: color-mix(in srgb, var(--accent-indigo) 16%, transparent);
+    color: var(--accent-indigo);
   }
   .cost-summary,
   .health-summary {
@@ -473,13 +473,13 @@
     font-size: 0.78rem;
   }
   .bar-track {
-    background: var(--border, #eee);
+    background: var(--border-default);
     border-radius: 3px;
     height: 12px;
     overflow: hidden;
   }
   .bar-fill {
-    background: var(--accent, #3b82f6);
+    background: var(--accent-blue);
     height: 100%;
   }
   .bar-num {
@@ -489,7 +489,7 @@
   }
   code {
     font-size: 0.78em;
-    background: var(--code-bg, #f3f4f6);
+    background: var(--bg-inset);
     padding: 0.05rem 0.25rem;
     border-radius: 3px;
   }
@@ -505,7 +505,7 @@
     cursor: pointer;
   }
   tr.clickable:hover {
-    background: var(--hover-bg, #f3f4f6);
+    background: var(--bg-surface-hover);
   }
   .modal-backdrop {
     position: fixed;
@@ -518,7 +518,7 @@
     padding: 1.5rem;
   }
   .modal {
-    background: var(--bg, #fff);
+    background: var(--bg-surface);
     color: var(--text-primary, #1a1a1a);
     border-radius: 8px;
     max-width: 760px;
@@ -545,7 +545,7 @@
   }
   .close-btn {
     background: none;
-    border: 1px solid var(--border, #ddd);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
     cursor: pointer;
     padding: 0.2rem 0.5rem;
@@ -574,9 +574,9 @@
     font-size: 0.9rem;
   }
   pre.prompt {
-    background: var(--hover-bg, #f6f8fa);
+    background: var(--bg-surface-hover);
     color: var(--text-primary, #1a1a1a);
-    border: 1px solid var(--border, #e5e7eb);
+    border: 1px solid var(--border-default);
     border-radius: 6px;
     padding: 0.75rem;
     font-size: 0.78rem;
