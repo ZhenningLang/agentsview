@@ -18,8 +18,11 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humago"
 
+	"go.kenn.io/agentsview/internal/backup"
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/consolidate"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/ghconnect"
 	"go.kenn.io/agentsview/internal/insight"
 	"go.kenn.io/agentsview/internal/llm"
 	"go.kenn.io/agentsview/internal/service"
@@ -82,6 +85,25 @@ type Server struct {
 	// under this prefix and a <base href> tag is injected
 	// into the SPA's index.html.
 	basePath string
+
+	// consolidateCtl is the runtime handle to the background
+	// consolidation worker, used by the enable endpoint to arm/
+	// disarm it without a process restart. Nil when the worker
+	// was not started (no memory dir / read-only store), in which
+	// case the enable endpoint reports "not available".
+	consolidateCtl *consolidate.Controller
+
+	// ghRunner is the gh CLI runner used by the memory-backup connect
+	// endpoint (Phase 04). Nil defaults to the real CLIRunner; tests
+	// inject a mock via WithGHRunner so no real gh/network call occurs.
+	ghRunner ghconnect.Runner
+
+	// backupCtl is the runtime handle to the background backup-push worker
+	// (Phase 05), used by the enable endpoint to arm/disarm it without a
+	// process restart. Nil when the worker was not started (no backup repo
+	// configured / read-only store), in which case the enable endpoint reports
+	// "not available".
+	backupCtl *backup.Controller
 }
 
 // New creates a new Server.
@@ -190,9 +212,31 @@ func WithUpdateChecker(f UpdateCheckFunc) Option {
 	return func(s *Server) { s.updateCheckFn = f }
 }
 
+// WithConsolidateController injects the background consolidation
+// controller so the enable endpoint can arm/disarm the worker at
+// runtime. Nil is allowed (worker not started); the endpoint then
+// reports the feature as unavailable.
+func WithConsolidateController(c *consolidate.Controller) Option {
+	return func(s *Server) { s.consolidateCtl = c }
+}
+
+// WithBackupController injects the background backup-push controller so the
+// enable endpoint can arm/disarm the worker at runtime. Nil is allowed (worker
+// not started); the endpoint then reports the feature as unavailable.
+func WithBackupController(c *backup.Controller) Option {
+	return func(s *Server) { s.backupCtl = c }
+}
+
 // WithLLMHTTPClient overrides LLM provider HTTP calls for tests.
 func WithLLMHTTPClient(c *http.Client) Option {
 	return func(s *Server) { s.llmHTTPClient = c }
+}
+
+// WithGHRunner injects a gh CLI runner for the memory-backup connect
+// endpoint. Tests pass a mock so the gh state machine is exercised without a
+// real gh process or network mutation.
+func WithGHRunner(r ghconnect.Runner) Option {
+	return func(s *Server) { s.ghRunner = r }
 }
 
 // WithBasePath sets a URL prefix for reverse-proxy deployments.

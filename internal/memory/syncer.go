@@ -21,11 +21,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Writer is the narrow persistence surface the syncer needs. It is
-// satisfied by *db.DB; the PG/DuckDB read stores receive memory rows via
-// the SQLite mirror, not through this path.
+// Writer is the narrow persistence surface the syncers need. It is satisfied
+// by *db.DB; the PG/DuckDB read stores receive memory rows via the SQLite
+// mirror, not through this path. ReplaceMemories does a whole-table replace;
+// ReplaceMemoriesBySource scopes the replace to one data source so the
+// cross-agent and cc-native syncers never clobber each other's rows.
 type Writer interface {
 	ReplaceMemories(ctx context.Context, memories []db.Memory) error
+	ReplaceMemoriesBySource(
+		ctx context.Context, source string, memories []db.Memory,
+	) error
 }
 
 // indexBasename is the on-disk index file used as a hint and excluded
@@ -103,7 +108,8 @@ func (s *Syncer) Sync(ctx context.Context) error {
 		memories = append(memories, m)
 	}
 
-	return s.writer.ReplaceMemories(ctx, memories)
+	return s.writer.ReplaceMemoriesBySource(
+		ctx, db.SourceCrossAgent, memories)
 }
 
 // parseFile reads one memory note, splitting YAML frontmatter from the
@@ -125,6 +131,7 @@ func (s *Syncer) parseFile(
 	body := extractBody(raw)
 	return db.Memory{
 		RelPath:       relPath,
+		Source:        db.SourceCrossAgent,
 		Title:         fm.Title,
 		Date:          fm.Date,
 		ProblemType:   fm.ProblemType,

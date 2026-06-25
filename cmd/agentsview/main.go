@@ -9,13 +9,17 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	_ "time/tzdata"
 
 	"github.com/spf13/cobra"
+	"go.kenn.io/agentsview/internal/backup"
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/consolidate"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/llm"
 	"go.kenn.io/agentsview/internal/memory"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/secrets"
@@ -219,10 +223,34 @@ func runServe(cfg config.Config) {
 	// same way as skills.
 	startMemorySync(ctx, cfg, database)
 
+	// CC-native memory: sync the second memory data source (CC auto-memory
+	// across project dirs) into the same read-only memory dimension table,
+	// tagged source=cc-native. Fail-open like the cross-agent memory sync.
+	startCCMemorySync(ctx, cfg, database)
+
 	// Vault views: sync dev-workflow .long-loop run records into the
 	// read-only vault dimension tables. Independent of session sync and
 	// fail-open in the same way as memory.
 	startVaultSync(ctx, cfg, database)
+
+	// Consolidation worker: background timer that auto-promotes staging
+	// candidates into memory/user (LLM decision + dotfiles safety script +
+	// local commit + immediate resync). The loop always starts when its
+	// prerequisites exist; ConsolidateEnabled (default OFF) only sets the
+	// initial armed state. The returned controller is handed to the server so
+	// the UI can arm it at runtime (immediate first cycle) without a restart.
+	// Fail-open like the syncs above: a nil controller simply leaves the
+	// enable endpoint reporting "not available".
+	consolidateController := startConsolidate(ctx, cfg, database)
+
+	// Backup-push worker: background timer (bound to this process — no system
+	// cron) that snapshots memory/user + CC-native into an isolated git
+	// workspace and pushes to the Phase 04 private repo. Always started when a
+	// backup repo is configured and the store is a local writer; BackupEnabled
+	// (default OFF) only sets the initial armed state, so enabling from the UI
+	// takes effect (with an immediate first push) without a restart. Fail-open:
+	// a nil controller leaves the enable endpoint reporting "not available".
+	backupController := startBackupPush(ctx, cfg, database)
 
 	rtOpts := serveRuntimeOptions{
 		Mode:          "serve",
@@ -243,6 +271,8 @@ func runServe(cfg config.Config) {
 		server.WithDataDir(cfg.DataDir),
 		server.WithBaseContext(ctx),
 		server.WithBroadcaster(broadcaster),
+		server.WithConsolidateController(consolidateController),
+		server.WithBackupController(backupController),
 	)
 
 	rt, err := startServerWithOptionalCaddy(ctx, cfg, srv, rtOpts)
@@ -707,6 +737,44 @@ func startMemorySync(
 	}()
 }
 
+// startCCMemorySync runs the CC-native memory sync once at startup and then on
+// the periodic interval. CC-native auto-memory is the second memory data
+// source; it lands in the same memory dimension table tagged source=cc-native
+// and full-replaces only that source on each run, so it never disturbs the
+// cross-agent rows. Fail-open: it no-ops when no CC root is configured/found,
+// or when the store is not a local writer (PG/DuckDB serve modes receive
+// memory via the SQLite mirror).
+func startCCMemorySync(
+	ctx context.Context, cfg config.Config, database db.Store,
+) {
+	root := cfg.ResolveCCMemoryDir()
+	if root == "" {
+		return
+	}
+	writer, ok := database.(memory.Writer)
+	if !ok {
+		return
+	}
+	syncer := memory.NewCCSyncer(root, writer, nil)
+	if err := syncer.Sync(ctx); err != nil {
+		log.Printf("cc memory sync: %v", err)
+	}
+	go func() {
+		ticker := time.NewTicker(periodicSyncInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := syncer.Sync(ctx); err != nil {
+					log.Printf("cc memory sync: %v", err)
+				}
+			}
+		}
+	}()
+}
+
 // startVaultSync runs the dev-workflow vault sync once at startup and then
 // on the periodic interval. It is fail-open: it no-ops when no roots can be
 // resolved, or when the store is not a local writer (PG/DuckDB serve modes
@@ -740,6 +808,94 @@ func startVaultSync(
 			}
 		}
 	}()
+}
+
+// startConsolidate starts the background consolidation worker and returns a
+// Controller so the server can arm/disarm it at runtime. The loop is ALWAYS
+// started (when the prerequisites are present) so that enabling it from the UI
+// takes effect without a process restart; ConsolidateEnabled (default OFF) only
+// sets the initial armed state. While disarmed every tick/trigger is a no-op,
+// so auto-LLM-writes into memory/user never happen without an explicit opt-in;
+// arming fires one immediate cycle (locked decision A2: "UI 能开启 + 开启后自动跑").
+//
+// It returns nil (and starts nothing) when no memory dir is configured/found or
+// when the store is not a local writer (PG/DuckDB serve modes never own the
+// SSOT files) — fail-open like the syncs above. A nil controller leaves the
+// server's enable endpoint reporting "not available", never panicking.
+func startConsolidate(
+	ctx context.Context, cfg config.Config, database db.Store,
+) *consolidate.Controller {
+	dir := cfg.ResolveMemoryDir()
+	if dir == "" {
+		return nil
+	}
+	root := cfg.ResolveDotfilesRoot()
+	if root == "" {
+		return nil
+	}
+	writer, ok := database.(memory.Writer)
+	if !ok {
+		return nil
+	}
+	stagingDir := filepath.Join(root, "memory", ".staging")
+	rawDir := filepath.Join(stagingDir, "raw_memories")
+	resync := consolidate.ResyncFunc(func(c context.Context) error {
+		return memory.NewSyncer(dir, writer, nil).Sync(c)
+	})
+	worker := consolidate.NewWorker(
+		stagingDir, rawDir, root,
+		llm.New(cfg.ConsolidateLLM()),
+		consolidate.PythonScriptRunner{},
+		consolidate.GitCommitter{Dir: dir},
+		resync,
+		consolidate.NewAuditLog(consolidate.AuditPath(dir)),
+	)
+	ctrl := consolidate.NewController(worker, cfg.ConsolidateEnabled)
+	go ctrl.Run(ctx, cfg.ResolveConsolidateInterval())
+	return ctrl
+}
+
+// startBackupPush starts the background backup-push worker and returns a
+// Controller so the server can arm/disarm it at runtime. The loop is ALWAYS
+// started (when prerequisites are present) so enabling it from the UI takes
+// effect without a process restart; BackupEnabled (default OFF) only sets the
+// initial armed state. While disarmed every tick/trigger is a no-op, so a push
+// never happens without an explicit opt-in; arming fires one immediate cycle.
+//
+// It returns nil (and starts nothing) when no backup repo is configured/linked
+// or when the store is not a local writer (PG/DuckDB serve modes never own the
+// SSOT files) — fail-open like the syncs above. A nil controller leaves the
+// enable endpoint reporting "not available", never panicking. The timer is
+// bound to this process (no system cron), so backups run only while agentsview
+// runs.
+func startBackupPush(
+	ctx context.Context, cfg config.Config, database db.Store,
+) *backup.Controller {
+	repo := strings.TrimSpace(cfg.MemoryBackupRepo)
+	if repo == "" {
+		return nil
+	}
+	workspace := cfg.ResolveBackupWorkspaceDir()
+	if workspace == "" {
+		return nil
+	}
+	if _, ok := database.(memory.Writer); !ok {
+		return nil
+	}
+	worker := backup.NewWorker(
+		backup.Config{
+			Workspace:     workspace,
+			Repo:          repo,
+			CrossAgentDir: cfg.ResolveMemoryDir(),
+			CCRoot:        cfg.ResolveCCMemoryDir(),
+		},
+		backup.CLIGitRunner{},
+		backup.CLIGHRunner{},
+		backup.NewStatusStore(backup.StatusPath(cfg.DataDir)),
+	)
+	ctrl := backup.NewController(worker, cfg.BackupEnabled)
+	go ctrl.Run(ctx, cfg.ResolveBackupInterval())
+	return ctrl
 }
 
 func recomputePendingSessions(

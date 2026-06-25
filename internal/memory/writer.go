@@ -48,18 +48,45 @@ type HistoryEntry struct {
 	Message string `json:"message"`
 }
 
-// FileWriter performs file-level edits against a single memory directory. It
-// is constructed per request from the resolved memory dir; it holds no DB.
-// (Named FileWriter to avoid colliding with the syncer's Writer persistence
-// interface in this package.)
+// FileWriter performs file-level edits against a single memory root. It is
+// constructed per request from the resolved root; it holds no DB. (Named
+// FileWriter to avoid colliding with the syncer's Writer persistence interface
+// in this package.)
+//
+// Two roots are supported, selected by constructor:
+//   - The cross-agent SSOT (~/.dotfiles/memory/user): NewWriter. The root
+//     directly contains the *.md notes; writes rebuild INDEX.md and commit the
+//     local-only git repo, and git history is available.
+//   - CC-native auto-memory (~/.claude/projects): NewWriterNoGit. The root is
+//     the project-dirs parent, so a note's RelPath spans subdirs
+//     (<project>/memory/<file>.md). CC-native dirs are not our git repo and
+//     have no INDEX, so writes are content-only: noGit skips both the INDEX
+//     rebuild and the commit. History is "not applicable" for this root.
+//
+// The path-traversal guard is identical for both: a note's resolved absolute
+// path must stay inside the root, so a CC-native RelPath cannot escape the
+// projects parent even though it legitimately contains slashes.
 type FileWriter struct {
 	dir string
+	// noGit, when true, makes Write content-only: no INDEX rebuild and no git
+	// commit. It is set for the CC-native root, which is neither our git repo
+	// nor INDEX-managed.
+	noGit bool
 }
 
-// NewWriter builds a FileWriter rooted at the memory directory (the directory
-// that directly contains the *.md notes, e.g. ~/.dotfiles/memory/user).
+// NewWriter builds a FileWriter rooted at the cross-agent memory directory
+// (the directory that directly contains the *.md notes, e.g.
+// ~/.dotfiles/memory/user). Writes rebuild INDEX.md and commit the local repo.
 func NewWriter(dir string) *FileWriter {
 	return &FileWriter{dir: dir}
+}
+
+// NewWriterNoGit builds a FileWriter rooted at a directory whose writes are
+// content-only: no INDEX rebuild, no git commit, no history. It is used for the
+// CC-native root (~/.claude/projects), where notes live across project subdirs
+// and the directory is not managed as our git repo.
+func NewWriterNoGit(dir string) *FileWriter {
+	return &FileWriter{dir: dir, noGit: true}
 }
 
 // WriteRequest is the payload for a write-back: the target rel_path, the
@@ -158,8 +185,13 @@ func (w *FileWriter) Write(ctx context.Context, req WriteRequest) (string, error
 		return "", err
 	}
 
-	w.rebuildIndex(ctx)
-	w.commit(ctx, fmt.Sprintf("memory: edit %s", req.RelPath))
+	// CC-native (noGit) writes are content-only: the root is not our git repo
+	// and has no INDEX, so neither side effect applies. The atomic write above
+	// is the entire write-back for that root.
+	if !w.noGit {
+		w.rebuildIndex(ctx)
+		w.commit(ctx, fmt.Sprintf("memory: edit %s", req.RelPath))
+	}
 
 	return sha256Hex([]byte(req.Content)), nil
 }

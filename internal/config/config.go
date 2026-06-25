@@ -164,6 +164,10 @@ type Config struct {
 	// set so loadFile doesn't override env-set values.
 	agentDirSource map[parser.AgentType]dirSource
 
+	// envBackupEnabledSet records that AGENTSVIEW_BACKUP_ENABLED was present in
+	// the environment, so the config file does not override the env's choice.
+	envBackupEnabledSet bool
+
 	ResultContentBlockedCategories []string `json:"result_content_blocked_categories,omitempty" toml:"result_content_blocked_categories"`
 
 	// EventsCoalesceInterval is the minimum wall-clock time between
@@ -198,11 +202,150 @@ type Config struct {
 	// memory feature stays empty and fail-open.
 	MemoryDir string `json:"memory_dir,omitempty" toml:"memory_dir"`
 
+	// CCMemoryDir is the root of CC-native auto-memory: a directory whose
+	// immediate children are project dirs each holding a memory/ subdir
+	// (<project>/memory/*.md). When empty, ResolveCCMemoryDir probes the
+	// default ~/.claude/projects; when nothing is found the CC-native memory
+	// source stays empty and fail-open. Override via AGENTSVIEW_CC_MEMORY_DIR.
+	CCMemoryDir string `json:"cc_memory_dir,omitempty" toml:"cc_memory_dir"`
+
 	// VaultRoots are the roots scanned for dev-workflow run records under
 	// `.long-loop/<slug>/`. When empty, ResolveVaultRoots probes the
 	// default ~/.dotfiles. Multiple roots may be configured; via env they
 	// are comma-separated (AGENTSVIEW_VAULT_ROOTS).
 	VaultRoots []string `json:"vault_roots,omitempty" toml:"vault_roots"`
+
+	// Consolidate holds the optional independent LLM settings used by the
+	// background staging->memory/user consolidation worker. Any unset field
+	// falls back to the corresponding LLM field (see ConsolidateLLM). Env:
+	// AGENTSVIEW_CONSOLIDATE_BASE_URL / _API_KEY / _MODEL.
+	Consolidate LLMConfig `json:"consolidate,omitempty" toml:"consolidate"`
+
+	// ConsolidateEnabled gates the background consolidation worker. It
+	// defaults to OFF: auto-writing LLM-decided notes into memory/user is a
+	// side-effecting action, so the first run must be an explicit opt-in
+	// (UI/config/env AGENTSVIEW_CONSOLIDATE_ENABLED). Once enabled the worker
+	// runs fully automatically on the configured interval.
+	ConsolidateEnabled bool `json:"consolidate_enabled" toml:"consolidate_enabled"`
+
+	// ConsolidateInterval is the period between consolidation runs once
+	// enabled. Zero selects the default (24h). Env:
+	// AGENTSVIEW_CONSOLIDATE_INTERVAL (a Go duration string).
+	ConsolidateInterval time.Duration `json:"consolidate_interval,omitempty" toml:"consolidate_interval"`
+
+	// DotfilesRoot is the dotfiles repository root passed to
+	// assist_consolidate.py as --root. When empty it is derived from the
+	// resolved memory dir (its two-levels-up parent), so the script writes
+	// into the same memory/user the existing syncer scans. Env:
+	// AGENTSVIEW_DOTFILES_ROOT (override only; normally derived).
+	DotfilesRoot string `json:"dotfiles_root,omitempty" toml:"dotfiles_root"`
+
+	// MemoryBackupRepo is the resolved `<owner>/<name>` full name of the
+	// PRIVATE GitHub repo claimed for memory backup (Phase 04 gh-connect).
+	// Phase 05 reads it to push. Empty means no backup target is configured.
+	MemoryBackupRepo string `json:"memory_backup_repo,omitempty" toml:"memory_backup_repo"`
+
+	// MemoryBackupLinked reports whether MemoryBackupRepo was successfully
+	// validated/claimed (private + marker) so the UI can show a connected
+	// status. It is set together with MemoryBackupRepo on a successful connect.
+	MemoryBackupLinked bool `json:"memory_backup_linked" toml:"memory_backup_linked"`
+
+	// BackupEnabled gates the background backup-push worker (Phase 05). It
+	// defaults to OFF: pushing memory to a remote is a side-effecting action, so
+	// the first run is an explicit opt-in (UI/config/env
+	// AGENTSVIEW_BACKUP_ENABLED). Once enabled the worker pushes automatically
+	// on the configured interval while agentsview runs (timer bound to the
+	// process, no system cron).
+	BackupEnabled bool `json:"backup_enabled" toml:"backup_enabled"`
+
+	// BackupInterval is the period between backup pushes once enabled. Zero
+	// selects the default (1h). Env: AGENTSVIEW_BACKUP_INTERVAL (a Go duration
+	// string).
+	BackupInterval time.Duration `json:"backup_interval,omitempty" toml:"backup_interval"`
+
+	// BackupWorkspaceDir is the isolated git working dir the backup worker owns
+	// (its .git, remote, and pushes). When empty it defaults to
+	// <DataDir>/memory-backup. Env: AGENTSVIEW_BACKUP_WORKSPACE.
+	BackupWorkspaceDir string `json:"backup_workspace_dir,omitempty" toml:"backup_workspace_dir"`
+}
+
+// defaultBackupInterval is the period between backup pushes when BackupInterval
+// is left at its zero value.
+const defaultBackupInterval = time.Hour
+
+// ResolveBackupInterval returns the effective backup-push interval, substituting
+// the 1h default for a non-positive configured value.
+func (c *Config) ResolveBackupInterval() time.Duration {
+	if c.BackupInterval > 0 {
+		return c.BackupInterval
+	}
+	return defaultBackupInterval
+}
+
+// ResolveBackupWorkspaceDir returns the isolated backup working dir. It honors
+// an explicit BackupWorkspaceDir, otherwise defaults to <DataDir>/memory-backup
+// — a directory entirely outside any source repo, so the backup's git never
+// touches memory/user's .git, the main repo, or the dotfiles repo.
+func (c *Config) ResolveBackupWorkspaceDir() string {
+	if strings.TrimSpace(c.BackupWorkspaceDir) != "" {
+		return c.BackupWorkspaceDir
+	}
+	if c.DataDir == "" {
+		return ""
+	}
+	return filepath.Join(c.DataDir, "memory-backup")
+}
+
+// defaultConsolidateInterval is the period between consolidation runs when
+// ConsolidateInterval is left at its zero value.
+const defaultConsolidateInterval = 24 * time.Hour
+
+// ResolveConsolidateInterval returns the effective consolidation interval,
+// substituting the 24h default for a non-positive configured value.
+func (c *Config) ResolveConsolidateInterval() time.Duration {
+	if c.ConsolidateInterval > 0 {
+		return c.ConsolidateInterval
+	}
+	return defaultConsolidateInterval
+}
+
+// ConsolidateLLM returns the effective LLM settings for the consolidation
+// worker: the independent Consolidate config with each unset connection field
+// filled from the main LLM config. Enabled/periodic gating is handled
+// separately via ConsolidateEnabled, so only the connection fields are merged.
+func (c *Config) ConsolidateLLM() LLMConfig {
+	out := c.LLM
+	if c.Consolidate.BaseURL != "" {
+		out.BaseURL = c.Consolidate.BaseURL
+	}
+	if c.Consolidate.APIKey != "" {
+		out.APIKey = c.Consolidate.APIKey
+	}
+	if c.Consolidate.Model != "" {
+		out.Model = c.Consolidate.Model
+	}
+	if c.Consolidate.ReasoningEffort != "" {
+		out.ReasoningEffort = c.Consolidate.ReasoningEffort
+	}
+	return out
+}
+
+// ResolveDotfilesRoot returns the dotfiles repository root used as
+// assist_consolidate.py --root. It honors an explicit DotfilesRoot override,
+// otherwise derives it from the resolved memory dir: memory/user lives at
+// <dotfiles>/memory/user, so the root is the dir's two-levels-up parent. This
+// keeps the script's write target bound to the exact memory dir the existing
+// syncer scans (locked decision B1). Returns "" when neither is resolvable.
+func (c *Config) ResolveDotfilesRoot() string {
+	if strings.TrimSpace(c.DotfilesRoot) != "" {
+		return c.DotfilesRoot
+	}
+	dir := c.ResolveMemoryDir()
+	if dir == "" {
+		return ""
+	}
+	// <dotfiles>/memory/user -> <dotfiles>
+	return filepath.Dir(filepath.Dir(dir))
 }
 
 type dirSource int
@@ -512,7 +655,13 @@ func (c *Config) loadFile() error {
 		RemoteHosts                    []RemoteHost               `toml:"remote_hosts"`
 		SkillsCatalogDir               string                     `toml:"skills_catalog_dir"`
 		MemoryDir                      string                     `toml:"memory_dir"`
+		CCMemoryDir                    string                     `toml:"cc_memory_dir"`
 		VaultRoots                     []string                   `toml:"vault_roots"`
+		MemoryBackupRepo               string                     `toml:"memory_backup_repo"`
+		MemoryBackupLinked             bool                       `toml:"memory_backup_linked"`
+		BackupEnabled                  bool                       `toml:"backup_enabled"`
+		BackupInterval                 time.Duration              `toml:"backup_interval"`
+		BackupWorkspaceDir             string                     `toml:"backup_workspace_dir"`
 	}
 	meta, err := toml.DecodeFile(path, &file)
 	if err != nil {
@@ -560,10 +709,34 @@ func (c *Config) loadFile() error {
 	if file.MemoryDir != "" && c.MemoryDir == "" {
 		c.MemoryDir = file.MemoryDir
 	}
+	// env (loadEnv, AGENTSVIEW_CC_MEMORY_DIR) runs first and wins; the
+	// config file only fills the value when env left it unset.
+	if file.CCMemoryDir != "" && c.CCMemoryDir == "" {
+		c.CCMemoryDir = file.CCMemoryDir
+	}
 	// env (loadEnv, AGENTSVIEW_VAULT_ROOTS) runs first and wins; the
 	// config file only fills the value when env left it unset.
 	if len(file.VaultRoots) > 0 && len(c.VaultRoots) == 0 {
 		c.VaultRoots = file.VaultRoots
+	}
+	// Memory backup target (Phase 04 gh-connect). Persisted via SaveSettings
+	// after a successful connect; the in-memory value (set at runtime) wins,
+	// so the file only fills it on a fresh load.
+	if file.MemoryBackupRepo != "" && c.MemoryBackupRepo == "" {
+		c.MemoryBackupRepo = file.MemoryBackupRepo
+		c.MemoryBackupLinked = file.MemoryBackupLinked
+	}
+	// Backup-push settings (Phase 05). env (loadEnv) runs first and wins; the
+	// config file only fills a value the env left unset. BackupEnabled is set
+	// from the file unless an env override already pinned it (see envBackupSet).
+	if !c.envBackupEnabledSet && meta.IsDefined("backup_enabled") {
+		c.BackupEnabled = file.BackupEnabled
+	}
+	if file.BackupInterval > 0 && c.BackupInterval == 0 {
+		c.BackupInterval = file.BackupInterval
+	}
+	if file.BackupWorkspaceDir != "" && c.BackupWorkspaceDir == "" {
+		c.BackupWorkspaceDir = file.BackupWorkspaceDir
 	}
 	// Merge pg field-by-field so env vars override only
 	// the fields they set, preserving config-file settings.
@@ -809,6 +982,9 @@ func (c *Config) loadEnv() {
 	if v := os.Getenv("AGENTSVIEW_MEMORY_DIR"); v != "" {
 		c.MemoryDir = v
 	}
+	if v := os.Getenv("AGENTSVIEW_CC_MEMORY_DIR"); v != "" {
+		c.CCMemoryDir = v
+	}
 	if v := os.Getenv("AGENTSVIEW_VAULT_ROOTS"); v != "" {
 		roots := make([]string, 0, 2)
 		for part := range strings.SplitSeq(v, ",") {
@@ -819,6 +995,42 @@ func (c *Config) loadEnv() {
 		if len(roots) > 0 {
 			c.VaultRoots = roots
 		}
+	}
+	if v := os.Getenv("AGENTSVIEW_CONSOLIDATE_BASE_URL"); v != "" {
+		c.Consolidate.BaseURL = v
+	}
+	if v := os.Getenv("AGENTSVIEW_CONSOLIDATE_API_KEY"); v != "" {
+		c.Consolidate.APIKey = v
+	}
+	if v := os.Getenv("AGENTSVIEW_CONSOLIDATE_MODEL"); v != "" {
+		c.Consolidate.Model = v
+	}
+	if v, ok := os.LookupEnv("AGENTSVIEW_CONSOLIDATE_ENABLED"); ok {
+		c.ConsolidateEnabled = v == "1" || strings.EqualFold(v, "true")
+	}
+	if v := os.Getenv("AGENTSVIEW_CONSOLIDATE_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.ConsolidateInterval = d
+		} else {
+			log.Printf("config: invalid AGENTSVIEW_CONSOLIDATE_INTERVAL %q: %v", v, err)
+		}
+	}
+	if v := os.Getenv("AGENTSVIEW_DOTFILES_ROOT"); v != "" {
+		c.DotfilesRoot = v
+	}
+	if v, ok := os.LookupEnv("AGENTSVIEW_BACKUP_ENABLED"); ok {
+		c.BackupEnabled = v == "1" || strings.EqualFold(v, "true")
+		c.envBackupEnabledSet = true
+	}
+	if v := os.Getenv("AGENTSVIEW_BACKUP_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			c.BackupInterval = d
+		} else {
+			log.Printf("config: invalid AGENTSVIEW_BACKUP_INTERVAL %q: %v", v, err)
+		}
+	}
+	if v := os.Getenv("AGENTSVIEW_BACKUP_WORKSPACE"); v != "" {
+		c.BackupWorkspaceDir = v
 	}
 }
 
@@ -903,6 +1115,28 @@ func (c *Config) ResolveMemoryDir() string {
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates,
 			filepath.Join(home, ".dotfiles", "memory", "user"))
+	}
+	for _, dir := range candidates {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
+	}
+	return ""
+}
+
+// ResolveCCMemoryDir returns the effective root for CC-native auto-memory
+// (the directory whose children are project dirs each holding a memory/
+// subdir). It prefers an explicit config/env value, then probes the default
+// ~/.claude/projects. It returns "" (fail-open: CC-native source disabled)
+// when no candidate directory exists on disk.
+func (c *Config) ResolveCCMemoryDir() string {
+	candidates := make([]string, 0, 2)
+	if c.CCMemoryDir != "" {
+		candidates = append(candidates, c.CCMemoryDir)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".claude", "projects"))
 	}
 	for _, dir := range candidates {
 		if info, err := os.Stat(dir); err == nil && info.IsDir() {
@@ -1670,6 +1904,26 @@ func (c *Config) SaveSettings(patch map[string]any) error {
 	if v, ok := patch["require_auth"]; ok {
 		if b, ok := v.(bool); ok {
 			c.RequireAuth = b
+		}
+	}
+	if v, ok := patch["consolidate_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			c.ConsolidateEnabled = b
+		}
+	}
+	if v, ok := patch["backup_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			c.BackupEnabled = b
+		}
+	}
+	if v, ok := patch["memory_backup_repo"]; ok {
+		if s, ok := v.(string); ok {
+			c.MemoryBackupRepo = s
+		}
+	}
+	if v, ok := patch["memory_backup_linked"]; ok {
+		if b, ok := v.(bool); ok {
+			c.MemoryBackupLinked = b
 		}
 	}
 	return nil

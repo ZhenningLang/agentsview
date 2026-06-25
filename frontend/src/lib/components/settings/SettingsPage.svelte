@@ -11,6 +11,7 @@
   import RemoteSettings from "./RemoteSettings.svelte";
   import WorktreeMappingSettings from "./WorktreeMappingSettings.svelte";
   import LLMEnrichmentSettings from "./LLMEnrichmentSettings.svelte";
+  import MemoryBackupSettings from "./MemoryBackupSettings.svelte";
 
   let authTokenInput: string = $state("");
 
@@ -94,6 +95,7 @@
       <GithubSettings />
       <RemoteSettings />
       <LLMEnrichmentSettings />
+      <MemoryBackupSettings />
 
       <div class="settings-actions">
         <button

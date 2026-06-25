@@ -12,6 +12,7 @@
     type MemoryHistoryEntry,
   } from "../../api/memory";
   import { ApiError } from "../../api/runtime";
+  import ConsolidateAuditPanel from "./ConsolidateAuditPanel.svelte";
 
   type SortKey = "title" | "date" | "problem_type";
 
@@ -21,10 +22,19 @@
 
   // Full-text query (server-side FTS over the body). Empty = list all.
   let query = $state("");
+  // Data-source filter: "" = all, "cross-agent" / "cc-native".
+  let source = $state("");
   // Facet filters over frontmatter fields. "" = no filter.
   let problemType = $state("");
   let type = $state("");
   let status = $state("");
+
+  // Human-readable label for a memory's data source.
+  function sourceLabel(s: string): string {
+    if (s === "cc-native") return "CC 原生";
+    if (s === "cross-agent") return "跨 agent";
+    return s || "—";
+  }
 
   // The body is only fetched on demand for the listing's facet options, but
   // the list endpoint already returns every row's frontmatter, so facet
@@ -49,6 +59,7 @@
     try {
       const result = await fetchMemories({
         q: query.trim() || undefined,
+        source: source || undefined,
         problem_type: problemType || undefined,
         type: type || undefined,
         status: status || undefined,
@@ -118,6 +129,7 @@
 
   function clearFilters() {
     query = "";
+    source = "";
     problemType = "";
     type = "";
     status = "";
@@ -125,13 +137,19 @@
   }
 
   const hasFilters = $derived(
-    !!(query.trim() || problemType || type || status),
+    !!(query.trim() || source || problemType || type || status),
   );
 
   // Detail modal: fetch the full note (body included) by rel_path.
   let detail = $state<Memory | null>(null);
   let detailLoading = $state(false);
   let detailError = $state<string | null>(null);
+
+  // CC-native notes live in scattered ~/.claude/projects dirs with no git repo,
+  // so history/revert do not apply: the UI hides the history entry and shows a
+  // "CC 原生不支持历史" notice. Editing is still supported (write-back is
+  // content-only, no commit).
+  let detailIsCCNative = $derived(detail?.source === "cc-native");
 
   // The rel_path whose detail modal is open, kept separately so edit/history
   // actions have the key even while detail is being refetched.
@@ -383,6 +401,7 @@
   function frontmatterRows(m: Memory): [string, string][] {
     const rows: [string, string][] = [
       ["rel_path", m.rel_path],
+      ["source", m.source],
       ["title", m.title],
       ["date", m.date],
       ["problem_type", m.problem_type],
@@ -408,6 +427,7 @@
     <p class="subtitle">
       跨 agent user-memory 笔记（只读视图）：全文检索、按 frontmatter facet 过滤、查看正文与元数据。
     </p>
+    <ConsolidateAuditPanel />
     <div class="controls">
       <input
         class="search"
@@ -416,6 +436,11 @@
         bind:value={query}
         oninput={scheduleLoad}
       />
+      <select bind:value={source} onchange={load} aria-label="source 过滤">
+        <option value="">来源: 全部</option>
+        <option value="cross-agent">跨 agent</option>
+        <option value="cc-native">CC 原生</option>
+      </select>
       <select bind:value={problemType} onchange={load} aria-label="problem_type 过滤">
         <option value="">problem_type: 全部</option>
         {#each problemTypeOptions as opt (opt)}
@@ -467,6 +492,7 @@
           <th class="sortable-th" onclick={() => toggleSort("date")}
             >日期{sortIndicator("date")}</th
           >
+          <th>来源</th>
           <th class="sortable-th" onclick={() => toggleSort("problem_type")}
             >problem_type{sortIndicator("problem_type")}</th
           >
@@ -484,6 +510,11 @@
               {/if}
             </td>
             <td class="nowrap">{m.date || "—"}</td>
+            <td>
+              <span class="badge source source-{m.source}"
+                >{sourceLabel(m.source)}</span
+              >
+            </td>
             <td>
               {#if m.problem_type}
                 <span class="badge facet">{m.problem_type}</span>
@@ -542,11 +573,17 @@
             {#if !editing}
               <button class="action-btn" onclick={startEdit}>编辑</button>
             {/if}
-            <button
-              class="action-btn"
-              class:active={historyOpen}
-              onclick={toggleHistory}>历史</button
-            >
+            {#if detailIsCCNative}
+              <span class="no-history" title="CC 原生 memory 无 git 仓库，不记录历史"
+                >CC 原生不支持历史</span
+              >
+            {:else}
+              <button
+                class="action-btn"
+                class:active={historyOpen}
+                onclick={toggleHistory}>历史</button
+              >
+            {/if}
             <button class="close-btn" onclick={closeDetail} aria-label="关闭"
               >✕</button
             >
@@ -777,6 +814,19 @@
     background: #e0e7ff;
     color: #3730a3;
   }
+  .badge.source {
+    white-space: nowrap;
+    background: #f1f5f9;
+    color: #334155;
+  }
+  .badge.source.source-cc-native {
+    background: #fef3c7;
+    color: #92400e;
+  }
+  .badge.source.source-cross-agent {
+    background: #dcfce7;
+    color: #166534;
+  }
   .sortable-th {
     cursor: pointer;
     user-select: none;
@@ -901,6 +951,12 @@
   .action-btn:hover:not(:disabled) {
     color: var(--text-primary, #1a1a1a);
     background: var(--hover-bg, #f3f4f6);
+  }
+  .no-history {
+    font-size: 0.75rem;
+    color: var(--text-secondary, #888);
+    align-self: center;
+    white-space: nowrap;
   }
   .action-btn:disabled {
     opacity: 0.5;

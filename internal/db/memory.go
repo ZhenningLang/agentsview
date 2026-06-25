@@ -7,14 +7,27 @@ import (
 	"strings"
 )
 
-// Memory is one user-memory note: a markdown file under the memory SSOT
-// (~/.dotfiles/memory/user/*.md) with YAML frontmatter and a body. Like
-// Skill it is slowly-changing reference data that lives in its own
-// dimension table and is populated by the MemorySyncer, never by the
-// session sync path. The store is read-only for callers other than the
-// syncer; PG/DuckDB receive rows via the SQLite mirror.
+// Memory source kinds. A memory note originates either from the cross-agent
+// SSOT (~/.dotfiles/memory/user) or from CC-native auto-memory directories
+// (~/.claude/projects/<project>/memory). The source column lets the single
+// memory table hold both data sources and the UI filter between them.
+const (
+	// SourceCrossAgent is the existing cross-agent user-memory SSOT.
+	SourceCrossAgent = "cross-agent"
+	// SourceCCNative is CC-native auto-memory scanned across project dirs.
+	SourceCCNative = "cc-native"
+)
+
+// Memory is one user-memory note: a markdown file under a memory data source
+// (the cross-agent SSOT ~/.dotfiles/memory/user/*.md, or CC-native
+// auto-memory ~/.claude/projects/<project>/memory/*.md) with optional YAML
+// frontmatter and a body. Like Skill it is slowly-changing reference data
+// that lives in its own dimension table and is populated by a MemorySyncer,
+// never by the session sync path. The store is read-only for callers other
+// than the syncer; PG/DuckDB receive rows via the SQLite mirror.
 type Memory struct {
 	RelPath       string `json:"rel_path"`
+	Source        string `json:"source"`
 	Title         string `json:"title"`
 	Date          string `json:"date"`
 	ProblemType   string `json:"problem_type"`
@@ -29,8 +42,10 @@ type Memory struct {
 
 // MemoryFilter narrows a memory listing. Empty fields = no filter. Q is a
 // full-text query over the note body (FTS5 MATCH on SQLite, dialect-
-// specific elsewhere).
+// specific elsewhere). Source filters by data source (cross-agent vs
+// cc-native).
 type MemoryFilter struct {
+	Source        string
 	ProblemType   string
 	Type          string
 	Status        string
@@ -40,13 +55,13 @@ type MemoryFilter struct {
 
 // memoryCols lists the memory columns in the canonical order shared by
 // every backend's scan helper.
-const memoryCols = `rel_path, title, date, problem_type, type, status,
+const memoryCols = `rel_path, source, title, date, problem_type, type, status,
 	origin_session, body, body_tokens, source_mtime, synced_at`
 
 func scanMemory(rows *sql.Rows) (Memory, error) {
 	var m Memory
 	if err := rows.Scan(
-		&m.RelPath, &m.Title, &m.Date, &m.ProblemType, &m.Type,
+		&m.RelPath, &m.Source, &m.Title, &m.Date, &m.ProblemType, &m.Type,
 		&m.Status, &m.OriginSession, &m.Body, &m.BodyTokens,
 		&m.SourceMtime, &m.SyncedAt,
 	); err != nil {
@@ -64,6 +79,10 @@ func (db *DB) ListMemories(
 ) ([]Memory, error) {
 	var preds []string
 	var args []any
+	if f.Source != "" {
+		preds = append(preds, "m.source = ?")
+		args = append(args, f.Source)
+	}
 	if f.ProblemType != "" {
 		preds = append(preds, "m.problem_type = ?")
 		args = append(args, f.ProblemType)
@@ -144,23 +163,32 @@ func prefixCols(cols, prefix string) string {
 }
 
 // replaceMemoriesTx full-replaces the memory table inside an open tx. The
-// AFTER INSERT/DELETE triggers keep memory_fts in sync automatically.
+// AFTER INSERT/DELETE triggers keep memory_fts in sync automatically. When
+// source is non-empty only that data source's rows are cleared and replaced,
+// leaving the other source's rows untouched (the single memory table holds
+// both cross-agent and cc-native rows, each synced by its own syncer).
 func replaceMemoriesTx(
-	ctx context.Context, tx txExec, memories []Memory,
+	ctx context.Context, tx txExec, source string, memories []Memory,
 ) error {
-	if _, err := tx.ExecContext(ctx, "DELETE FROM memory"); err != nil {
+	if source != "" {
+		if _, err := tx.ExecContext(ctx,
+			"DELETE FROM memory WHERE source = ?", source,
+		); err != nil {
+			return fmt.Errorf("clearing memory source %q: %w", source, err)
+		}
+	} else if _, err := tx.ExecContext(ctx, "DELETE FROM memory"); err != nil {
 		return fmt.Errorf("clearing memory: %w", err)
 	}
 	cols := strings.ReplaceAll(memoryCols, "\n\t", " ")
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO memory (`+cols+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return fmt.Errorf("prepare memory insert: %w", err)
 	}
 	defer stmt.Close()
 	for _, m := range memories {
 		if _, err := stmt.ExecContext(ctx,
-			m.RelPath, m.Title, m.Date, m.ProblemType, m.Type,
+			m.RelPath, m.Source, m.Title, m.Date, m.ProblemType, m.Type,
 			m.Status, m.OriginSession, m.Body, m.BodyTokens,
 			m.SourceMtime, m.SyncedAt,
 		); err != nil {
@@ -170,12 +198,29 @@ func replaceMemoriesTx(
 	return nil
 }
 
-// ReplaceMemories atomically full-replaces the memory table in a single
-// transaction. The MemorySyncer uses this so a crash mid-write can never
-// leave a partial mirror. Local-only writer (PG/DuckDB receive rows via
-// the SQLite mirror, not through this path).
+// ReplaceMemories atomically full-replaces the whole memory table in a single
+// transaction (both data sources). It is retained for the combined-replace
+// path; the per-source syncers use ReplaceMemoriesBySource so each source can
+// sync independently without wiping the other. Local-only writer (PG/DuckDB
+// receive rows via the SQLite mirror, not through this path).
 func (db *DB) ReplaceMemories(
 	ctx context.Context, memories []Memory,
+) error {
+	return db.replaceMemories(ctx, "", memories)
+}
+
+// ReplaceMemoriesBySource atomically replaces only the rows of the given data
+// source (cross-agent or cc-native), leaving the other source untouched. Each
+// memory syncer owns one source and calls this so the two syncers — sharing
+// the single memory table — never clobber each other.
+func (db *DB) ReplaceMemoriesBySource(
+	ctx context.Context, source string, memories []Memory,
+) error {
+	return db.replaceMemories(ctx, source, memories)
+}
+
+func (db *DB) replaceMemories(
+	ctx context.Context, source string, memories []Memory,
 ) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -184,7 +229,7 @@ func (db *DB) ReplaceMemories(
 		return fmt.Errorf("begin memory tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := replaceMemoriesTx(ctx, tx, memories); err != nil {
+	if err := replaceMemoriesTx(ctx, tx, source, memories); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

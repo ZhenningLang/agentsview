@@ -73,6 +73,21 @@ func withPublicURL(url string) setupOption {
 	return func(c *config.Config) { c.PublicURL = url }
 }
 
+// withMemoryDir sets the cross-agent user-memory SSOT directory so
+// ResolveMemoryDir returns it explicitly (no probing of the real
+// ~/.dotfiles). Used by memory route tests to isolate write-backs.
+func withMemoryDir(dir string) setupOption {
+	return func(c *config.Config) { c.MemoryDir = dir }
+}
+
+// withCCMemoryDir sets the CC-native auto-memory root so
+// ResolveCCMemoryDir returns it explicitly (no probing of the real
+// ~/.claude/projects). Used by memory route tests to isolate
+// write-backs.
+func withCCMemoryDir(dir string) setupOption {
+	return func(c *config.Config) { c.CCMemoryDir = dir }
+}
+
 func setup(
 	t *testing.T,
 	opts ...setupOption,

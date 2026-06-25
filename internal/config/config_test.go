@@ -912,6 +912,32 @@ func TestLLMConfig_RedactsSecrets(t *testing.T) {
 	assert.NotContains(t, serialized, "embed-secret-key")
 }
 
+// TestMemoryBackup_PersistAndReload proves the Phase 04 backup target survives
+// a SaveSettings write and a subsequent loadFile, so a connected repo is still
+// reported after a restart.
+func TestMemoryBackup_PersistAndReload(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg, err := Default()
+	require.NoError(t, err)
+	cfg.DataDir = dir
+
+	require.NoError(t, cfg.SaveSettings(map[string]any{
+		"memory_backup_repo":   "alice/agent-memory",
+		"memory_backup_linked": true,
+	}))
+	assert.Equal(t, "alice/agent-memory", cfg.MemoryBackupRepo)
+	assert.True(t, cfg.MemoryBackupLinked)
+
+	// Fresh config loads the persisted values from the file.
+	reloaded, err := Default()
+	require.NoError(t, err)
+	reloaded.DataDir = dir
+	require.NoError(t, reloaded.loadFile(), "loadFile")
+	assert.Equal(t, "alice/agent-memory", reloaded.MemoryBackupRepo)
+	assert.True(t, reloaded.MemoryBackupLinked)
+}
+
 func TestPGConfig_ProjectFilter(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "config.toml")

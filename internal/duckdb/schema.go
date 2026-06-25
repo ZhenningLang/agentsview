@@ -569,6 +569,7 @@ var mirrorTables = []tableSpec{
 		name: "memory",
 		create: `CREATE TABLE IF NOT EXISTS memory (
 			rel_path TEXT PRIMARY KEY,
+			source TEXT NOT NULL DEFAULT 'cross-agent',
 			title TEXT NOT NULL DEFAULT '',
 			date TEXT NOT NULL DEFAULT '',
 			problem_type TEXT NOT NULL DEFAULT '',
@@ -582,6 +583,7 @@ var mirrorTables = []tableSpec{
 		)`,
 		columns: []columnSpec{
 			{"rel_path", "rel_path TEXT"},
+			{"source", "source TEXT NOT NULL DEFAULT 'cross-agent'"},
 			{"title", "title TEXT NOT NULL DEFAULT ''"},
 			{"date", "date TEXT NOT NULL DEFAULT ''"},
 			{"problem_type", "problem_type TEXT NOT NULL DEFAULT ''"},
@@ -597,6 +599,7 @@ var mirrorTables = []tableSpec{
 			"CREATE INDEX IF NOT EXISTS idx_memory_problem_type ON memory(problem_type)",
 			"CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(type)",
 			"CREATE INDEX IF NOT EXISTS idx_memory_status ON memory(status)",
+			"CREATE INDEX IF NOT EXISTS idx_memory_source ON memory(source)",
 		},
 	},
 	{

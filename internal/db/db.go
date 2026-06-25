@@ -766,6 +766,11 @@ func (db *DB) migrateColumns() error {
 			"sessions", "enrich_error",
 			"ALTER TABLE sessions ADD COLUMN enrich_error TEXT NOT NULL DEFAULT ''",
 		},
+		{
+			"memory", "source",
+			"ALTER TABLE memory ADD COLUMN source TEXT NOT NULL " +
+				"DEFAULT 'cross-agent'",
+		},
 	}
 
 	for _, m := range migrations {
@@ -808,6 +813,12 @@ func (db *DB) migrateColumns() error {
 		return fmt.Errorf(
 			"creating idx_sessions_termination_status: %w", err,
 		)
+	}
+
+	if _, err := w.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_memory_source ON memory(source)`,
+	); err != nil {
+		return fmt.Errorf("creating idx_memory_source: %w", err)
 	}
 
 	if _, err := w.Exec(`

@@ -448,6 +448,7 @@ CREATE INDEX IF NOT EXISTS idx_skill_health_type
 -- the memory directory and serves as the stable natural key.
 CREATE TABLE IF NOT EXISTS memory (
     rel_path       TEXT PRIMARY KEY,
+    source         TEXT NOT NULL DEFAULT 'cross-agent',
     title          TEXT NOT NULL DEFAULT '',
     date           TEXT NOT NULL DEFAULT '',
     problem_type   TEXT NOT NULL DEFAULT '',
@@ -465,6 +466,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_problem_type
     ON memory(problem_type);
 CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(type);
 CREATE INDEX IF NOT EXISTS idx_memory_status ON memory(status);
+CREATE INDEX IF NOT EXISTS idx_memory_source ON memory(source);
 
 -- Vault dimension tables: read-only mirror of dev workflow run records
 -- discovered by scanning configured roots for .long-loop/<slug>/

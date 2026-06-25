@@ -104,6 +104,44 @@ func TestListMemoriesFullTextSearch(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+func TestReplaceMemoriesBySourceCoexist(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	crossAgent := []Memory{{
+		RelPath: "x.md", Source: SourceCrossAgent, Title: "Cross",
+		Date: "2026-06-20", Body: "cross agent body", BodyTokens: 3,
+		SyncedAt: "2026-06-23T00:00:00.000Z",
+	}}
+	ccNative := []Memory{{
+		RelPath: "projA/memory/a.md", Source: SourceCCNative, Title: "CC",
+		Date: "2026-06-24", Body: "cc native body", BodyTokens: 3,
+		SyncedAt: "2026-06-23T00:00:00.000Z",
+	}}
+
+	require.NoError(t, d.ReplaceMemoriesBySource(ctx, SourceCrossAgent, crossAgent))
+	require.NoError(t, d.ReplaceMemoriesBySource(ctx, SourceCCNative, ccNative))
+
+	// Both sources coexist in the single table.
+	all, err := d.ListMemories(ctx, MemoryFilter{})
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+
+	// Source filter narrows to one source.
+	cc, err := d.ListMemories(ctx, MemoryFilter{Source: SourceCCNative})
+	require.NoError(t, err)
+	require.Len(t, cc, 1)
+	assert.Equal(t, "projA/memory/a.md", cc[0].RelPath)
+	assert.Equal(t, SourceCCNative, cc[0].Source)
+
+	// Re-replacing one source must NOT wipe the other.
+	require.NoError(t, d.ReplaceMemoriesBySource(ctx, SourceCCNative, nil))
+	remaining, err := d.ListMemories(ctx, MemoryFilter{})
+	require.NoError(t, err)
+	require.Len(t, remaining, 1)
+	assert.Equal(t, SourceCrossAgent, remaining[0].Source)
+}
+
 func TestGetMemory(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()
