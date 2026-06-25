@@ -167,6 +167,75 @@ func TestRunOnce_FreshWorkspaceAddsRemote(t *testing.T) {
 	}
 }
 
+// TestRunOnce_IntegratesRemoteBaseBeforePush is the regression guard for the
+// non-fast-forward rejection seen in real use: P4's connect writes the claim
+// marker via the GitHub API (a commit on the remote default branch), so a fresh
+// `git init` workspace MUST fetch that branch and base its commit on it, or the
+// first push is rejected with "fetch first". The cycle must fetch the remote
+// default branch and hard-reset onto it before committing/pushing.
+func TestRunOnce_IntegratesRemoteBaseBeforePush(t *testing.T) {
+	repo := "alice/agent-memory"
+	git := validRemoteGit(repo) // fetch + reset default to exit 0 (remote has the branch)
+	gh := authOKGH()
+	w, st := newTestWorker(t, repo, git, gh)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if !git.called("fetch origin main") {
+		t.Fatal("expected a fetch of the remote default branch before push")
+	}
+	if !git.called("reset --hard FETCH_HEAD") {
+		t.Fatal("expected a hard reset onto the fetched remote base before push")
+	}
+	// The reset must precede the push, else the commit would not descend from
+	// the remote marker commit and the push would be a non-fast-forward.
+	resetIdx, pushIdx := -1, -1
+	for i, c := range git.calls {
+		j := strings.Join(c, " ")
+		if resetIdx < 0 && strings.Contains(j, "reset --hard FETCH_HEAD") {
+			resetIdx = i
+		}
+		if pushIdx < 0 && strings.Contains(j, "push origin main") {
+			pushIdx = i
+		}
+	}
+	if resetIdx < 0 || pushIdx < 0 || resetIdx > pushIdx {
+		t.Fatalf("expected reset(%d) before push(%d)", resetIdx, pushIdx)
+	}
+	s, _ := st.Read()
+	if s.LastSuccessAt == "" || s.LastError != "" {
+		t.Fatalf("expected success, got %+v", s)
+	}
+}
+
+// TestRunOnce_EmptyRemoteSkipsReset proves that when the remote has no default
+// branch yet (brand-new empty repo: fetch exits non-zero), the cycle does NOT
+// hard-reset and still pushes to create the branch.
+func TestRunOnce_EmptyRemoteSkipsReset(t *testing.T) {
+	repo := "alice/agent-memory"
+	git := &mockRunner{responses: []mockResponse{
+		{prefix: "remote get-url", stdout: remoteURL(repo) + "\n", code: 0},
+		{prefix: "fetch", stdout: "", code: 128}, // no such remote ref
+	}}
+	gh := authOKGH()
+	w, st := newTestWorker(t, repo, git, gh)
+
+	if err := w.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if git.called("reset --hard FETCH_HEAD") {
+		t.Fatal("must not reset when the remote has no branch to base on")
+	}
+	if !git.called("push origin main") {
+		t.Fatal("expected push to create the branch on an empty remote")
+	}
+	s, _ := st.Read()
+	if s.LastSuccessAt == "" || s.LastError != "" {
+		t.Fatalf("expected success, got %+v", s)
+	}
+}
+
 // TestRunOnce_RemoteTamperedRejected proves that if an EXISTING workspace origin
 // was rewritten out-of-band to a different (attacker) repo, the cycle refuses to
 // overwrite or push and records the rejection — memory never leaks to a swapped
