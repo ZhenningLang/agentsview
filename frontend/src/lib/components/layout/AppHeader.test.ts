@@ -32,6 +32,7 @@ vi.mock("../../api/llm.js", () => ({
 
 import { sessions } from "../../stores/sessions.svelte.js";
 import { ui } from "../../stores/ui.svelte.js";
+import { router } from "../../stores/router.svelte.js";
 
 // @ts-ignore
 import AppHeader from "./AppHeader.svelte";
@@ -187,5 +188,48 @@ describe("AppHeader export actions", () => {
 
     expect(mocks.fetchBalance).not.toHaveBeenCalled();
     expect(document.querySelector('[data-testid="llm-balance-chip"]')).toBeNull();
+  });
+
+  // Without layout (jsdom reports 0 widths) the overflow guard keeps every item
+  // inline, so the full primary-nav order is observable here.
+  it("renders the primary nav inline in the intended order", async () => {
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+
+    const labels = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".nav-row > .nav-btn"),
+    ).map((b) => b.getAttribute("aria-label"));
+
+    expect(labels).toEqual([
+      "Sessions",
+      "Usage",
+      "Memory",
+      "Vault",
+      "Skills",
+      "Trends",
+      "Pinned",
+      "Insights",
+      "Trash",
+    ]);
+
+    // Everything fits, so the More menu is collapsed.
+    const moreWrap = document.querySelector(".nav-row .more-wrap");
+    expect(moreWrap?.classList.contains("nav-hidden")).toBe(true);
+  });
+
+  it("navigates when a promoted nav item is clicked", async () => {
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+
+    const memory = document.querySelector<HTMLButtonElement>(
+      '.nav-row > button[aria-label="Memory"]',
+    );
+    expect(memory).not.toBeNull();
+
+    memory!.click();
+    await tick();
+
+    expect(router.route).toBe("memory");
+    expect(memory!.classList.contains("active")).toBe(true);
   });
 });

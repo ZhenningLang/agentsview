@@ -3,15 +3,18 @@
     ArrowDownIcon,
     ArrowDownWideNarrowIcon,
     ArrowUpNarrowWideIcon,
+    ChartColumnIcon,
     CheckIcon,
     CloudUploadIcon,
     DownloadIcon,
     EllipsisIcon,
+    FileTextIcon,
     FunnelIcon,
     GlobeIcon,
     Grid2x2Icon,
     LayoutGridIcon,
     LayoutListIcon,
+    LightbulbIcon,
     LinkIcon,
     ListCollapseIcon,
     LockIcon,
@@ -20,10 +23,12 @@
     MoonIcon,
     WrenchIcon,
     MoreHorizontalIcon,
+    PinIcon,
     RefreshCwIcon,
     SearchIcon,
     SettingsIcon,
     SunIcon,
+    TrashIcon,
     UploadIcon,
   } from "../../icons.js";
   import {
@@ -34,7 +39,7 @@
   } from "../../stores/ui.svelte.js";
   import { sessions } from "../../stores/sessions.svelte.js";
   import { sync } from "../../stores/sync.svelte.js";
-  import { router } from "../../stores/router.svelte.js";
+  import { router, type Route } from "../../stores/router.svelte.js";
   import {
     downloadExport,
     getMarkdownExportUrl,
@@ -80,6 +85,120 @@
   let moreDropRef: HTMLDivElement | undefined =
     $state(undefined);
   let balanceLabel = $state("");
+
+  // ── Primary navigation: prefer inline, overflow into "More" only when the
+  // row genuinely runs out of horizontal space. Order is intentional.
+  type NavEntry = {
+    route: Route;
+    label: string;
+    icon: typeof LayoutGridIcon;
+  };
+  const NAV_ITEMS: NavEntry[] = [
+    { route: "sessions", label: "Sessions", icon: LayoutGridIcon },
+    { route: "usage", label: "Usage", icon: Grid2x2Icon },
+    { route: "memory", label: "Memory", icon: FileTextIcon },
+    { route: "vault", label: "Vault", icon: LockIcon },
+    { route: "skills", label: "Skills", icon: WrenchIcon },
+    { route: "trends", label: "Trends", icon: ChartColumnIcon },
+    { route: "pinned", label: "Pinned", icon: PinIcon },
+    { route: "insights", label: "Insights", icon: LightbulbIcon },
+    { route: "trash", label: "Trash", icon: TrashIcon },
+  ];
+
+  let navRowRef: HTMLElement | undefined = $state(undefined);
+  let navMeasureRef: HTMLElement | undefined = $state(undefined);
+  let searchHintRef: HTMLElement | undefined = $state(undefined);
+  let balanceRef: HTMLElement | undefined = $state(undefined);
+  let headerRightRef: HTMLElement | undefined = $state(undefined);
+  let visibleNavCount = $state(NAV_ITEMS.length);
+  let moreMenuTop = $state(0);
+  let moreMenuLeft = $state(0);
+
+  function toggleMore() {
+    if (!moreOpen && moreBtnRef) {
+      const rect = moreBtnRef.getBoundingClientRect();
+      moreMenuTop = rect.bottom + 4;
+      moreMenuLeft = rect.left;
+    }
+    moreOpen = !moreOpen;
+  }
+
+  const visibleNavItems = $derived(NAV_ITEMS.slice(0, visibleNavCount));
+  const overflowNavItems = $derived(NAV_ITEMS.slice(visibleNavCount));
+
+  // Gap between inline nav buttons; keep in sync with .nav-row gap in CSS.
+  const NAV_GAP = 6;
+  // Gap between top-level header regions; keep in sync with .header gap.
+  const HEADER_GAP = 8;
+
+  function recomputeNavOverflow() {
+    const row = navRowRef;
+    const measure = navMeasureRef;
+    const right = headerRightRef;
+    if (!row || !measure || !right) return;
+    const children = Array.from(measure.children) as HTMLElement[];
+    // children = one node per NAV_ITEM, plus a trailing "More" probe.
+    if (children.length < NAV_ITEMS.length + 1) return;
+    const widths = children.map((c) => c.getBoundingClientRect().width);
+    if (widths.every((w) => w === 0)) {
+      // Not laid out yet (e.g. jsdom) — keep everything inline.
+      visibleNavCount = NAV_ITEMS.length;
+      return;
+    }
+    const moreWidth = widths[NAV_ITEMS.length] ?? 0;
+
+    // Available width is derived from fixed header regions, NOT from the nav
+    // row's own size: the nav starts at a fixed x (left items don't change),
+    // and the right cluster is right-anchored. The span between them, minus the
+    // search box and balance chip and their gaps, is what nav content can use.
+    // This is independent of how many nav items are currently shown, so the
+    // layout can both shrink and grow back without oscillating.
+    const navLeft = row.getBoundingClientRect().left;
+    const rightLeft = right.getBoundingClientRect().left;
+    const searchW = searchHintRef?.getBoundingClientRect().width ?? 0;
+    const balanceW = balanceRef?.getBoundingClientRect().width ?? 0;
+    const gapCount = 2 + (balanceRef ? 1 : 0);
+    const buffer = 8;
+    const available =
+      rightLeft - navLeft - searchW - balanceW - gapCount * HEADER_GAP - buffer;
+
+    let allTotal = 0;
+    for (let i = 0; i < NAV_ITEMS.length; i++) {
+      allTotal += (widths[i] ?? 0) + (i > 0 ? NAV_GAP : 0);
+    }
+    if (allTotal <= available) {
+      visibleNavCount = NAV_ITEMS.length;
+      return;
+    }
+
+    const reserve = moreWidth + NAV_GAP;
+    let used = 0;
+    let count = 0;
+    for (let i = 0; i < NAV_ITEMS.length; i++) {
+      const w = (widths[i] ?? 0) + (i > 0 ? NAV_GAP : 0);
+      if (used + w + reserve <= available) {
+        used += w;
+        count++;
+      } else {
+        break;
+      }
+    }
+    visibleNavCount = count;
+  }
+
+  $effect(() => {
+    const row = navRowRef;
+    const right = headerRightRef;
+    if (!row || !right || typeof ResizeObserver === "undefined") return;
+    // Recompute when the window resizes (header width changes) or when the
+    // right cluster grows/shrinks (e.g. a session opens, adding transcript
+    // controls), which moves the right-anchored boundary leftward.
+    const ro = new ResizeObserver(() => recomputeNavOverflow());
+    ro.observe(row);
+    ro.observe(right);
+    recomputeNavOverflow();
+    return () => ro.disconnect();
+  });
 
   const BLOCK_LABELS: Record<BlockType, string> = {
     user: "User messages",
@@ -313,91 +432,75 @@
       onselect={(v) => sessions.setProjectFilter(v)}
     />
 
-    <button
-      class="nav-btn"
-      class:active={router.route === "sessions"}
-      onclick={() => router.navigate("sessions")}
-      title="Sessions"
-      aria-label="Sessions"
-    >
-      <LayoutGridIcon size="12" strokeWidth="2" aria-hidden="true" />
-      <span class="nav-label">Sessions</span>
-    </button>
+    <nav class="nav-row" bind:this={navRowRef} aria-label="Primary">
+      {#each visibleNavItems as item (item.route)}
+        {@const Icon = item.icon}
+        <button
+          class="nav-btn"
+          class:active={router.route === item.route}
+          onclick={() => router.navigate(item.route)}
+          title={item.label}
+          aria-label={item.label}
+        >
+          <Icon size="12" strokeWidth="2" aria-hidden="true" />
+          <span class="nav-label">{item.label}</span>
+        </button>
+      {/each}
 
-    <button
-      class="nav-btn"
-      class:active={router.route === "usage"}
-      onclick={() => router.navigate("usage")}
-      title="Token Usage"
-      aria-label="Usage"
-    >
-      <Grid2x2Icon size="12" strokeWidth="2" aria-hidden="true" />
-      <span class="nav-label">Usage</span>
-    </button>
+      <div class="more-wrap" class:nav-hidden={overflowNavItems.length === 0}>
+        <button
+          class="nav-btn"
+          class:active={overflowNavItems.some((i) => i.route === router.route) || moreOpen}
+          bind:this={moreBtnRef}
+          onclick={toggleMore}
+          title="More navigation"
+          aria-label="More navigation"
+          aria-expanded={moreOpen}
+        >
+          <EllipsisIcon size="12" strokeWidth="2.4" aria-hidden="true" />
+          <span class="nav-label">More</span>
+        </button>
+        {#if moreOpen && overflowNavItems.length > 0}
+          <div
+            class="more-dropdown"
+            role="menu"
+            bind:this={moreDropRef}
+            style="top: {moreMenuTop}px; left: {moreMenuLeft}px;"
+          >
+            {#each overflowNavItems as item (item.route)}
+              {@const Icon = item.icon}
+              <button class="more-item" role="menuitem"
+                class:active={router.route === item.route}
+                onclick={() => { router.navigate(item.route); moreOpen = false; }}>
+                <Icon size="13" strokeWidth="2" aria-hidden="true" />
+                <span>{item.label}</span>
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
 
-    <button
-      class="nav-btn"
-      class:active={router.route === "skills"}
-      onclick={() => router.navigate("skills")}
-      title="Skills"
-      aria-label="Skills"
-    >
-      <WrenchIcon size="12" strokeWidth="2" aria-hidden="true" />
-      <span class="nav-label">Skills</span>
-    </button>
-
-    <div class="more-wrap">
-      <button
-        class="nav-btn"
-        class:active={router.route === "trends" || router.route === "pinned" || router.route === "insights" || router.route === "memory" || router.route === "vault" || router.route === "trash" || moreOpen}
-        bind:this={moreBtnRef}
-        onclick={() => { moreOpen = !moreOpen; }}
-        title="More navigation"
-        aria-label="More navigation"
-        aria-expanded={moreOpen}
-      >
-        <EllipsisIcon size="12" strokeWidth="2.4" aria-hidden="true" />
-        <span class="nav-label">More</span>
-      </button>
-      {#if moreOpen}
-        <div class="more-dropdown" role="menu" bind:this={moreDropRef}>
-          <button class="more-item" role="menuitem"
-            class:active={router.route === "trends"}
-            onclick={() => { router.navigate("trends"); moreOpen = false; }}>
-            Trends
-          </button>
-          <button class="more-item" role="menuitem"
-            class:active={router.route === "pinned"}
-            onclick={() => { router.navigate("pinned"); moreOpen = false; }}>
-            Pinned
-          </button>
-          <button class="more-item" role="menuitem"
-            class:active={router.route === "insights"}
-            onclick={() => { router.navigate("insights"); moreOpen = false; }}>
-            Insights
-          </button>
-          <button class="more-item" role="menuitem"
-            class:active={router.route === "memory"}
-            onclick={() => { router.navigate("memory"); moreOpen = false; }}>
-            Memory
-          </button>
-          <button class="more-item" role="menuitem"
-            class:active={router.route === "vault"}
-            onclick={() => { router.navigate("vault"); moreOpen = false; }}>
-            Vault
-          </button>
-          <button class="more-item" role="menuitem"
-            class:active={router.route === "trash"}
-            onclick={() => { router.navigate("trash"); moreOpen = false; }}>
-            Trash
-          </button>
-        </div>
-      {/if}
-    </div>
+      <!-- Offscreen probe row: measures each item's natural width plus the
+           More button so overflow can be computed without a layout flash. -->
+      <div class="nav-measure" aria-hidden="true" bind:this={navMeasureRef}>
+        {#each NAV_ITEMS as item (item.route)}
+          {@const Icon = item.icon}
+          <span class="nav-btn">
+            <Icon size="12" strokeWidth="2" aria-hidden="true" />
+            <span class="nav-label">{item.label}</span>
+          </span>
+        {/each}
+        <span class="nav-btn">
+          <EllipsisIcon size="12" strokeWidth="2.4" aria-hidden="true" />
+          <span class="nav-label">More</span>
+        </span>
+      </div>
+    </nav>
   </div>
 
   <button
     class="search-hint"
+    bind:this={searchHintRef}
     onclick={() => (ui.activeModal = "commandPalette")}
     title="Search sessions ({modKey}+K)"
   >
@@ -407,12 +510,17 @@
   </button>
 
   {#if balanceLabel}
-    <span class="balance-chip" title="LLM balance" data-testid="llm-balance-chip">
+    <span
+      class="balance-chip"
+      bind:this={balanceRef}
+      title="LLM balance"
+      data-testid="llm-balance-chip"
+    >
       {balanceLabel}
     </span>
   {/if}
 
-  <div class="header-right">
+  <div class="header-right" bind:this={headerRightRef}>
     {#if hasActiveSession}
       <!-- Transcript controls: mode pills + filter, grouped visually -->
       <div class="transcript-strip">
@@ -817,14 +925,43 @@
     );
   }
 
-  .more-wrap {
+  /* Inline primary-nav row: shows as many items as fit, clips the rest.
+     min-width:0 + overflow:hidden let flexbox shrink it so its clientWidth
+     reflects the space actually available for nav buttons. */
+  .nav-row {
     position: relative;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    overflow: hidden;
   }
 
-  .more-dropdown {
+  /* Offscreen probe used to measure each item's natural width. */
+  .nav-measure {
     position: absolute;
-    top: calc(100% + 4px);
+    top: 0;
     left: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .more-wrap {
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .more-wrap.nav-hidden {
+    display: none;
+  }
+
+  /* Fixed position (coords from JS) so the menu escapes .nav-row's overflow. */
+  .more-dropdown {
+    position: fixed;
     min-width: 140px;
     background: var(--bg-surface);
     border: 1px solid var(--border-default);
@@ -833,11 +970,14 @@
     display: flex;
     flex-direction: column;
     padding: 4px;
-    z-index: 20;
+    z-index: 200;
     animation: dropdown-in 0.12s ease-out;
   }
 
   .more-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     padding: 6px 10px;
     font-size: 12px;
     color: var(--text-secondary);
@@ -846,7 +986,13 @@
     background: transparent;
     border: none;
     cursor: pointer;
+    white-space: nowrap;
     transition: background 0.08s, color 0.08s;
+  }
+
+  .more-item :global(svg) {
+    flex-shrink: 0;
+    color: var(--text-muted);
   }
 
   .more-item:hover {
@@ -1288,10 +1434,9 @@
     }
   }
 
-  /* 767px: Hide nav buttons and typeahead */
+  /* 767px: Hide primary nav and typeahead, fall back to the sidebar */
   @media (max-width: 767px) {
-    .header-left .nav-btn,
-    .header-left .more-wrap {
+    .nav-row {
       display: none;
     }
 
