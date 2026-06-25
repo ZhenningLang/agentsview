@@ -128,13 +128,6 @@ func (w *Worker) ensureWorkspace(ctx context.Context) error {
 	} else if code != 0 {
 		return fmt.Errorf("git init exited %d", code)
 	}
-	// Keep transient runtime state out of the backup repo. The single-flight
-	// lock pid file lives at the workspace root and is present during commit
-	// (`git add -A`); without this the changing pid would be committed/pushed
-	// every cycle, leaking runtime state and producing churn on restart.
-	if err := w.writeGitignore(); err != nil {
-		return fmt.Errorf("writing .gitignore: %w", err)
-	}
 	url := remoteURL(w.cfg.Repo)
 	// Read the existing origin. A non-zero exit means origin is absent.
 	out, code, err := w.git.Run(ctx, "-C", w.cfg.Workspace, "remote", "get-url", remoteName)
@@ -149,13 +142,50 @@ func (w *Worker) ensureWorkspace(ctx context.Context) error {
 		if !remoteMatchesRepo(got, w.cfg.Repo) {
 			return fmt.Errorf("existing origin %q does not point at the configured backup repo %q (refusing to overwrite)", got, w.cfg.Repo)
 		}
+	} else {
+		// origin absent: set it for the first time (authoritative).
+		if _, code, err := w.git.Run(ctx, "-C", w.cfg.Workspace, "remote", "add", remoteName, url); err != nil {
+			return fmt.Errorf("git remote add: %w", err)
+		} else if code != 0 {
+			return fmt.Errorf("git remote add exited %d", code)
+		}
+	}
+	// Base the workspace on the remote's existing default branch so our backup
+	// commit descends from it. P4's connect writes the claim marker via the
+	// GitHub API, which creates a commit on the remote default branch; a fresh
+	// `git init` workspace has no knowledge of it, so the first push would be
+	// rejected as a non-fast-forward ("fetch first"). Fetch the branch and
+	// hard-reset onto it — this preserves the remote marker file in the tree,
+	// and the subsequent SyncSources overwrites the memory dirs on top. A
+	// brand-new empty remote has no such branch (fetch exits non-zero) and is
+	// left untouched.
+	if err := w.integrateRemoteBase(ctx); err != nil {
+		return err
+	}
+	// (Re)assert the .gitignore AFTER any reset so workspace-root runtime state
+	// (the single-flight lock pid file) never lands in the backup repo. Without
+	// this the changing pid would be committed/pushed every cycle.
+	if err := w.writeGitignore(); err != nil {
+		return fmt.Errorf("writing .gitignore: %w", err)
+	}
+	return nil
+}
+
+// integrateRemoteBase fetches the remote default branch and hard-resets the
+// workspace onto it, so a fresh workspace's first commit descends from the
+// remote claim-marker commit and pushes fast-forward. A non-zero fetch exit
+// means the remote branch does not exist yet (empty repo): nothing to base on,
+// left as-is for the first push to create it.
+func (w *Worker) integrateRemoteBase(ctx context.Context) error {
+	if _, code, err := w.git.Run(ctx, "-C", w.cfg.Workspace, "fetch", remoteName, defaultBranch); err != nil {
+		return fmt.Errorf("git fetch: %w", err)
+	} else if code != 0 {
 		return nil
 	}
-	// origin absent: set it for the first time (authoritative).
-	if _, code, err := w.git.Run(ctx, "-C", w.cfg.Workspace, "remote", "add", remoteName, url); err != nil {
-		return fmt.Errorf("git remote add: %w", err)
+	if _, code, err := w.git.Run(ctx, "-C", w.cfg.Workspace, "reset", "--hard", "FETCH_HEAD"); err != nil {
+		return fmt.Errorf("git reset --hard FETCH_HEAD: %w", err)
 	} else if code != 0 {
-		return fmt.Errorf("git remote add exited %d", code)
+		return fmt.Errorf("git reset --hard FETCH_HEAD exited %d", code)
 	}
 	return nil
 }
