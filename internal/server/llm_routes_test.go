@@ -155,6 +155,26 @@ func TestLLMConfigGetDoesNotPreviewShortAPIKeys(t *testing.T) {
 	assert.NotContains(t, embed, "api_key_preview")
 }
 
+// TestLLMConfigEmbedBalanceURLRoundTrip locks that the embed provider's
+// own balance endpoint is configurable via the config patch and returned
+// on GET, so the UI can set it independently of the chat balance URL.
+func TestLLMConfigEmbedBalanceURLRoundTrip(t *testing.T) {
+	te := setupWithServerOpts(t, nil, withLLMConfig(func(c *config.LLMConfig) {
+		c.Enabled = true
+		c.BaseURL = "https://chat.example/v1"
+		c.APIKey = "chat-secret"
+		c.Model = "chat-model"
+	}))
+
+	w := postJSON(te, "/api/v1/config/llm",
+		`{"embed":{"balance_url":"https://embed.example/embed/balance"}}`)
+	assertStatus(t, w, http.StatusOK)
+
+	resp := decode[map[string]any](t, te.get(t, "/api/v1/config/llm"))
+	embed := resp["embed"].(map[string]any)
+	assert.Equal(t, "https://embed.example/embed/balance", embed["balance_url"])
+}
+
 func TestLLMConfigAndTestRejectReadOnlyMode(t *testing.T) {
 	te := setupPGMode(t)
 

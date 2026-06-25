@@ -42,6 +42,10 @@ export interface LLMEnrichJobState {
   cost_spent?: string;
   balance_start?: string;
   balance_end?: string;
+  embed_cost_currency?: string;
+  embed_cost_spent?: string;
+  embed_balance_start?: string;
+  embed_balance_end?: string;
 }
 
 export interface LLMEnrichmentStatusReport {
@@ -59,6 +63,7 @@ export interface LLMEmbedConfigResponse {
   model?: string;
   has_api_key: boolean;
   api_key_preview?: string;
+  balance_url?: string;
 }
 
 export interface LLMConfigResponse {
@@ -81,6 +86,7 @@ export interface LLMEmbedConfigPayload {
   base_url?: string;
   api_key?: string;
   model?: string;
+  balance_url?: string;
 }
 
 export interface LLMConfigPayload {

@@ -59,9 +59,10 @@ type llmConfigInput struct {
 }
 
 type llmEmbedConfigPatch struct {
-	BaseURL *string `json:"base_url,omitempty"`
-	APIKey  *string `json:"api_key,omitempty"`
-	Model   *string `json:"model,omitempty"`
+	BaseURL    *string `json:"base_url,omitempty"`
+	APIKey     *string `json:"api_key,omitempty"`
+	Model      *string `json:"model,omitempty"`
+	BalanceURL *string `json:"balance_url,omitempty"`
 }
 
 type llmConfigPatch struct {
@@ -84,6 +85,7 @@ type llmEmbedConfigResponse struct {
 	Model         string `json:"model,omitempty"`
 	HasAPIKey     bool   `json:"has_api_key"`
 	APIKeyPreview string `json:"api_key_preview,omitempty"`
+	BalanceURL    string `json:"balance_url,omitempty"`
 }
 
 type llmConfigResponse struct {
@@ -279,6 +281,9 @@ func applyLLMConfigPatch(llm config.LLMConfig, patch llmConfigPatch) config.LLMC
 		if patch.Embed.APIKey != nil && shouldReplaceLLMAPIKey(*patch.Embed.APIKey) {
 			llm.Embed.APIKey = strings.TrimSpace(*patch.Embed.APIKey)
 		}
+		if patch.Embed.BalanceURL != nil {
+			llm.Embed.BalanceURL = strings.TrimSpace(*patch.Embed.BalanceURL)
+		}
 		if patch.Embed.Model != nil {
 			llm.Embed.Model = strings.TrimSpace(*patch.Embed.Model)
 		}
@@ -313,6 +318,7 @@ func llmConfigResponseFromConfig(llm config.LLMConfig) llmConfigResponse {
 			Model:         llm.Embed.Model,
 			HasAPIKey:     strings.TrimSpace(llm.Embed.APIKey) != "",
 			APIKeyPreview: apiKeyPreview(llm.Embed.APIKey),
+			BalanceURL:    llm.Embed.BalanceURL,
 		},
 	}
 }

@@ -78,9 +78,10 @@ type DuckDBConfig struct {
 
 // LLMEmbedConfig holds optional embedding-provider settings.
 type LLMEmbedConfig struct {
-	BaseURL string `toml:"base_url" json:"base_url,omitempty"`
-	APIKey  string `toml:"api_key" json:"-"`
-	Model   string `toml:"model" json:"model,omitempty"`
+	BaseURL    string `toml:"base_url" json:"base_url,omitempty"`
+	APIKey     string `toml:"api_key" json:"-"`
+	Model      string `toml:"model" json:"model,omitempty"`
+	BalanceURL string `toml:"balance_url" json:"balance_url,omitempty"`
 }
 
 // LLMConfig holds OpenAI-compatible enrichment settings.
@@ -863,6 +864,9 @@ func mergeLLMConfig(c *Config, file LLMConfig, meta toml.MetaData) {
 	}
 	if file.Embed.Model != "" && c.LLM.Embed.Model == "" {
 		c.LLM.Embed.Model = file.Embed.Model
+	}
+	if file.Embed.BalanceURL != "" && c.LLM.Embed.BalanceURL == "" {
+		c.LLM.Embed.BalanceURL = file.Embed.BalanceURL
 	}
 }
 

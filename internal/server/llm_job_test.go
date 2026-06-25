@@ -146,6 +146,170 @@ func TestLLMEnrichmentJobReportsTokensAndCost(t *testing.T) {
 	assert.Equal(t, "CNY", job["cost_currency"])
 	assert.Equal(t, "0.5000", job["cost_spent"])
 	assert.Equal(t, "99.5000", job["balance_end"])
+	// Embed shares the chat account here (same base URL + key), so its
+	// spend is already inside the chat delta and must not be double-counted
+	// as a separate embed figure.
+	assert.Empty(t, job["embed_cost_spent"])
+}
+
+// TestLLMEnrichmentJobReportsEmbedCost locks the new behavior: when the
+// embedding provider is configured independently (its own base URL, key,
+// and balance endpoint), the job reports embed spend as that provider's
+// own balance delta, separate from chat spend.
+func TestLLMEnrichmentJobReportsEmbedCost(t *testing.T) {
+	var mu sync.Mutex
+	chatBalances := []string{"100.0000", "99.5000"}
+	embedBalances := []string{"50.0000", "49.8000"}
+	chatCalls, embedCalls := 0, 0
+	pick := func(seq []string, i int) string {
+		if i < len(seq) {
+			return seq[i]
+		}
+		return seq[len(seq)-1]
+	}
+	balanceBody := func(amount string) string {
+		return `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"` + amount + `"}]}`
+	}
+	client := llmTestClient(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/v1/chat/completions":
+			return jsonResponse(http.StatusOK,
+				`{"choices":[{"message":{"content":"{\"title\":\"T\",\"summary\":\"S\",\"keywords\":[\"k\"]}"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`), nil
+		case "/v1/embeddings":
+			return jsonResponse(http.StatusOK,
+				`{"data":[{"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":7,"total_tokens":7}}`), nil
+		case "/chat/balance":
+			mu.Lock()
+			amount := pick(chatBalances, chatCalls)
+			chatCalls++
+			mu.Unlock()
+			return jsonResponse(http.StatusOK, balanceBody(amount)), nil
+		case "/embed/balance":
+			mu.Lock()
+			amount := pick(embedBalances, embedCalls)
+			embedCalls++
+			mu.Unlock()
+			return jsonResponse(http.StatusOK, balanceBody(amount)), nil
+		}
+		return jsonResponse(http.StatusNotFound, `{}`), nil
+	})
+	te := setupWithServerOpts(t,
+		[]server.Option{server.WithLLMHTTPClient(client)},
+		withLLMConfig(func(c *config.LLMConfig) {
+			c.Enabled = true
+			c.BaseURL = "https://chat.example/v1"
+			c.APIKey = "chat-secret"
+			c.Model = "deepseek-chat"
+			c.BalanceURL = "https://chat.example/chat/balance"
+			c.MinUserMessages = 2
+			c.Concurrency = 2
+			c.Embed = config.LLMEmbedConfig{
+				BaseURL:    "https://embed.example/v1",
+				APIKey:     "embed-secret",
+				Model:      "embed-model",
+				BalanceURL: "https://embed.example/embed/balance",
+			}
+		}))
+
+	const n = 2
+	for i := 0; i < n; i++ {
+		seedEnrichCandidate(t, te, fmt.Sprintf("s%d", i))
+	}
+
+	startW := postJSON(te, "/api/v1/llm/enrich/start", `{}`)
+	assertStatus(t, startW, http.StatusOK)
+
+	require.Eventually(t, func() bool {
+		job := decode[map[string]any](t, te.get(t, "/api/v1/llm/enrich/job"))
+		return job["running"] == false && job["done_at"] != ""
+	}, 5*time.Second, 20*time.Millisecond)
+
+	job := decode[map[string]any](t, te.get(t, "/api/v1/llm/enrich/job"))
+	// Chat spend stays its own balance delta.
+	assert.Equal(t, "0.5000", job["cost_spent"])
+	// Embed spend is the embed provider's own balance delta.
+	assert.Equal(t, "CNY", job["embed_cost_currency"])
+	assert.Equal(t, "0.2000", job["embed_cost_spent"])
+	assert.Equal(t, "49.8000", job["embed_balance_end"])
+}
+
+// TestLLMEnrichmentJobEmbedCostDerivesFromBaseURL locks that, like the chat
+// side, an independently configured embed provider on a known balance host
+// (e.g. DeepSeek) has its spend derived from its base URL with no explicit
+// balance_url required.
+func TestLLMEnrichmentJobEmbedCostDerivesFromBaseURL(t *testing.T) {
+	var mu sync.Mutex
+	chatBalances := []string{"100.0000", "99.5000"}
+	embedBalances := []string{"50.0000", "49.8000"}
+	chatCalls, embedCalls := 0, 0
+	pick := func(seq []string, i int) string {
+		if i < len(seq) {
+			return seq[i]
+		}
+		return seq[len(seq)-1]
+	}
+	balanceBody := func(amount string) string {
+		return `{"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"` + amount + `"}]}`
+	}
+	client := llmTestClient(func(req *http.Request) (*http.Response, error) {
+		// Both providers derive the same /user/balance path (DeepSeek), so
+		// the mock must distinguish them by host, not path.
+		if req.URL.Path == "/user/balance" {
+			mu.Lock()
+			defer mu.Unlock()
+			if req.URL.Host == "embed.deepseek.test" {
+				amount := pick(embedBalances, embedCalls)
+				embedCalls++
+				return jsonResponse(http.StatusOK, balanceBody(amount)), nil
+			}
+			amount := pick(chatBalances, chatCalls)
+			chatCalls++
+			return jsonResponse(http.StatusOK, balanceBody(amount)), nil
+		}
+		switch req.URL.Path {
+		case "/v1/chat/completions":
+			return jsonResponse(http.StatusOK,
+				`{"choices":[{"message":{"content":"{\"title\":\"T\",\"summary\":\"S\",\"keywords\":[\"k\"]}"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`), nil
+		case "/v1/embeddings":
+			return jsonResponse(http.StatusOK,
+				`{"data":[{"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":7,"total_tokens":7}}`), nil
+		}
+		return jsonResponse(http.StatusNotFound, `{}`), nil
+	})
+	te := setupWithServerOpts(t,
+		[]server.Option{server.WithLLMHTTPClient(client)},
+		withLLMConfig(func(c *config.LLMConfig) {
+			c.Enabled = true
+			c.BaseURL = "https://chat.deepseek.test/v1"
+			c.APIKey = "chat-secret"
+			c.Model = "deepseek-chat"
+			c.MinUserMessages = 2
+			c.Concurrency = 2
+			c.Embed = config.LLMEmbedConfig{
+				BaseURL: "https://embed.deepseek.test/v1",
+				APIKey:  "embed-secret",
+				Model:   "embed-model",
+				// No explicit BalanceURL: derived from the DeepSeek base URL.
+			}
+		}))
+
+	const n = 2
+	for i := 0; i < n; i++ {
+		seedEnrichCandidate(t, te, fmt.Sprintf("s%d", i))
+	}
+
+	startW := postJSON(te, "/api/v1/llm/enrich/start", `{}`)
+	assertStatus(t, startW, http.StatusOK)
+
+	require.Eventually(t, func() bool {
+		job := decode[map[string]any](t, te.get(t, "/api/v1/llm/enrich/job"))
+		return job["running"] == false && job["done_at"] != ""
+	}, 5*time.Second, 20*time.Millisecond)
+
+	job := decode[map[string]any](t, te.get(t, "/api/v1/llm/enrich/job"))
+	assert.Equal(t, "0.5000", job["cost_spent"])
+	assert.Equal(t, "0.2000", job["embed_cost_spent"])
+	assert.Equal(t, "49.8000", job["embed_balance_end"])
 }
 
 func TestLLMEnrichmentJobStartRejectsDisabled(t *testing.T) {

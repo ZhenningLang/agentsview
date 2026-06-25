@@ -305,6 +305,37 @@ describe("LLMEnrichmentSettings", () => {
     expect(text).toContain("balance now CNY 98.7600");
   });
 
+  it("renders embed spend separately from chat spend", async () => {
+    mocks.fetchEnrichJob.mockResolvedValueOnce({
+      running: false,
+      source: "manual",
+      processed: 2,
+      total: 2,
+      succeeded: 2,
+      no_content: 0,
+      failed: 0,
+      skipped: 0,
+      done_at: "2026-06-24T00:00:00Z",
+      prompt_tokens: 1000,
+      completion_tokens: 500,
+      embed_tokens: 700,
+      cost_currency: "CNY",
+      cost_spent: "0.5000",
+      balance_end: "99.5000",
+      embed_cost_currency: "USD",
+      embed_cost_spent: "0.2000",
+      embed_balance_end: "49.8000",
+    });
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+
+    const cost = document.querySelector('[data-testid="enrich-cost"]');
+    expect(cost).toBeTruthy();
+    const text = (cost?.textContent ?? "").replace(/\s+/g, " ");
+    expect(text).toContain("Embed spend this run: USD 0.2000");
+    expect(text).toContain("balance now USD 49.8000");
+  });
+
   it("surfaces backend start errors", async () => {
     mocks.startEnrichJob.mockRejectedValueOnce(new Error("LLM is disabled"));
     component = mount(LLMEnrichmentSettings, { target: document.body });
