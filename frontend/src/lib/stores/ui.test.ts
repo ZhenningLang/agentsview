@@ -459,45 +459,76 @@ describe("UIStore", () => {
     });
   });
 
+  describe("system theme preference", () => {
+    it("resolves to the OS scheme when preference is system", () => {
+      ui.setThemePreference("system");
+      ui.prefersDark = true;
+      expect(ui.theme).toBe("dark");
+      ui.prefersDark = false;
+      expect(ui.theme).toBe("light");
+    });
+
+    it("ignores the OS scheme for explicit light/dark", () => {
+      ui.prefersDark = true;
+      ui.setThemePreference("light");
+      expect(ui.theme).toBe("light");
+      ui.setThemePreference("dark");
+      expect(ui.theme).toBe("dark");
+    });
+  });
+
   describe("postMessage theme control", () => {
     it("should change theme on valid theme:set message", () => {
-      ui.theme = "light";
+      ui.themePreference = "light";
       window.dispatchEvent(
         new MessageEvent("message", {
           data: { type: "theme:set", theme: "dark" },
         }),
       );
+      expect(ui.themePreference).toBe("dark");
       expect(ui.theme).toBe("dark");
     });
 
+    it("should accept system via theme:set message", () => {
+      ui.themePreference = "light";
+      window.dispatchEvent(
+        new MessageEvent("message", {
+          data: { type: "theme:set", theme: "system" },
+        }),
+      );
+      expect(ui.themePreference).toBe("system");
+    });
+
     it("should ignore invalid theme values", () => {
-      ui.theme = "light";
+      ui.themePreference = "light";
       window.dispatchEvent(
         new MessageEvent("message", {
           data: { type: "theme:set", theme: "purple" },
         }),
       );
-      expect(ui.theme).toBe("light");
+      expect(ui.themePreference).toBe("light");
     });
 
     it("should ignore unrelated message types", () => {
-      ui.theme = "light";
+      ui.themePreference = "light";
       window.dispatchEvent(
         new MessageEvent("message", {
           data: { type: "some-other-event", theme: "dark" },
         }),
       );
-      expect(ui.theme).toBe("light");
+      expect(ui.themePreference).toBe("light");
     });
   });
 
   describe("toggles", () => {
-    it("should toggle theme between light and dark", () => {
-      ui.theme = "light";
+    it("should cycle theme preference light -> dark -> system", () => {
+      ui.themePreference = "light";
       ui.toggleTheme();
-      expect(ui.theme).toBe("dark");
+      expect(ui.themePreference).toBe("dark");
       ui.toggleTheme();
-      expect(ui.theme).toBe("light");
+      expect(ui.themePreference).toBe("system");
+      ui.toggleTheme();
+      expect(ui.themePreference).toBe("light");
     });
 
     it("should toggle sortNewestFirst", () => {

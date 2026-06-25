@@ -5,6 +5,13 @@ import {
 } from "../components/layout/sidebar-width.js";
 
 type Theme = "light" | "dark";
+/** User-facing theme choice; "system" follows the OS color scheme. */
+export type ThemePreference = "light" | "dark" | "system";
+const THEME_PREFERENCES: readonly ThemePreference[] = [
+  "light",
+  "dark",
+  "system",
+];
 export type MessageLayout = "default" | "compact" | "stream";
 export type TranscriptMode = "normal" | "focused";
 type ModalType =
@@ -95,15 +102,28 @@ const VALID_LAYOUTS: MessageLayout[] = [
   "compact",
   "stream",
 ];
-function readStoredTheme(): Theme | null {
+function readStoredThemePreference(): ThemePreference | null {
   if (
     typeof localStorage !== "undefined" &&
     localStorage != null &&
     typeof localStorage.getItem === "function"
   ) {
-    return localStorage.getItem("theme") as Theme;
+    const raw = localStorage.getItem("theme");
+    if (raw && THEME_PREFERENCES.includes(raw as ThemePreference)) {
+      return raw as ThemePreference;
+    }
   }
   return null;
+}
+
+function systemPrefersDark(): boolean {
+  if (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function"
+  ) {
+    return window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+  return false;
 }
 
 function readStoredLayout(): MessageLayout {
@@ -157,7 +177,12 @@ function readStoredBool(key: string, fallback: boolean): boolean {
   return fallback;
 }
 class UIStore {
-  theme: Theme = $state(readStoredTheme() || "light");
+  /** Persisted user choice: light, dark, or follow-system. */
+  themePreference: ThemePreference = $state(
+    readStoredThemePreference() ?? "light",
+  );
+  /** Live OS color-scheme signal, only consulted when preference is "system". */
+  prefersDark: boolean = $state(systemPrefersDark());
   sortNewestFirst: boolean = $state(false);
   messageLayout: MessageLayout = $state(readStoredLayout());
   transcriptMode: TranscriptMode = $state(
@@ -206,7 +231,7 @@ class UIStore {
           localStorage != null &&
           typeof localStorage.setItem === "function"
         ) {
-          localStorage.setItem("theme", this.theme);
+          localStorage.setItem("theme", this.themePreference);
         }
       });
 
@@ -304,6 +329,20 @@ class UIStore {
         }
       });
 
+      // Track the OS color scheme so "system" preference updates live.
+      if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+        const dm = window.matchMedia("(prefers-color-scheme: dark)");
+        this.prefersDark = dm.matches;
+        const onScheme = (e: MediaQueryListEvent) => {
+          this.prefersDark = e.matches;
+        };
+        if (dm.addEventListener) {
+          dm.addEventListener("change", onScheme);
+        } else {
+          dm.addListener(onScheme);
+        }
+      }
+
       // Initialize sidebar based on viewport width
       if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
         const mq = window.matchMedia("(min-width: 768px)");
@@ -327,16 +366,30 @@ class UIStore {
         if (
           event.data &&
           event.data.type === "theme:set" &&
-          (event.data.theme === "light" || event.data.theme === "dark")
+          THEME_PREFERENCES.includes(event.data.theme as ThemePreference)
         ) {
-          this.theme = event.data.theme;
+          this.themePreference = event.data.theme;
         }
       });
     }
   }
 
+  /** Resolved light/dark theme, with "system" mapped to the OS scheme. */
+  get theme(): Theme {
+    if (this.themePreference === "system") {
+      return this.prefersDark ? "dark" : "light";
+    }
+    return this.themePreference;
+  }
+
+  setThemePreference(preference: ThemePreference) {
+    this.themePreference = preference;
+  }
+
   toggleTheme() {
-    this.theme = this.theme === "light" ? "dark" : "light";
+    const i = THEME_PREFERENCES.indexOf(this.themePreference);
+    this.themePreference =
+      THEME_PREFERENCES[(i + 1) % THEME_PREFERENCES.length] ?? "light";
   }
 
   isBlockVisible(type: BlockType): boolean {

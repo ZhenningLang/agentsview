@@ -20,6 +20,7 @@
     LockIcon,
     LogsIcon,
     MenuIcon,
+    MonitorIcon,
     MoonIcon,
     WrenchIcon,
     MoreHorizontalIcon,
@@ -810,13 +811,15 @@
     <button
       class="header-btn"
       onclick={() => ui.toggleTheme()}
-      title="Toggle theme"
-      aria-label="Toggle theme"
+      title="Theme: {ui.themePreference} (click to cycle light / dark / system)"
+      aria-label="Theme: {ui.themePreference}"
     >
-      {#if ui.theme === "light"}
+      {#if ui.themePreference === "light"}
+        <SunIcon size="14" strokeWidth="2" aria-hidden="true" />
+      {:else if ui.themePreference === "dark"}
         <MoonIcon size="14" strokeWidth="2" aria-hidden="true" />
       {:else}
-        <SunIcon size="14" strokeWidth="2" aria-hidden="true" />
+        <MonitorIcon size="14" strokeWidth="2" aria-hidden="true" />
       {/if}
     </button>
 

@@ -5,7 +5,14 @@
     ALL_BLOCK_TYPES,
     type BlockType,
     type MessageLayout,
+    type ThemePreference,
   } from "../../stores/ui.svelte.js";
+
+  const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
+    { value: "light", label: "Light" },
+    { value: "dark", label: "Dark" },
+    { value: "system", label: "System" },
+  ];
 
   const LAYOUT_OPTIONS: { value: MessageLayout; label: string }[] = [
     { value: "default", label: "Default" },
@@ -28,9 +35,18 @@
 >
   <div class="setting-row">
     <span class="setting-label">Theme</span>
-    <button class="setting-toggle" onclick={() => ui.toggleTheme()}>
-      {ui.theme === "light" ? "Light" : "Dark"}
-    </button>
+    <div class="setting-options">
+      {#each THEME_OPTIONS as opt}
+        <button
+          class="option-btn"
+          class:active={ui.themePreference === opt.value}
+          aria-pressed={ui.themePreference === opt.value}
+          onclick={() => ui.setThemePreference(opt.value)}
+        >
+          {opt.label}
+        </button>
+      {/each}
+    </div>
   </div>
 
   <div class="setting-row">
