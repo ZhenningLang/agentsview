@@ -110,7 +110,7 @@ func (s *Server) humaGetMemoryRaw(
 	if err != nil {
 		return nil, err
 	}
-	w, err := s.memoryWriter()
+	w, _, err := s.writerForRelPath(ctx, relPath)
 	if err != nil {
 		return nil, err
 	}
@@ -126,8 +126,10 @@ func (s *Server) humaGetMemoryRaw(
 	}, nil
 }
 
-// memoryWriter resolves the effective memory dir and builds a Writer, or
-// returns a 404 when the memory feature is disabled (no dir configured).
+// memoryWriter resolves the effective cross-agent memory dir and builds a
+// git-backed Writer, or returns a 404 when the memory feature is disabled (no
+// dir configured). It is used directly only for the git-history routes, which
+// are cross-agent only.
 func (s *Server) memoryWriter() (*memory.FileWriter, error) {
 	dir := s.cfg.ResolveMemoryDir()
 	if dir == "" {
@@ -136,12 +138,73 @@ func (s *Server) memoryWriter() (*memory.FileWriter, error) {
 	return memory.NewWriter(dir), nil
 }
 
+// writerForRelPath selects the write-back root for a note by its data source.
+// The note's source is read from the DB (the syncer tagged it on ingest) via
+// the existing GetMemory — no new Store method. Cross-agent notes use the
+// git-backed writer rooted at the SSOT dir; CC-native notes use the no-git
+// writer rooted at the CC projects parent, where the note's RelPath legitimately
+// spans <project>/memory/<file>.md. The path-traversal guard confines either
+// RelPath to its selected root.
+//
+// It returns 404 when the note is unknown or the relevant root is not
+// configured, so a caller can never write into the wrong source's tree.
+func (s *Server) writerForRelPath(
+	ctx context.Context, relPath string,
+) (*memory.FileWriter, string, error) {
+	m, err := s.db.GetMemory(ctx, relPath)
+	if err != nil {
+		return nil, "", apiError(http.StatusInternalServerError, err.Error())
+	}
+	if m == nil {
+		return nil, "", apiError(http.StatusNotFound, "memory not found")
+	}
+	switch m.Source {
+	case db.SourceCCNative:
+		root := s.cfg.ResolveCCMemoryDir()
+		if root == "" {
+			return nil, "", apiError(http.StatusNotFound, "cc-native memory not configured")
+		}
+		return memory.NewWriterNoGit(root), m.Source, nil
+	default:
+		// cross-agent (and any legacy untagged row) uses the git-backed SSOT.
+		dir := s.cfg.ResolveMemoryDir()
+		if dir == "" {
+			return nil, "", apiError(http.StatusNotFound, "memory not configured")
+		}
+		return memory.NewWriter(dir), db.SourceCrossAgent, nil
+	}
+}
+
+// isCCNative reports whether a note is CC-native, used to gate the git-history
+// routes (which are "not applicable" for the no-git CC-native root). A missing
+// note yields a 404.
+func (s *Server) isCCNative(ctx context.Context, relPath string) (bool, error) {
+	m, err := s.db.GetMemory(ctx, relPath)
+	if err != nil {
+		return false, apiError(http.StatusInternalServerError, err.Error())
+	}
+	if m == nil {
+		return false, apiError(http.StatusNotFound, "memory not found")
+	}
+	return m.Source == db.SourceCCNative, nil
+}
+
 // resyncMemory best-effort refreshes the DB cache from disk after a write.
 // The on-disk *.md files are the SSOT; this just keeps the read cache in
-// step instead of waiting for the periodic sync. It is fail-soft.
-func (s *Server) resyncMemory(ctx context.Context) {
+// step instead of waiting for the periodic sync. It resyncs only the data
+// source that was written so it never disturbs the other source's rows. It is
+// fail-soft.
+func (s *Server) resyncMemory(ctx context.Context, source string) {
 	w, ok := s.db.(memory.Writer)
 	if !ok {
+		return
+	}
+	if source == db.SourceCCNative {
+		root := s.cfg.ResolveCCMemoryDir()
+		if root == "" {
+			return
+		}
+		_ = memory.NewCCSyncer(root, w, nil).Sync(ctx)
 		return
 	}
 	dir := s.cfg.ResolveMemoryDir()
@@ -188,7 +251,7 @@ func (s *Server) humaPutMemory(
 	if err != nil {
 		return nil, err
 	}
-	w, err := s.memoryWriter()
+	w, source, err := s.writerForRelPath(ctx, relPath)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +263,7 @@ func (s *Server) humaPutMemory(
 	if err != nil {
 		return nil, memoryWriteError(err)
 	}
-	s.resyncMemory(ctx)
+	s.resyncMemory(ctx, source)
 	return &jsonOutput[memoryWriteOutput]{Body: memoryWriteOutput{SHA: sha}}, nil
 }
 
@@ -215,6 +278,17 @@ func (s *Server) humaMemoryHistory(
 	if err != nil {
 		return nil, err
 	}
+	// CC-native has no git repo: history is "not applicable", reported as an
+	// empty list (the UI shows a "CC 原生不支持历史" notice rather than rows).
+	ccNative, err := s.isCCNative(ctx, relPath)
+	if err != nil {
+		return nil, err
+	}
+	if ccNative {
+		return &jsonOutput[memoryHistoryOutput]{
+			Body: memoryHistoryOutput{History: []memory.HistoryEntry{}},
+		}, nil
+	}
 	w, err := s.memoryWriter()
 	if err != nil {
 		return nil, err
@@ -227,6 +301,12 @@ func (s *Server) humaMemoryHistory(
 		hist = []memory.HistoryEntry{}
 	}
 	return &jsonOutput[memoryHistoryOutput]{Body: memoryHistoryOutput{History: hist}}, nil
+}
+
+// errCCNativeNoHistory is the 400 returned when a history/revert route is hit
+// for a CC-native note, which has no git repo and thus no history to act on.
+func errCCNativeNoHistory() error {
+	return apiError(http.StatusBadRequest, "cc-native memory has no git history")
 }
 
 type memoryCommitInput struct {
@@ -244,6 +324,13 @@ func (s *Server) humaMemoryAtCommit(
 	relPath, err := decodeMemoryPath(in.Path)
 	if err != nil {
 		return nil, err
+	}
+	ccNative, err := s.isCCNative(ctx, relPath)
+	if err != nil {
+		return nil, err
+	}
+	if ccNative {
+		return nil, errCCNativeNoHistory()
 	}
 	w, err := s.memoryWriter()
 	if err != nil {
@@ -274,6 +361,13 @@ func (s *Server) humaRevertMemory(
 	if err != nil {
 		return nil, err
 	}
+	ccNative, err := s.isCCNative(ctx, relPath)
+	if err != nil {
+		return nil, err
+	}
+	if ccNative {
+		return nil, errCCNativeNoHistory()
+	}
 	w, err := s.memoryWriter()
 	if err != nil {
 		return nil, err
@@ -286,6 +380,6 @@ func (s *Server) humaRevertMemory(
 		}
 		return nil, apiError(http.StatusInternalServerError, err.Error())
 	}
-	s.resyncMemory(ctx)
+	s.resyncMemory(ctx, db.SourceCrossAgent)
 	return &jsonOutput[memoryWriteOutput]{Body: memoryWriteOutput{SHA: sha}}, nil
 }

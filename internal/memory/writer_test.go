@@ -299,3 +299,130 @@ func TestPythonRootFor(t *testing.T) {
 	_, ok = pythonRootFor("/tmp/some/fixture")
 	assert.False(t, ok)
 }
+
+// ── CC-native (no-git, multi-root) write-back ─────────────────────────────
+
+// ccFixture creates a temp CC-native root that mirrors the on-disk layout the
+// CC syncer scans: <root>/<project>/memory/<file>.md across projects. It returns
+// the root and one note's rel_path (relative to the root, spanning subdirs).
+// It is a plain dir, NOT a git repo, matching the real ~/.claude/projects.
+func ccFixture(t *testing.T) (root, relPath string) {
+	t.Helper()
+	root = t.TempDir()
+	relPath = filepath.Join("proj-a", "memory", "note.md")
+	full := filepath.Join(root, relPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+	require.NoError(t, os.WriteFile(
+		full, []byte("# CC note\n\noriginal cc body.\n"), 0o644))
+	// A second project so the root genuinely spans multiple project dirs.
+	other := filepath.Join(root, "proj-b", "memory", "other.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(other), 0o755))
+	require.NoError(t, os.WriteFile(other, []byte("# other\n"), 0o644))
+	return root, relPath
+}
+
+func TestCCWriteNoGitHappyPath(t *testing.T) {
+	root, rel := ccFixture(t)
+	w := NewWriterNoGit(root)
+	ctx := context.Background()
+
+	base := sha(readFile(t, root, rel))
+	newContent := "# CC note v2\n\nupdated cc body.\n"
+	gotSHA, err := w.Write(ctx, WriteRequest{
+		RelPath: rel, Content: newContent, BaseSHA: base,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, sha(newContent), gotSHA)
+
+	// The multi-root locator resolved <root>/proj-a/memory/note.md and the
+	// new content landed there.
+	assert.Equal(t, newContent, readFile(t, root, rel))
+
+	// No-git invariant: a CC-native write never creates a git repo, never
+	// writes an INDEX.md, and never commits.
+	assert.NoDirExists(t, filepath.Join(root, ".git"))
+	assert.NoFileExists(t, filepath.Join(root, indexBasename))
+	assert.NoFileExists(t,
+		filepath.Join(root, "proj-a", "memory", indexBasename))
+}
+
+func TestCCWriteConflictOnStaleBase(t *testing.T) {
+	root, rel := ccFixture(t)
+	w := NewWriterNoGit(root)
+	ctx := context.Background()
+
+	staleBase := sha(readFile(t, root, rel))
+	// The file changes on disk after the editor read its base.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(root, rel), []byte("changed out of band\n"), 0o644))
+
+	_, err := w.Write(ctx, WriteRequest{
+		RelPath: rel, Content: "my edit", BaseSHA: staleBase,
+	})
+	require.ErrorIs(t, err, ErrConflict)
+	// Out-of-band content preserved, not clobbered.
+	assert.Equal(t, "changed out of band\n", readFile(t, root, rel))
+}
+
+func TestCCWriteRejectsTraversalOutsideRoot(t *testing.T) {
+	root, _ := ccFixture(t)
+	w := NewWriterNoGit(root)
+	ctx := context.Background()
+
+	// A sibling file the escape would target, to prove it is NOT written.
+	outside := filepath.Join(filepath.Dir(root), "escaped.md")
+
+	cases := []string{
+		"../escaped.md",
+		"proj-a/../../escaped.md",
+		"proj-a/memory/../../../escaped.md",
+	}
+	for _, rel := range cases {
+		_, err := w.Write(ctx, WriteRequest{
+			RelPath: rel, Content: "pwned", BaseSHA: "",
+		})
+		require.ErrorIs(t, err, ErrPathTraversal, "rel=%q", rel)
+	}
+	_, statErr := os.Stat(outside)
+	assert.True(t, os.IsNotExist(statErr),
+		"traversal must not create a file outside the CC root")
+}
+
+func TestCCWriteAbsolutePathConfinedToRoot(t *testing.T) {
+	root, _ := ccFixture(t)
+	w := NewWriterNoGit(root)
+	// An absolute path is treated as relative components by filepath.Join, so
+	// it is confined UNDER the root, never escaping it. The security property
+	// that matters: nothing is written outside the root.
+	abs := filepath.Join(t.TempDir(), "evil.md")
+	_, err := w.Write(context.Background(), WriteRequest{
+		RelPath: abs, Content: "confined", BaseSHA: "",
+	})
+	require.NoError(t, err)
+	// The target absolute path itself was NOT written (would be an escape).
+	_, statErr := os.Stat(abs)
+	assert.True(t, os.IsNotExist(statErr),
+		"absolute rel_path must not write to the literal absolute path")
+}
+
+// Regression: the cross-agent (git) writer still commits + rebuilds INDEX, so
+// the no-git flag did not bleed into the default path.
+func TestCrossAgentWriteStillCommits(t *testing.T) {
+	dir, rel := fixtureRepo(t)
+	w := NewWriter(dir)
+	ctx := context.Background()
+
+	base := sha(readFile(t, dir, rel))
+	newContent := "---\ntitle: Alpha v2\ndate: 2026-06-21\n" +
+		"problem_type: knowledge\n---\n\nbody.\n"
+	_, err := w.Write(ctx, WriteRequest{
+		RelPath: rel, Content: newContent, BaseSHA: base,
+	})
+	require.NoError(t, err)
+
+	// INDEX rebuilt and a commit landed (the side effects the no-git path
+	// suppresses must remain for the cross-agent root).
+	assert.FileExists(t, filepath.Join(dir, indexBasename))
+	log := run(t, dir, "log", "--pretty=%s")
+	assert.Contains(t, log, "memory: edit alpha.md")
+}

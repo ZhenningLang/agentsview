@@ -144,6 +144,12 @@
   let detailLoading = $state(false);
   let detailError = $state<string | null>(null);
 
+  // CC-native notes live in scattered ~/.claude/projects dirs with no git repo,
+  // so history/revert do not apply: the UI hides the history entry and shows a
+  // "CC 原生不支持历史" notice. Editing is still supported (write-back is
+  // content-only, no commit).
+  let detailIsCCNative = $derived(detail?.source === "cc-native");
+
   // The rel_path whose detail modal is open, kept separately so edit/history
   // actions have the key even while detail is being refetched.
   let activePath = $state<string | null>(null);
@@ -565,11 +571,17 @@
             {#if !editing}
               <button class="action-btn" onclick={startEdit}>编辑</button>
             {/if}
-            <button
-              class="action-btn"
-              class:active={historyOpen}
-              onclick={toggleHistory}>历史</button
-            >
+            {#if detailIsCCNative}
+              <span class="no-history" title="CC 原生 memory 无 git 仓库，不记录历史"
+                >CC 原生不支持历史</span
+              >
+            {:else}
+              <button
+                class="action-btn"
+                class:active={historyOpen}
+                onclick={toggleHistory}>历史</button
+              >
+            {/if}
             <button class="close-btn" onclick={closeDetail} aria-label="关闭"
               >✕</button
             >
@@ -937,6 +949,12 @@
   .action-btn:hover:not(:disabled) {
     color: var(--text-primary, #1a1a1a);
     background: var(--hover-bg, #f3f4f6);
+  }
+  .no-history {
+    font-size: 0.75rem;
+    color: var(--text-secondary, #888);
+    align-self: center;
+    white-space: nowrap;
   }
   .action-btn:disabled {
     opacity: 0.5;
