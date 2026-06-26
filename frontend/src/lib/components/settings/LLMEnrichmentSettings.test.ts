@@ -486,7 +486,7 @@ describe("LLMEnrichmentSettings", () => {
     save.click();
     await flush();
     expect(mocks.saveLLMProviders).toHaveBeenCalledTimes(1);
-    const payload = mocks.saveLLMProviders.mock.calls[0][0];
+    const payload = mocks.saveLLMProviders.mock.calls[0]![0];
     expect(payload.providers.cheap).toBeTruthy();
     expect(payload.usage.extract).toBe("cheap");
   });
