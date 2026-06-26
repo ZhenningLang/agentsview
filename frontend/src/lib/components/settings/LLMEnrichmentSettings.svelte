@@ -124,6 +124,23 @@
   let loadedRegistryNames = $state<Set<string>>(new Set());
   let uidCounter = 0;
 
+  // Usage assignment references providers by NAME (the persisted key), so names
+  // must be unique and non-empty. Surface violations and block save on them.
+  const providerNameIssues = $derived.by(() => {
+    const counts = new Map<string, number>();
+    const issues: string[] = [];
+    let hasEmpty = false;
+    for (const p of providers) {
+      const n = p.name.trim();
+      if (!n) { hasEmpty = true; continue; }
+      counts.set(n, (counts.get(n) ?? 0) + 1);
+    }
+    if (hasEmpty) issues.push(t("providers.nameEmpty"));
+    for (const [n, c] of counts) if (c > 1) issues.push(`${t("providers.nameDup")}${n}`);
+    return issues;
+  });
+  const providersValid = $derived(providerNameIssues.length === 0);
+
   // Per-target test state. Keys: "provider:<uid>", "usage:<usage>".
   let testResults = $state<Record<string, LLMTestChannelResult>>({});
   let testingTarget = $state<string | null>(null);
@@ -310,7 +327,7 @@
   }
 
   async function saveProviders() {
-    if (!canSaveConfig) return;
+    if (!canSaveConfig || !providersValid) return;
     saving = true;
     error = "";
     configMessage = "";
@@ -491,6 +508,7 @@
         <div class="block-head">
           <h4>{t("providers.title")}</h4>
           <p class="block-hint">{t("providers.desc")}</p>
+          <p class="block-hint">{t("providers.linkHint")}</p>
         </div>
 
         {#if providers.length === 0}
@@ -530,6 +548,9 @@
 
         <div class="add-row">
           <button type="button" class="ghost-btn" onclick={addProvider}>+ {t("providers.add")}</button>
+          <button class="trigger-btn" type="submit" disabled={!canSaveConfig || !providersValid}>
+            {saving ? t("common.saving") : t("enrich.save")}
+          </button>
         </div>
       </div>
 
@@ -581,11 +602,17 @@
       </div>
 
       {#if configLoading}<p class="muted">{t("common.loading")}</p>{/if}
-      {#if configMessage}<p class="result">{configMessage}</p>{/if}
       {#if error}<p class="error" role="alert">{error}</p>{/if}
 
+      {#if providerNameIssues.length}
+        <div class="name-issues" role="alert" data-testid="provider-name-issues">
+          {#each providerNameIssues as issue}<span>{issue}</span>{/each}
+        </div>
+      {/if}
+      {#if configMessage}<p class="result">{configMessage}</p>{/if}
+
       <div class="actions">
-        <button class="trigger-btn" type="submit" disabled={!canSaveConfig}>
+        <button class="trigger-btn" type="submit" disabled={!canSaveConfig || !providersValid}>
           {saving ? t("common.saving") : t("enrich.save")}
         </button>
       </div>
@@ -707,7 +734,8 @@
   .test-flag.error { color: var(--accent-red, #ef4444); }
   .test-flag.muted { color: var(--text-muted); }
 
-  .add-row { display: flex; gap: 8px; }
+  .add-row { display: flex; gap: 8px; align-items: center; }
+  .add-row .trigger-btn { margin-left: auto; }
   .ghost-btn {
     height: 28px; padding: 0 12px; border-radius: var(--radius-sm);
     border: 1px solid var(--border-muted); background: var(--bg-surface);
@@ -761,7 +789,9 @@
   .progress-track { width: 100%; height: 6px; border-radius: 999px; background: var(--bg-inset); border: 1px solid var(--border-muted); overflow: hidden; }
   .progress-fill { height: 100%; background: var(--accent-blue); transition: width 0.3s ease; }
 
-  .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .name-issues { display: flex; flex-direction: column; gap: 2px; }
+  .name-issues span { font-size: 11px; color: var(--accent-red, #ef4444); }
   .trigger-btn, .refresh-btn { height: 28px; padding: 0 12px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 500; border: 1px solid var(--border-muted); cursor: pointer; }
   .trigger-btn { color: white; background: var(--accent-blue); border-color: var(--accent-blue); }
   .refresh-btn { color: var(--text-secondary); background: var(--bg-inset); }

@@ -208,6 +208,23 @@ describe("LLMEnrichmentSettings (provider+model)", () => {
     expect(payload.delete_providers).toContain("extra-1");
   });
 
+  it("blocks save on duplicate provider names (usage links by name)", async () => {
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+    // Rename openrouter-1 to collide with deepseek-1.
+    const nameInput = byTestId("provider-openrouter-1")!.querySelector(".f-name input") as HTMLInputElement;
+    nameInput.value = "deepseek-1";
+    nameInput.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await flush();
+
+    expect(byTestId("provider-name-issues")).toBeTruthy();
+    const save = buttonWithText("Save LLM config") as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    save.click();
+    await flush();
+    expect(mocks.saveLLMProviders).not.toHaveBeenCalled();
+  });
+
   it("tests a provider via its card (channel chat, by provider name)", async () => {
     component = mount(LLMEnrichmentSettings, { target: document.body });
     await flush();
