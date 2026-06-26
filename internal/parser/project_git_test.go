@@ -130,71 +130,50 @@ func TestExtractProjectFromCwdPlainRepoDoesNotInvokeGit(t *testing.T) {
 }
 
 func TestExtractProjectFromCwdFallsBackToGitWhenLocalWalkMisses(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("test uses a POSIX shell git shim")
-	}
-
 	root := t.TempDir()
-	binDir := filepath.Join(root, "bin")
-	mustMkdirAll(t, binDir)
-	gitLog := filepath.Join(root, "git-log")
 	repo := filepath.Join(root, "virtual-repo")
 	cwd := filepath.Join(repo, "internal", "parser")
 	mustMkdirAll(t, cwd)
 
-	fakeGit := filepath.Join(binDir, "git")
-	mustWriteFile(t, fakeGit, "#!/bin/sh\n"+
-		"echo \"$*\" >> "+shellQuote(gitLog)+"\n"+
-		"case \"$*\" in\n"+
-		"  'rev-parse --git-dir') echo .git ;;\n"+
-		"  'rev-parse --git-common-dir') echo .git ;;\n"+
-		"  'rev-parse --show-toplevel') echo "+shellQuote(repo)+" ;;\n"+
-		"  *) exit 1 ;;\n"+
-		"esac\n")
-	require.NoError(t, os.Chmod(fakeGit, 0o755), "chmod fake git")
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	called := false
+	orig := gitMainRootFunc
+	defer func() { gitMainRootFunc = orig }()
+	gitMainRootFunc = func(_ context.Context, dir string) (string, error) {
+		called = true
+		assert.Equal(t, cwd, dir)
+		return repo, nil
+	}
 
 	assert.Equal(t, "virtual_repo",
 		ExtractProjectFromCwdWithBranchContext(context.Background(), cwd, ""))
-	assert.FileExists(t, gitLog, "git fallback should be used when local walk misses")
+	assert.True(t, called, "git fallback should be used when local walk misses")
 }
 
 func TestExtractProjectFromCwdTriesGitBeforeConservativeGitFileFallback(
 	t *testing.T,
 ) {
-	if runtime.GOOS == "windows" {
-		t.Skip("test uses a POSIX shell git shim")
-	}
-
 	root := t.TempDir()
-	binDir := filepath.Join(root, "bin")
-	mustMkdirAll(t, binDir)
-	gitLog := filepath.Join(root, "git-log")
 	mainRepo := filepath.Join(root, "main-repo")
 	worktree := filepath.Join(root, "feature-worktree")
 	cwd := filepath.Join(worktree, "internal", "parser")
-	commonDir := filepath.Join(mainRepo, ".git")
 	externalGitDir := filepath.Join(root, "bare-common", "worktrees", "feature")
-	mustMkdirAll(t, commonDir)
 	mustMkdirAll(t, externalGitDir)
 	mustMkdirAll(t, cwd)
 	mustWriteFile(t, filepath.Join(worktree, ".git"),
 		"gitdir: "+externalGitDir+"\n")
 
-	fakeGit := filepath.Join(binDir, "git")
-	mustWriteFile(t, fakeGit, "#!/bin/sh\n"+
-		"echo \"$*\" >> "+shellQuote(gitLog)+"\n"+
-		"case \"$*\" in\n"+
-		"  'rev-parse --git-dir') echo "+shellQuote(externalGitDir)+" ;;\n"+
-		"  'rev-parse --git-common-dir') echo "+shellQuote(commonDir)+" ;;\n"+
-		"  *) exit 1 ;;\n"+
-		"esac\n")
-	require.NoError(t, os.Chmod(fakeGit, 0o755), "chmod fake git")
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	called := false
+	orig := gitMainRootFunc
+	defer func() { gitMainRootFunc = orig }()
+	gitMainRootFunc = func(_ context.Context, dir string) (string, error) {
+		called = true
+		assert.Equal(t, cwd, dir)
+		return mainRepo, nil
+	}
 
 	assert.Equal(t, "main_repo",
 		ExtractProjectFromCwdWithBranchContext(context.Background(), cwd, ""))
-	assert.FileExists(t, gitLog,
+	assert.True(t, called,
 		"git fallback should run before accepting conservative gitfile root")
 }
 

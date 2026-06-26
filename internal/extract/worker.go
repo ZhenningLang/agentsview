@@ -10,10 +10,15 @@ import (
 	"time"
 
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/llm"
 )
 
 type LLMClient interface {
 	ChatJSON(ctx context.Context, system, user string) (string, error)
+}
+
+type llmUsageClient interface {
+	ChatJSONUsage(ctx context.Context, system, user string) (string, llm.Usage, error)
 }
 
 type SessionStore interface {
@@ -71,7 +76,14 @@ func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
 		if !hasPromptableMessages(msgs) {
 			continue
 		}
-		raw, err := w.LLM.ChatJSON(ctx, systemPrompt, BuildUserPrompt(sess, msgs))
+		started := time.Now()
+		raw, usage, err := w.chatJSON(ctx, systemPrompt, BuildUserPrompt(sess, msgs))
+		rec.LLMCallCount++
+		rec.LLMDurationMS += int(time.Since(started).Milliseconds())
+		rec.ProviderUsage = "extract"
+		if usage.TotalTokens > 0 || usage.PromptTokens > 0 || usage.CompletionTokens > 0 {
+			rec.LLMUsage = mergeLLMUsage(rec.LLMUsage, usage)
+		}
 		if err != nil {
 			rec.Error = fmt.Sprintf("llm: %v", err)
 			rec.Candidates = append(rec.Candidates, CandidateRecord{Status: "error", Reason: fmt.Sprintf("llm %s: %v", sess.ID, err)})
@@ -113,6 +125,24 @@ func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
 	rec.StagingFiles = countStagingFiles(w.Writer.Root)
 	w.record(rec)
 	return rec, nil
+}
+
+func (w *Worker) chatJSON(ctx context.Context, system, user string) (string, llm.Usage, error) {
+	if c, ok := w.LLM.(llmUsageClient); ok {
+		return c.ChatJSONUsage(ctx, system, user)
+	}
+	raw, err := w.LLM.ChatJSON(ctx, system, user)
+	return raw, llm.Usage{}, err
+}
+
+func mergeLLMUsage(current *LLMUsage, usage llm.Usage) *LLMUsage {
+	if current == nil {
+		current = &LLMUsage{}
+	}
+	current.PromptTokens += usage.PromptTokens
+	current.CompletionTokens += usage.CompletionTokens
+	current.TotalTokens += usage.TotalTokens
+	return current
 }
 
 func countStagingFiles(root string) int {

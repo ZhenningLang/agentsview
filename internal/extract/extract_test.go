@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/llm"
 )
 
 func TestCandidateCanonicalIDMatchesPythonCaptureAlgorithm(t *testing.T) {
@@ -147,6 +148,25 @@ func TestWorkerWritesCandidateToRawStaging(t *testing.T) {
 	}
 }
 
+func TestWorkerRecordsLLMMetricsAdditively(t *testing.T) {
+	root := setupGitRoot(t, true)
+	store := fakeStore{sessions: []db.Session{{ID: "s1", Agent: "claude"}}, messages: map[string][]db.Message{"s1": {{SessionID: "s1", Role: "user", Content: "We decided to observe extract metrics."}}}}
+	worker := NewWorker(store, fakeLLM{
+		raw:   `{"candidates":[{"category":"decision","summary":"decision: observe extract metrics","why":"quality proof","evidence":"User asked for metrics","implication":"Future workers should audit calls."}]}`,
+		usage: llm.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+	}, root, nil)
+
+	rec, err := worker.RunOnce(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, rec.LLMCallCount)
+	assert.Equal(t, "extract", rec.ProviderUsage)
+	require.NotNil(t, rec.LLMUsage)
+	assert.Equal(t, 10, rec.LLMUsage.PromptTokens)
+	assert.Equal(t, 5, rec.LLMUsage.CompletionTokens)
+	assert.Equal(t, 15, rec.LLMUsage.TotalTokens)
+}
+
 func TestControllerDisabledTriggerIsNoop(t *testing.T) {
 	root := setupGitRoot(t, true)
 	llm := &countingLLM{raw: `{"candidates":[{"category":"decision","summary":"decision: x","why":"y","evidence":"z","implication":"q"}]}`}
@@ -157,12 +177,17 @@ func TestControllerDisabledTriggerIsNoop(t *testing.T) {
 }
 
 type fakeLLM struct {
-	raw string
-	err error
+	raw   string
+	err   error
+	usage llm.Usage
 }
 
 func (f fakeLLM) ChatJSON(context.Context, string, string) (string, error) {
 	return f.raw, f.err
+}
+
+func (f fakeLLM) ChatJSONUsage(context.Context, string, string) (string, llm.Usage, error) {
+	return f.raw, f.usage, f.err
 }
 
 type countingLLM struct {
