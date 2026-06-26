@@ -199,26 +199,61 @@ func (s *Server) humaTestLLMConnection(
 	if err := s.requireLocalWritableLLMRequest(ctx); err != nil {
 		return nil, err
 	}
+	usage := strings.TrimSpace(strDeref(in.Body.Usage))
+	provider := strings.TrimSpace(strDeref(in.Body.Provider))
+	channel := strings.TrimSpace(strDeref(in.Body.Channel))
+	// Routing hints are test-only and must not leak into the connection patch.
+	in.Body.Usage, in.Body.Provider, in.Body.Channel = nil, nil, nil
+
 	s.mu.RLock()
-	llmCfg := s.cfg.ResolveUsageLLM("enrich")
+	var base config.LLMConfig
+	switch {
+	case usage != "":
+		// Test a usage's effective resolved config (real secrets included).
+		base = s.cfg.ResolveUsageLLM(usage)
+	case provider != "":
+		// Test a stored named provider; fall back to enrich if it is unknown
+		// so a stale name still produces a meaningful (failing) result.
+		if p, ok := s.cfg.LLM.Providers[provider]; ok {
+			base = p
+		} else {
+			base = s.cfg.ResolveUsageLLM("enrich")
+		}
+	default:
+		base = s.cfg.ResolveUsageLLM("enrich")
+	}
 	s.mu.RUnlock()
-	llmCfg = applyLLMConfigPatch(llmCfg, in.Body)
+	llmCfg := applyLLMConfigPatch(base, in.Body)
 
 	client := s.llmClient(llmCfg)
-	chat := llmTestChannelResult{OK: true, Message: "ok"}
-	if err := s.pingLLMChat(ctx, llmCfg); err != nil {
-		chat = llmTestChannelResult{OK: false, Message: sanitizeLLMTestError(err, llmCfg)}
+
+	chat := llmTestChannelResult{OK: false, Disabled: true, Message: "skipped"}
+	if channel != "embed" {
+		chat = llmTestChannelResult{OK: true, Message: "ok"}
+		if err := s.pingLLMChat(ctx, llmCfg); err != nil {
+			chat = llmTestChannelResult{OK: false, Message: sanitizeLLMTestError(err, llmCfg)}
+		}
 	}
 
-	embed := llmTestChannelResult{OK: false, Disabled: true, Message: "disabled"}
-	if strings.TrimSpace(llmCfg.Embed.Model) != "" {
-		embed = llmTestChannelResult{OK: true, Message: "ok"}
-		if _, err := client.Embed(ctx, "agentsview connection test"); err != nil {
-			embed = llmTestChannelResult{OK: false, Message: sanitizeLLMTestError(err, llmCfg)}
+	embed := llmTestChannelResult{OK: false, Disabled: true, Message: "skipped"}
+	if channel != "chat" {
+		embed = llmTestChannelResult{OK: false, Disabled: true, Message: "disabled"}
+		if strings.TrimSpace(llmCfg.Embed.Model) != "" {
+			embed = llmTestChannelResult{OK: true, Message: "ok"}
+			if _, err := client.Embed(ctx, "agentsview connection test"); err != nil {
+				embed = llmTestChannelResult{OK: false, Message: sanitizeLLMTestError(err, llmCfg)}
+			}
 		}
 	}
 
 	return &jsonOutput[llmTestResponse]{Body: llmTestResponse{Chat: chat, Embed: embed}}, nil
+}
+
+func strDeref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 func requireLocalLLMRequest(ctx context.Context) error {

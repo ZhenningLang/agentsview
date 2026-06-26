@@ -579,6 +579,91 @@ func TestLLMConnectionTestAcceptsCandidateConfig(t *testing.T) {
 	assert.Equal(t, "Bearer candidate-secret", gotAuth)
 }
 
+// TestLLMConnectionTestResolvesUsage locks that {"usage":"extract"} tests the
+// usage's effective resolved config (the bound named provider), not enrich.
+func TestLLMConnectionTestResolvesUsage(t *testing.T) {
+	var gotAuth, gotModel string
+	client := llmTestClient(func(req *http.Request) (*http.Response, error) {
+		gotAuth = req.Header.Get("Authorization")
+		body, _ := io.ReadAll(req.Body)
+		var parsed map[string]any
+		_ = json.Unmarshal(body, &parsed)
+		gotModel, _ = parsed["model"].(string)
+		return jsonResponse(http.StatusOK, `{"choices":[{"message":{"content":"ok"}}]}`), nil
+	})
+	te := setupWithServerOpts(t, []server.Option{server.WithLLMHTTPClient(client)}, withLLMConfig(func(c *config.LLMConfig) {
+		c.Enabled = true
+		c.BaseURL = "http://default.test/v1"
+		c.APIKey = "default-secret"
+		c.Model = "default-model"
+		c.Providers = map[string]config.LLMConfig{
+			"cheap": {Enabled: true, BaseURL: "http://cheap.test/v1", APIKey: "cheap-secret", Model: "cheap-model"},
+		}
+		c.Usage = map[string]string{"extract": "cheap"}
+	}))
+
+	w := postJSON(te, "/api/v1/llm/test", `{"usage":"extract","channel":"chat"}`)
+	assertStatus(t, w, http.StatusOK)
+	assert.NotContains(t, w.Body.String(), "cheap-secret")
+	assert.Equal(t, "Bearer cheap-secret", gotAuth)
+	assert.Equal(t, "cheap-model", gotModel)
+	resp := decode[map[string]any](t, w)
+	assert.Equal(t, true, resp["chat"].(map[string]any)["ok"])
+	// channel "chat" skips embed.
+	assert.Equal(t, true, resp["embed"].(map[string]any)["disabled"])
+}
+
+// TestLLMConnectionTestResolvesProviderSecret locks that {"provider":"cheap"}
+// with a masked key tests that stored provider's real secret, not enrich's.
+func TestLLMConnectionTestResolvesProviderSecret(t *testing.T) {
+	var gotAuth string
+	client := llmTestClient(func(req *http.Request) (*http.Response, error) {
+		gotAuth = req.Header.Get("Authorization")
+		return jsonResponse(http.StatusOK, `{"choices":[{"message":{"content":"ok"}}]}`), nil
+	})
+	te := setupWithServerOpts(t, []server.Option{server.WithLLMHTTPClient(client)}, withLLMConfig(func(c *config.LLMConfig) {
+		c.Enabled = true
+		c.BaseURL = "http://default.test/v1"
+		c.APIKey = "default-secret"
+		c.Model = "default-model"
+		c.Providers = map[string]config.LLMConfig{
+			"cheap": {Enabled: true, BaseURL: "http://cheap.test/v1", APIKey: "cheap-secret", Model: "cheap-model"},
+		}
+	}))
+
+	// Masked key means "keep stored"; the stored provider secret must be used.
+	w := postJSON(te, "/api/v1/llm/test", `{"provider":"cheap","channel":"chat","api_key":"********"}`)
+	assertStatus(t, w, http.StatusOK)
+	assert.Equal(t, "Bearer cheap-secret", gotAuth)
+}
+
+// TestLLMConnectionTestChannelEmbedOnly locks that {"channel":"embed"} pings
+// only the embed transport and skips the chat ping entirely.
+func TestLLMConnectionTestChannelEmbedOnly(t *testing.T) {
+	var paths []string
+	client := llmTestClient(func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.Path)
+		if req.URL.Path == "/v1/embeddings" {
+			return jsonResponse(http.StatusOK, `{"data":[{"embedding":[0.1,0.2]}]}`), nil
+		}
+		return jsonResponse(http.StatusOK, `{"choices":[{"message":{"content":"ok"}}]}`), nil
+	})
+	te := setupWithServerOpts(t, []server.Option{server.WithLLMHTTPClient(client)}, withLLMConfig(func(c *config.LLMConfig) {
+		c.Enabled = true
+		c.BaseURL = "http://llm.test/v1"
+		c.APIKey = "secret-key"
+		c.Model = "chat-model"
+		c.Embed.Model = "embed-model"
+	}))
+
+	w := postJSON(te, "/api/v1/llm/test", `{"channel":"embed"}`)
+	assertStatus(t, w, http.StatusOK)
+	resp := decode[map[string]any](t, w)
+	assert.Equal(t, true, resp["embed"].(map[string]any)["ok"])
+	assert.Equal(t, true, resp["chat"].(map[string]any)["disabled"])
+	assert.Equal(t, []string{"/v1/embeddings"}, paths)
+}
+
 func TestLLMEnrichRejectsDisabledOrUnconfigured(t *testing.T) {
 	called := false
 	client := llmTestClient(func(req *http.Request) (*http.Response, error) {

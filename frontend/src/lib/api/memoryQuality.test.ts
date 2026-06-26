@@ -91,8 +91,8 @@ describe("memory quality API", () => {
     const result = await fetchMemoryQuality(7);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/memory/quality?limit=7");
-    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/v1/memory/quality?limit=7");
+    const init = fetchMock.mock.calls[0]![1] as RequestInit;
     expect(new Headers(init.headers).get("Authorization")).toBe("Bearer secret-token");
     expect(result.telemetry).toMatchObject({ recall_hit_count: 5, scores: [0.8] });
     expect(result.extract.llm_usage?.total_tokens).toBe(15);

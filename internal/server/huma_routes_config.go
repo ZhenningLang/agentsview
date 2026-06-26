@@ -92,6 +92,13 @@ type llmConfigPatch struct {
 	Periodic            *bool                `json:"periodic,omitempty"`
 	BalanceURL          *string              `json:"balance_url,omitempty"`
 	Embed               *llmEmbedConfigPatch `json:"embed,omitempty"`
+
+	// Test-only routing hints, ignored by applyLLMConfigPatch and the config
+	// save path. They let POST /llm/test target a usage's effective config, a
+	// stored named provider's real secret, or a single transport channel.
+	Usage    *string `json:"usage,omitempty" doc:"(test only) Resolve and test this usage's effective config"`
+	Provider *string `json:"provider,omitempty" doc:"(test only) Resolve and test this named registry provider's stored secret"`
+	Channel  *string `json:"channel,omitempty" doc:"(test only) Restrict to one channel: \"chat\" or \"embed\""`
 }
 
 type llmProvidersPatch struct {

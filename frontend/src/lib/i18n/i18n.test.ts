@@ -13,13 +13,13 @@ describe("i18n", () => {
 
   it("defaults to Chinese and translates a known key", () => {
     expect(i18n.locale).toBe("zh");
-    expect(t("llm.title")).toBe("LLM 配置");
+    expect(t("enrich.title")).toBe("LLM 配置");
   });
 
   it("switches locale and reflects it in t()", () => {
     setLocale("en");
     expect(i18n.locale).toBe("en");
-    expect(t("llm.title")).toBe("LLM Configuration");
+    expect(t("enrich.title")).toBe("LLM Configuration");
   });
 
   it("persists the chosen locale to localStorage", () => {
