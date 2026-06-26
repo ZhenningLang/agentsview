@@ -42,6 +42,9 @@ export const en: Record<string, string> = {
   "providers.customVendor": "Custom",
   "providers.add": "Add provider",
   "providers.empty": "No providers yet. Click “Add provider” to configure one (vendor + key).",
+  "providers.linkHint": "Usage assignment below references providers by name, so names must be unique and non-empty.",
+  "providers.nameEmpty": "A provider name is empty — please fill it in.",
+  "providers.nameDup": "Duplicate provider name: ",
 
   // Usage assignment (pick a provider + model per usage)
   "assign.title": "Usage assignment",

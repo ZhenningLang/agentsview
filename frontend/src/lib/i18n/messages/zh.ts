@@ -42,6 +42,9 @@ export const zh: Record<string, string> = {
   "providers.customVendor": "自定义",
   "providers.add": "添加 provider",
   "providers.empty": "还没有 provider。点「添加 provider」配一个(厂商 + Key)。",
+  "providers.linkHint": "下方「用途分配」按名字引用 provider,所以名字需唯一、非空。",
+  "providers.nameEmpty": "有 provider 名字为空,请填写。",
+  "providers.nameDup": "provider 名字重复:",
 
   // 用途分配(每个用途:选 provider + 填模型)
   "assign.title": "用途分配",
