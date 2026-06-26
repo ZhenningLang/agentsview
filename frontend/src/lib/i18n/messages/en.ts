@@ -13,7 +13,10 @@ export const en: Record<string, string> = {
 
   // LLM enrichment (the single merged LLM config section)
   "enrich.title": "LLM Configuration",
-  "enrich.desc": "Generate titles / summaries / keywords for local sessions, and configure model sources per usage.",
+  "enrich.desc": "Configure model sources per usage: Chat provider (default), Embedding provider, and per-usage models.",
+  "feature.enrichTitle": "Session Enrichment",
+  "feature.enrichDesc": "Generate titles / summaries / keywords for local sessions. Model used: the Chat provider in LLM Configuration above.",
+  "feature.enrichSave": "Save enrichment settings",
   "enrich.enable": "Enable LLM enrichment",
   "enrich.chatProvider": "Chat provider",
   "enrich.chatProviderHint": "Default chat model — the fallback for all chat usages (enrich / extract / consolidate / rerank).",

@@ -420,11 +420,6 @@
     </p>
   {:else}
     <form class="config-form" onsubmit={(event) => { event.preventDefault(); saveConfig(); }}>
-      <label class="toggle-row">
-        <input name="enabled" type="checkbox" bind:checked={form.enabled} />
-        <span>{t("enrich.enable")}</span>
-      </label>
-
       <div class="field-group">
         <h4>{t("enrich.chatProvider")}</h4>
         <p class="block-hint">{t("enrich.chatProviderHint")}</p>
@@ -569,6 +564,44 @@
         {/if}
       </div>
 
+      {#if configLoading}
+        <p class="muted">{t("common.loading")}</p>
+      {/if}
+      {#if configMessage}
+        <p class="result">{configMessage}</p>
+      {/if}
+      {#if testResult}
+        <div class="test-result" data-testid="llm-test-result">
+          <p>{channelText("chat", testResult.chat)}</p>
+          <p>{channelText("embed", testResult.embed)}</p>
+        </div>
+      {/if}
+      {#if error}
+        <p class="error" role="alert">{error}</p>
+      {/if}
+
+      <div class="actions">
+        <button class="trigger-btn" type="submit" disabled={!canSaveConfig}>
+          {saving ? t("common.saving") : t("enrich.save")}
+        </button>
+        <button class="refresh-btn" type="button" onclick={testConfig} disabled={!canTestConfig}>
+          {testing ? t("enrich.testing") : t("enrich.test")}
+        </button>
+      </div>
+    </form>
+  {/if}
+</SettingsSection>
+
+<SettingsSection title={t("feature.enrichTitle")} description={t("feature.enrichDesc")}>
+  {#if remote}
+    <p class="muted" data-testid="llm-enrichment-remote">{unavailableReason}</p>
+  {:else}
+    <form class="config-form" onsubmit={(event) => { event.preventDefault(); saveConfig(); }}>
+      <label class="toggle-row">
+        <input name="enabled" type="checkbox" bind:checked={form.enabled} />
+        <span>{t("enrich.enable")}</span>
+      </label>
+
       <div class="field-group schedule-grid">
         <h4>{t("enrich.scheduling")}</h4>
         <label>
@@ -593,25 +626,13 @@
         </label>
       </div>
 
-      {#if configLoading}
-        <p class="muted">Loading LLM config...</p>
-      {/if}
       {#if configMessage}
         <p class="result">{configMessage}</p>
-      {/if}
-      {#if testResult}
-        <div class="test-result" data-testid="llm-test-result">
-          <p>{channelText("chat", testResult.chat)}</p>
-          <p>{channelText("embed", testResult.embed)}</p>
-        </div>
       {/if}
 
       <div class="actions">
         <button class="trigger-btn" type="submit" disabled={!canSaveConfig}>
-          {saving ? t("common.saving") : t("enrich.save")}
-        </button>
-        <button class="refresh-btn" type="button" onclick={testConfig} disabled={!canTestConfig}>
-          {testing ? t("enrich.testing") : t("enrich.test")}
+          {saving ? t("common.saving") : t("feature.enrichSave")}
         </button>
       </div>
     </form>
@@ -626,7 +647,7 @@
     </div>
 
     {#if loading}
-      <p class="muted">Loading enrichment status...</p>
+      <p class="muted">{t("common.loading")}</p>
     {/if}
 
     {#if unavailableReason}
@@ -694,7 +715,7 @@
         </button>
       {/if}
       <button class="refresh-btn" onclick={loadStatus} disabled={loading}>
-        Refresh status
+        {t("enrich.refresh")}
       </button>
     </div>
   {/if}

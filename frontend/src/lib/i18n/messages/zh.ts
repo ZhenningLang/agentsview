@@ -13,7 +13,10 @@ export const zh: Record<string, string> = {
 
   // LLM enrichment(合并后的单一 LLM 配置区)
   "enrich.title": "LLM 配置",
-  "enrich.desc": "为本地会话生成标题/摘要/关键词,并配置各用途的模型来源。",
+  "enrich.desc": "为各用途配置模型来源:Chat provider(默认)、Embedding provider、各用途模型。",
+  "feature.enrichTitle": "会话增强",
+  "feature.enrichDesc": "为本地会话生成标题/摘要/关键词。所用模型见上方「LLM 配置」的 Chat provider。",
+  "feature.enrichSave": "保存增强设置",
   "enrich.enable": "启用 LLM enrichment",
   "enrich.chatProvider": "Chat provider",
   "enrich.chatProviderHint": "默认对话模型 —— 所有对话类用途(增强/抽取/巩固/重排)的兜底。",
