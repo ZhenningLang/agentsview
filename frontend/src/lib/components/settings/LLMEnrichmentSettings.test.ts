@@ -225,6 +225,34 @@ describe("LLMEnrichmentSettings (provider+model)", () => {
     expect(mocks.saveLLMProviders).not.toHaveBeenCalled();
   });
 
+  it("renaming a provider keeps its masked key on screen and carries it on save", async () => {
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+
+    const card = byTestId("provider-deepseek-1")!;
+    const nameInput = card.querySelector(".f-name input") as HTMLInputElement;
+    const keyInput = card.querySelector('input[type="password"]') as HTMLInputElement;
+    const keyBefore = keyInput.value; // masked "********…"
+    expect(keyBefore.startsWith("********")).toBe(true);
+
+    nameInput.value = "primary";
+    nameInput.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await flush();
+
+    // No on-screen loss: the renamed card still shows the masked key.
+    const renamed = byTestId("provider-primary")!;
+    expect(renamed).toBeTruthy();
+    expect((renamed.querySelector('input[type="password"]') as HTMLInputElement).value).toBe(keyBefore);
+
+    buttonWithText("Save LLM config")!.click();
+    await flush();
+    const payload = mocks.saveLLMProviders.mock.calls[0]![0];
+    // The masked key is sent with key_from so the backend inherits the real key
+    // ([llm], since deepseek-1 was migrated from the legacy default).
+    expect(payload.providers["primary"].api_key).toBe("********");
+    expect(payload.providers["primary"].key_from).toBe("@llm");
+  });
+
   it("tests a provider via its card (channel chat, by provider name)", async () => {
     component = mount(LLMEnrichmentSettings, { target: document.body });
     await flush();

@@ -119,6 +119,12 @@ type llmProviderConfigPatch struct {
 	Model           *string `json:"model,omitempty"`
 	ReasoningEffort *string `json:"reasoning_effort,omitempty"`
 	BalanceURL      *string `json:"balance_url,omitempty"`
+	// KeyFrom inherits the API key from another source when the patch carries
+	// only a masked key — used when a provider is renamed (the key lives under
+	// the old registry name) or saved for the first time from a legacy default
+	// ("@llm" / "@llm.embed"). Without it the masked key would resolve to a
+	// non-existent entry and the key would be lost.
+	KeyFrom *string `json:"key_from,omitempty"`
 }
 
 type llmEmbedConfigResponse struct {
@@ -315,7 +321,7 @@ func (s *Server) humaPatchLLMProviders(
 		return nil, err
 	}
 	s.mu.Lock()
-	providers := applyLLMProvidersPatch(s.cfg.LLM.Providers, in.Body.Providers, in.Body.DeleteProviders)
+	providers := applyLLMProvidersPatch(s.cfg.LLM.Providers, in.Body.Providers, in.Body.DeleteProviders, s.cfg.LLM)
 	usage := applyLLMUsagePatch(s.cfg.LLM.Usage, in.Body.Usage, in.Body.DeleteProviders)
 	usageModel := applyLLMUsageModelPatch(s.cfg.LLM.UsageModel, in.Body.UsageModel, usage)
 	err := s.cfg.SaveLLMProviders(providers, usage, usageModel)
@@ -422,6 +428,7 @@ func applyLLMProvidersPatch(
 	current map[string]config.LLMConfig,
 	patch map[string]llmProviderConfigPatch,
 	deleteProviders []string,
+	base config.LLMConfig,
 ) map[string]config.LLMConfig {
 	out := make(map[string]config.LLMConfig, len(current)+len(patch))
 	for name, provider := range current {
@@ -444,6 +451,10 @@ func applyLLMProvidersPatch(
 		if p.APIKey != nil && shouldReplaceLLMAPIKey(*p.APIKey) {
 			provider.APIKey = strings.TrimSpace(*p.APIKey)
 		}
+		// Inherit the key when only a masked key was sent (rename / first seed).
+		if provider.APIKey == "" && p.KeyFrom != nil {
+			provider.APIKey = resolveInheritedKey(strings.TrimSpace(*p.KeyFrom), current, base)
+		}
 		if p.Model != nil {
 			provider.Model = strings.TrimSpace(*p.Model)
 		}
@@ -464,6 +475,25 @@ func applyLLMProvidersPatch(
 		return nil
 	}
 	return out
+}
+
+// resolveInheritedKey returns the API key a renamed/seeded provider should adopt.
+// "@llm" / "@llm.embed" pull from the legacy default slots; any other value is a
+// registry provider name (the provider's former name before a rename).
+func resolveInheritedKey(src string, current map[string]config.LLMConfig, base config.LLMConfig) string {
+	switch src {
+	case "":
+		return ""
+	case "@llm":
+		return strings.TrimSpace(base.APIKey)
+	case "@llm.embed":
+		return strings.TrimSpace(base.Embed.APIKey)
+	default:
+		if from, ok := current[src]; ok {
+			return strings.TrimSpace(from.APIKey)
+		}
+		return ""
+	}
 }
 
 func applyLLMUsagePatch(current, patch map[string]string, deleteProviders []string) map[string]string {
