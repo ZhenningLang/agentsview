@@ -68,3 +68,6 @@ html/
 graphify-out/
 .kata.local.toml
 .agent-state/
+
+# accidental self-referential symlink guard
+frontend/node_modules
