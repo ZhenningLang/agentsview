@@ -7,6 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"go.kenn.io/agentsview/internal/llm"
 )
 
 // --- decision parsing (spec verify ①) ---
@@ -116,12 +121,17 @@ func TestCandidateEffectiveID_FallsBackToStem(t *testing.T) {
 // --- fakes for the worker ---
 
 type fakeLLM struct {
-	resp string
-	err  error
+	resp  string
+	err   error
+	usage llm.Usage
 }
 
 func (f fakeLLM) ChatJSON(_ context.Context, _, _ string) (string, error) {
 	return f.resp, f.err
+}
+
+func (f fakeLLM) ChatJSONUsage(_ context.Context, _, _ string) (string, llm.Usage, error) {
+	return f.resp, f.usage, f.err
 }
 
 type fakeScript struct {
@@ -210,6 +220,25 @@ func TestWorker_WriteCommitsAndResyncs(t *testing.T) {
 	if len(recs) != 1 || !recs[0].Committed {
 		t.Errorf("audit not persisted: %+v", recs)
 	}
+}
+
+func TestWorkerRecordsLLMMetricsAndDecisionCounts(t *testing.T) {
+	script := &fakeScript{res: ScriptResult{Stdout: "write c1 memory/user/c1.md\nskip c2 duplicate\n", ExitCode: 0}}
+	w, rawDir := newTestWorker(t,
+		fakeLLM{resp: `{"c1":{"action":"ADD"},"c2":{"action":"SKIP"}}`, usage: llm.Usage{PromptTokens: 11, CompletionTokens: 6, TotalTokens: 17}}, script, &fakeCommitter{}, &fakeResyncer{})
+	writeCandidate(t, rawDir, "c1.json", map[string]any{"id": "c1", "summary": "s"})
+	writeCandidate(t, rawDir, "c2.json", map[string]any{"id": "c2", "summary": "s"})
+
+	rec, err := w.RunOnce(context.Background())
+
+	require.NoError(t, err)
+	assert.Equal(t, 1, rec.LLMCallCount)
+	assert.Equal(t, "consolidate", rec.ProviderUsage)
+	require.NotNil(t, rec.LLMUsage)
+	assert.Equal(t, 17, rec.LLMUsage.TotalTokens)
+	assert.Equal(t, 1, rec.AddCount)
+	assert.Equal(t, 0, rec.UpdateCount)
+	assert.Equal(t, 1, rec.SkipCount)
 }
 
 // --- worker: SKIP-only does not commit ---

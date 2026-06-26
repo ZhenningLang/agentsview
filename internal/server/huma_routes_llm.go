@@ -86,7 +86,7 @@ func (s *Server) humaTriggerLLMEnrichment(
 	if in.Body.Limit < 0 {
 		return nil, apiError(http.StatusBadRequest, "limit must be >= 0")
 	}
-	llmCfg := s.cfg.ResolveLLM()
+	llmCfg := s.cfg.ResolveUsageLLM("enrich")
 	if !llmCfg.Enabled {
 		return nil, apiError(http.StatusConflict, "LLM enrichment is disabled")
 	}
@@ -132,7 +132,7 @@ func (s *Server) humaStartLLMEnrichmentJob(
 		return nil, err
 	}
 	s.mu.RLock()
-	llmCfg := s.cfg.ResolveLLM()
+	llmCfg := s.cfg.ResolveUsageLLM("enrich")
 	s.mu.RUnlock()
 	if !llmCfg.Enabled {
 		return nil, apiError(http.StatusConflict, "LLM enrichment is disabled")
@@ -188,7 +188,7 @@ func (s *Server) humaLLMBalance(
 	if err := requireLocalLLMRequest(ctx); err != nil {
 		return nil, err
 	}
-	resp := s.fetchLLMBalance(ctx, s.cfg.ResolveLLM())
+	resp := s.fetchLLMBalance(ctx, s.cfg.ResolveUsageLLM("enrich"))
 	return &jsonOutput[llmBalanceResponse]{Body: resp}, nil
 }
 
@@ -200,7 +200,7 @@ func (s *Server) humaTestLLMConnection(
 		return nil, err
 	}
 	s.mu.RLock()
-	llmCfg := s.cfg.ResolveLLM()
+	llmCfg := s.cfg.ResolveUsageLLM("enrich")
 	s.mu.RUnlock()
 	llmCfg = applyLLMConfigPatch(llmCfg, in.Body)
 

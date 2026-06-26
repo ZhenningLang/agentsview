@@ -31,6 +31,9 @@ type RunRecord struct {
 	StartedAt      string           `json:"started_at"`
 	FinishedAt     string           `json:"finished_at,omitempty"`
 	CandidateCount int              `json:"candidate_count"`
+	AddCount       int              `json:"add_count,omitempty"`
+	UpdateCount    int              `json:"update_count,omitempty"`
+	SkipCount      int              `json:"skip_count,omitempty"`
 	Decisions      []DecisionRecord `json:"decisions,omitempty"`
 	ScriptExitCode int              `json:"script_exit_code,omitempty"`
 	ScriptErrors   []string         `json:"script_errors,omitempty"`
@@ -39,6 +42,22 @@ type RunRecord struct {
 	Skipped        bool             `json:"skipped,omitempty"`
 	Note           string           `json:"note,omitempty"`
 	Error          string           `json:"error,omitempty"`
+	LLMDurationMS  int              `json:"llm_duration_ms,omitempty"`
+	LLMCallCount   int              `json:"llm_call_count,omitempty"`
+	ProviderUsage  string           `json:"provider_usage,omitempty"`
+	LLMUsage       *LLMUsage        `json:"llm_usage,omitempty"`
+	LLMCost        *LLMCost         `json:"llm_cost,omitempty"`
+}
+
+type LLMUsage struct {
+	PromptTokens     int `json:"prompt_tokens,omitempty"`
+	CompletionTokens int `json:"completion_tokens,omitempty"`
+	TotalTokens      int `json:"total_tokens,omitempty"`
+}
+
+type LLMCost struct {
+	Currency string `json:"currency,omitempty"`
+	Amount   string `json:"amount,omitempty"`
 }
 
 // AuditLog is a concurrency-safe append-only jsonl writer/reader for run

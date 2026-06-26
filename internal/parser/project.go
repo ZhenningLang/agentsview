@@ -21,6 +21,8 @@ import (
 // os.Stat via this binding.
 var osStat = os.Stat
 
+var gitMainRootFunc = gitrepo.MainRoot
+
 var projectMarkers = []string{
 	"code", "projects", "repos", "src", "work", "dev",
 }
@@ -506,7 +508,7 @@ func gitMainRoot(ctx context.Context, dir string) string {
 	}
 	opCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	root, err := gitrepo.MainRoot(opCtx, dir)
+	root, err := gitMainRootFunc(opCtx, dir)
 	if err != nil {
 		return ""
 	}

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,6 +15,20 @@ import (
 type fakeWriter struct {
 	memories []db.Memory
 	source   string
+}
+
+type fakeEmbedder struct {
+	vector []float32
+	err    error
+	calls  int
+}
+
+func (e *fakeEmbedder) Embed(_ context.Context, _ string) ([]float32, error) {
+	e.calls++
+	if e.err != nil {
+		return nil, e.err
+	}
+	return e.vector, nil
 }
 
 func (w *fakeWriter) ReplaceMemories(
@@ -29,6 +44,17 @@ func (w *fakeWriter) ReplaceMemoriesBySource(
 	w.source = source
 	w.memories = m
 	return nil
+}
+
+func (w *fakeWriter) MemoryEmbeddings(_ context.Context, f db.MemoryFilter) ([]db.Memory, error) {
+	var out []db.Memory
+	for _, m := range w.memories {
+		if f.Source != "" && m.Source != f.Source {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out, nil
 }
 
 // writeNote creates <dir>/<name> with the given frontmatter and body.
@@ -145,6 +171,56 @@ func TestSyncNoFrontmatterTreatsAllAsBody(t *testing.T) {
 	assert.Equal(t, "just a plain note, no frontmatter",
 		w.memories[0].Body)
 	assert.Empty(t, w.memories[0].Title)
+}
+
+func TestSyncWithEmbedderPopulatesMemoryEmbedding(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	writeNote(t, dir, "embedded.md",
+		"title: Embedded\ndate: 2026-06-20\nproblem_type: knowledge",
+		"body to embed")
+	w := &fakeWriter{}
+	embedder := &fakeEmbedder{vector: []float32{1, 0}}
+	s := NewSyncerWithEmbedder(dir, w, nil, embedder)
+
+	require.NoError(t, s.Sync(context.Background()))
+	require.Len(t, w.memories, 1)
+	assert.Equal(t, []float32{1, 0}, w.memories[0].LLMEmbedding)
+	assert.Equal(t, 2, w.memories[0].LLMEmbeddingDim)
+	assert.Equal(t, 1, embedder.calls)
+}
+
+func TestSyncWithEmbedderReturnsErrorOnEmbeddingFailure(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	writeNote(t, dir, "broken.md",
+		"title: Broken\ndate: 2026-06-20\nproblem_type: knowledge",
+		"body to embed")
+	w := &fakeWriter{}
+	s := NewSyncerWithEmbedder(dir, w, nil, &fakeEmbedder{err: errors.New("embed failed")})
+
+	err := s.Sync(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "embedding memory")
+	assert.Empty(t, w.memories, "failed embed should not write a silent lexical-only replacement")
+}
+
+func TestSyncWithEmbedderReusesUnchangedEmbedding(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	writeNote(t, dir, "stable.md",
+		"title: Stable\ndate: 2026-06-20\nproblem_type: knowledge",
+		"stable body")
+	info, err := os.Stat(filepath.Join(dir, "stable.md"))
+	require.NoError(t, err)
+	w := &fakeWriter{memories: []db.Memory{{
+		RelPath: "stable.md", Source: db.SourceCrossAgent, Body: "stable body\n",
+		SourceMtime: info.ModTime().Unix(), LLMEmbedding: []float32{0.25, 0.75}, LLMEmbeddingDim: 2,
+	}}}
+	embedder := &fakeEmbedder{vector: []float32{1, 0}}
+	s := NewSyncerWithEmbedder(dir, w, nil, embedder)
+
+	require.NoError(t, s.Sync(context.Background()))
+	require.Len(t, w.memories, 1)
+	assert.Equal(t, []float32{0.25, 0.75}, w.memories[0].LLMEmbedding)
+	assert.Zero(t, embedder.calls)
 }
 
 func TestSyncMissingDirReturnsError(t *testing.T) {

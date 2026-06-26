@@ -13,6 +13,7 @@
   } from "../../api/memory";
   import { ApiError } from "../../api/runtime";
   import ConsolidateAuditPanel from "./ConsolidateAuditPanel.svelte";
+  import MemoryQualityPanel from "./MemoryQualityPanel.svelte";
 
   type SortKey = "title" | "date" | "problem_type";
 
@@ -428,6 +429,7 @@
       跨 agent user-memory 笔记（只读视图）：全文检索、按 frontmatter facet 过滤、查看正文与元数据。
     </p>
     <ConsolidateAuditPanel />
+    <MemoryQualityPanel />
     <div class="controls">
       <input
         class="search"

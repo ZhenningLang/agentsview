@@ -2,6 +2,8 @@ package db
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +27,45 @@ func sampleMemories() []Memory {
 			SyncedAt: "2026-06-23T00:00:00.000Z",
 		},
 	}
+}
+
+func TestOpenMigratesLegacyMemoryEmbeddingColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-memory.db")
+	d, err := Open(path)
+	require.NoError(t, err)
+	require.NoError(t, d.ReplaceMemories(context.Background(), sampleMemories()))
+	require.NoError(t, d.Close())
+
+	conn, err := sql.Open("sqlite3", makeDSN(path, false))
+	require.NoError(t, err)
+	_, err = conn.Exec("ALTER TABLE memory DROP COLUMN llm_embedding")
+	require.NoError(t, err)
+	_, err = conn.Exec("ALTER TABLE memory DROP COLUMN llm_embedding_dim")
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+
+	d, err = Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	cols := sqliteLLMTableColumns(t, d, "memory")
+	assert.Equal(t, sqliteLLMColumnInfo{Type: "BLOB", NotNull: false, DefaultValue: ""}, cols["llm_embedding"])
+	assert.Equal(t, sqliteLLMColumnInfo{Type: "INTEGER", NotNull: true, DefaultValue: "0"}, cols["llm_embedding_dim"])
+}
+
+func TestMemoryEmbeddingsReturnsLocalVectors(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	memories := sampleMemories()
+	memories[0].LLMEmbedding = []float32{1, 0}
+	require.NoError(t, d.ReplaceMemories(ctx, memories))
+
+	embeddings, err := d.MemoryEmbeddings(ctx, MemoryFilter{})
+	require.NoError(t, err)
+	require.Len(t, embeddings, 2)
+	assert.Equal(t, "beta.md", embeddings[0].RelPath)
+	assert.Empty(t, embeddings[0].LLMEmbedding)
+	assert.Equal(t, "alpha.md", embeddings[1].RelPath)
+	assert.Equal(t, []float32{1, 0}, embeddings[1].LLMEmbedding)
 }
 
 func TestReplaceAndListMemories(t *testing.T) {

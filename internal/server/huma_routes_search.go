@@ -107,7 +107,7 @@ func (s *Server) humaSemanticSearch(
 		return nil, apiError(http.StatusBadRequest, "query required")
 	}
 	limit := clampLimit(in.Limit, db.DefaultSearchLimit, db.MaxSearchLimit)
-	llmCfg := s.cfg.ResolveLLM()
+	llmCfg := s.cfg.ResolveUsageLLM("embed")
 	res, err := semantic.Semantic(ctx, s.db, s.llmClient(llmCfg), llmCfg, semantic.Request{
 		Query:   query,
 		Project: in.Project,
@@ -133,7 +133,7 @@ func (s *Server) humaSemanticSearchStatus(
 		return nil, apiError(http.StatusForbidden, "not available from remote clients")
 	}
 	return &jsonOutput[semantic.StatusResponse]{Body: semantic.StatusResponse{
-		Available: semantic.Available(s.cfg.ResolveLLM()),
+		Available: semantic.Available(s.cfg.ResolveUsageLLM("embed")),
 	}}, nil
 }
 

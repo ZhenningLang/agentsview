@@ -77,6 +77,7 @@ type Store interface {
 	// Memory (read-only dimension mirrored from the user-memory SSOT).
 	ListMemories(ctx context.Context, f MemoryFilter) ([]Memory, error)
 	GetMemory(ctx context.Context, relPath string) (*Memory, error)
+	MemoryEmbeddings(ctx context.Context, f MemoryFilter) ([]Memory, error)
 
 	// Vault (read-only dimension mirrored from dev-workflow .long-loop runs).
 	ListVaultRuns(ctx context.Context, f VaultFilter) ([]VaultRun, error)
