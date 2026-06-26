@@ -14,9 +14,15 @@
     type LLMConfigPayload,
     type LLMConfigResponse,
     type LLMTestResponse,
+    fetchLLMProviders,
+    saveLLMProviders,
+    type LLMProvidersResponse,
+    type LLMProvidersPayload,
+    type LLMProviderConfigPayload,
   } from "../../api/llm.js";
   import { sync } from "../../stores/sync.svelte.js";
   import SettingsSection from "./SettingsSection.svelte";
+  import { t } from "../../i18n/index.svelte";
 
   let status: LLMEnrichmentStatusReport | null = $state(null);
   let job = $state<LLMEnrichJobState | null>(null);
@@ -127,6 +133,95 @@
     embedBalanceUrl: "",
   });
 
+  // Per-usage model override (merged in): chat/embed are configured by the two
+  // provider blocks above; these three usages default to the Chat provider and
+  // can optionally point at a named custom provider in the registry.
+  type CustomProvider = { base_url: string; api_key: string; model: string; reasoning_effort: string };
+  const overrideUsages = ["extract", "consolidate", "recall_rerank"];
+  let customProviders = $state<Record<string, CustomProvider>>({});
+  let usageOverrides = $state<Record<string, string>>({});
+  let originalUsage = $state<Record<string, string>>({});
+  let removedCustom = $state<Set<string>>(new Set());
+  let usageWarnings = $state<string[]>([]);
+  let newCustomName = $state("");
+  const visibleCustom = $derived(
+    Object.entries(customProviders).filter(([name]) => !removedCustom.has(name)),
+  );
+
+  function applyProvidersResponse(resp: LLMProvidersResponse) {
+    // Registry providers minus the implicit ones bound to chat/embed: show all
+    // named providers as custom (the chat/embed blocks own [llm]/[llm.embed]).
+    customProviders = Object.fromEntries(
+      Object.entries(resp.providers ?? {}).map(([name, p]) => [
+        name,
+        {
+          base_url: p.base_url ?? "",
+          api_key: maskedValue(p.has_api_key, p.api_key_preview),
+          model: p.model ?? "",
+          reasoning_effort: p.reasoning_effort ?? "",
+        },
+      ]),
+    );
+    const usage = resp.usage ?? {};
+    usageOverrides = Object.fromEntries(overrideUsages.map((u) => [u, usage[u] ?? ""]));
+    originalUsage = { ...usageOverrides };
+    usageWarnings = [...(resp.usage_warnings ?? [])];
+    removedCustom = new Set();
+  }
+
+  function applyOverridePreset(name: string, id: string) {
+    const p = chatProviders.find((x) => x.id === id);
+    if (!p || p.id === "custom") return;
+    const prev: CustomProvider = customProviders[name] ?? { base_url: "", api_key: "", model: "", reasoning_effort: "" };
+    customProviders = {
+      ...customProviders,
+      [name]: { base_url: p.baseUrl, api_key: prev.api_key, model: p.models[0] ?? "", reasoning_effort: prev.reasoning_effort },
+    };
+  }
+
+  function addCustomProvider() {
+    const name = newCustomName.trim();
+    if (!name || customProviders[name]) return;
+    customProviders = { ...customProviders, [name]: { base_url: "", api_key: "", model: "", reasoning_effort: "" } };
+    removedCustom = new Set([...removedCustom].filter((n) => n !== name));
+    newCustomName = "";
+  }
+
+  function removeCustomProvider(name: string) {
+    removedCustom = new Set(removedCustom).add(name);
+    const next = { ...usageOverrides };
+    for (const u of overrideUsages) if (next[u] === name) next[u] = "";
+    usageOverrides = next;
+  }
+
+  function providersPayload(): LLMProvidersPayload {
+    const providers: Record<string, LLMProviderConfigPayload> = {};
+    for (const [name, p] of Object.entries(customProviders)) {
+      if (removedCustom.has(name)) continue;
+      providers[name] = {
+        enabled: true,
+        base_url: p.base_url.trim(),
+        api_key: keyPayload(p.api_key),
+        model: p.model.trim(),
+        reasoning_effort: p.reasoning_effort.trim(),
+        balance_url: "",
+      };
+    }
+    // Only manage the three override usages; leave enrich/embed bindings alone
+    // (backend merge semantics preserve absent keys).
+    const usage: Record<string, string> = {};
+    for (const u of overrideUsages) {
+      const provider = (usageOverrides[u] ?? "").trim();
+      const wasBound = (originalUsage[u] ?? "").trim() !== "";
+      if (provider === "") {
+        if (wasBound) usage[u] = "";
+        continue;
+      }
+      if (!removedCustom.has(provider)) usage[u] = provider;
+    }
+    return { providers, usage, delete_providers: Array.from(removedCustom) };
+  }
+
   type CountCard = readonly [string, number];
 
   async function loadStatus() {
@@ -171,6 +266,7 @@
     configMessage = "";
     try {
       applyConfig(await fetchLLMConfig());
+      applyProvidersResponse(await fetchLLMProviders());
     } catch (err) {
       error = err instanceof ApiError ? err.message : "Failed to load LLM config";
     } finally {
@@ -212,7 +308,8 @@
     configMessage = "";
     try {
       applyConfig(await saveLLMConfig(formPayload()));
-      configMessage = "LLM config saved";
+      applyProvidersResponse(await saveLLMProviders(providersPayload()));
+      configMessage = t("enrich.saved");
     } catch (err) {
       error = err instanceof ApiError ? err.message : "Failed to save LLM config";
     } finally {
@@ -314,8 +411,8 @@
 </script>
 
 <SettingsSection
-  title="LLM enrichment"
-  description="Generate optional titles, summaries, and keywords for local sessions."
+  title={t("enrich.title")}
+  description={t("enrich.desc")}
 >
   {#if remote}
     <p class="muted" data-testid="llm-enrichment-remote">
@@ -325,13 +422,14 @@
     <form class="config-form" onsubmit={(event) => { event.preventDefault(); saveConfig(); }}>
       <label class="toggle-row">
         <input name="enabled" type="checkbox" bind:checked={form.enabled} />
-        <span>Enable LLM enrichment</span>
+        <span>{t("enrich.enable")}</span>
       </label>
 
       <div class="field-group">
-        <h4>Chat provider</h4>
+        <h4>{t("enrich.chatProvider")}</h4>
+        <p class="block-hint">{t("enrich.chatProviderHint")}</p>
         <label>
-          <span>Provider</span>
+          <span>{t("common.provider")}</span>
           <select
             name="chat_provider"
             value={matchProvider(chatProviders, form.baseUrl)}
@@ -343,15 +441,15 @@
           </select>
         </label>
         <label>
-          <span>Base URL</span>
+          <span>{t("provider.baseUrl")}</span>
           <input name="base_url" type="url" bind:value={form.baseUrl} placeholder="https://api.deepseek.com/v1" />
         </label>
         <label>
-          <span>API key</span>
+          <span>{t("provider.apiKey")}</span>
           <input name="api_key" type="password" bind:value={form.apiKey} autocomplete="off" />
         </label>
         <label>
-          <span>Model</span>
+          <span>{t("provider.model")}</span>
           <input name="model" type="text" bind:value={form.model} placeholder="deepseek-chat" list="chat-model-options" />
           <datalist id="chat-model-options">
             {#each chatModelSuggestions as m}
@@ -360,7 +458,7 @@
           </datalist>
         </label>
         <label>
-          <span>Reasoning effort</span>
+          <span>{t("provider.reasoningEffort")}</span>
           <select name="reasoning_effort" bind:value={form.reasoningEffort}>
             {#each reasoningOptions as option}
               <option value={option}>{option || "default"}</option>
@@ -370,9 +468,10 @@
       </div>
 
       <div class="field-group">
-        <h4>Embedding provider</h4>
+        <h4>{t("enrich.embedProvider")}</h4>
+        <p class="block-hint">{t("enrich.embedProviderHint")}</p>
         <label>
-          <span>Provider</span>
+          <span>{t("common.provider")}</span>
           <select
             name="embed_provider"
             value={matchProvider(embedProviders, form.embedBaseUrl)}
@@ -384,15 +483,15 @@
           </select>
         </label>
         <label>
-          <span>Base URL</span>
+          <span>{t("provider.baseUrl")}</span>
           <input name="embed_base_url" type="url" bind:value={form.embedBaseUrl} placeholder="defaults to chat base URL" />
         </label>
         <label>
-          <span>API key</span>
+          <span>{t("provider.apiKey")}</span>
           <input name="embed_api_key" type="password" bind:value={form.embedApiKey} autocomplete="off" />
         </label>
         <label>
-          <span>Model</span>
+          <span>{t("provider.model")}</span>
           <input name="embed_model" type="text" bind:value={form.embedModel} placeholder="leave empty to disable embeddings" list="embed-model-options" />
           <datalist id="embed-model-options">
             {#each embedModelSuggestions as m}
@@ -402,27 +501,95 @@
         </label>
       </div>
 
+      <div class="field-group">
+        <h4>{t("override.title")}</h4>
+        <p class="block-hint">{t("override.desc")}</p>
+
+        <div class="usage-list" aria-label={t("override.title")}>
+          {#each overrideUsages as usage}
+            <div class="usage-row" data-testid={`usage-${usage}`}>
+              <div class="usage-meta">
+                <span class="usage-name">{t(`usage.${usage}`)} <code>{usage}</code></span>
+                <span class="usage-desc">{t(`usage.${usage}.desc`)}</span>
+              </div>
+              <select bind:value={usageOverrides[usage]} aria-label={t(`usage.${usage}`)}>
+                <option value="">{t("override.defaultChat")}</option>
+                {#each visibleCustom as [name]}
+                  <option value={name}>{name}</option>
+                {/each}
+              </select>
+            </div>
+          {/each}
+        </div>
+
+        <div class="custom-providers">
+          <div class="custom-head">
+            <strong>{t("override.custom")}</strong>
+            <span class="block-hint">{t("override.customDesc")}</span>
+          </div>
+          {#if visibleCustom.length === 0}
+            <p class="empty" data-testid="custom-empty">{t("override.empty")}</p>
+          {:else}
+            {#each visibleCustom as [name, prov]}
+              <div class="custom-card" data-testid={`custom-${name}`}>
+                <div class="custom-card-head">
+                  <strong>{name}</strong>
+                  <button type="button" class="ghost-btn" onclick={() => removeCustomProvider(name)}>{t("common.remove")}</button>
+                </div>
+                <div class="custom-grid">
+                  <label>
+                    <span>{t("common.provider")}</span>
+                    <select value={matchProvider(chatProviders, prov.base_url)} onchange={(e) => applyOverridePreset(name, e.currentTarget.value)}>
+                      {#each chatProviders as p}<option value={p.id}>{p.label}</option>{/each}
+                    </select>
+                  </label>
+                  <label><span>{t("provider.model")}</span><input type="text" bind:value={prov.model} /></label>
+                  <label><span>{t("provider.baseUrl")}</span><input type="url" bind:value={prov.base_url} /></label>
+                  <label><span>{t("provider.apiKey")}</span><input type="password" bind:value={prov.api_key} autocomplete="off" /></label>
+                  <label><span>{t("provider.reasoningEffort")}</span>
+                    <select bind:value={prov.reasoning_effort}>
+                      {#each reasoningOptions as option}<option value={option}>{option || "default"}</option>{/each}
+                    </select>
+                  </label>
+                </div>
+              </div>
+            {/each}
+          {/if}
+          <div class="add-row">
+            <input bind:value={newCustomName} placeholder={t("override.customName")} />
+            <button type="button" class="ghost-btn" onclick={addCustomProvider} disabled={!newCustomName.trim()}>+ {t("override.addCustom")}</button>
+          </div>
+        </div>
+
+        {#if usageWarnings.length}
+          <div class="warning-list" role="alert">
+            <p class="warning-head">{t("override.dangling")}</p>
+            {#each usageWarnings as w}<p>{w}</p>{/each}
+          </div>
+        {/if}
+      </div>
+
       <div class="field-group schedule-grid">
-        <h4>Scheduling</h4>
+        <h4>{t("enrich.scheduling")}</h4>
         <label>
-          <span>Min user messages</span>
+          <span>{t("enrich.minMsgs")}</span>
           <input name="min_user_messages" type="number" min="0" bind:value={form.minUserMessages} />
         </label>
         <label>
-          <span>Re-enrich message delta</span>
+          <span>{t("enrich.reenrichDelta")}</span>
           <input name="reenrich_msg_delta" type="number" min="0" bind:value={form.reenrichMsgDelta} />
         </label>
         <label>
-          <span>Idle minutes</span>
+          <span>{t("enrich.idleMinutes")}</span>
           <input name="reenrich_idle_minutes" type="number" min="0" bind:value={form.reenrichIdleMinutes} />
         </label>
         <label>
-          <span>Concurrency</span>
+          <span>{t("enrich.concurrency")}</span>
           <input name="concurrency" type="number" min="0" bind:value={form.concurrency} />
         </label>
         <label class="toggle-row periodic-toggle">
           <input name="periodic" type="checkbox" bind:checked={form.periodic} />
-          <span>Run periodically</span>
+          <span>{t("enrich.runPeriodically")}</span>
         </label>
       </div>
 
@@ -441,10 +608,10 @@
 
       <div class="actions">
         <button class="trigger-btn" type="submit" disabled={!canSaveConfig}>
-          {saving ? "Saving..." : "Save LLM config"}
+          {saving ? t("common.saving") : t("enrich.save")}
         </button>
         <button class="refresh-btn" type="button" onclick={testConfig} disabled={!canTestConfig}>
-          {testing ? "Testing..." : "Test connection"}
+          {testing ? t("enrich.testing") : t("enrich.test")}
         </button>
       </div>
     </form>
@@ -519,11 +686,11 @@
     <div class="actions">
       {#if jobRunning}
         <button class="refresh-btn" onclick={stopEnrichment} disabled={!canStop}>
-          Stop
+          {t("enrich.stop")}
         </button>
       {:else}
         <button class="trigger-btn" onclick={startEnrichment} disabled={!canTrigger}>
-          Run enrichment
+          {t("enrich.run")}
         </button>
       {/if}
       <button class="refresh-btn" onclick={loadStatus} disabled={loading}>
@@ -733,5 +900,118 @@
       grid-template-columns: 1fr;
       gap: 4px;
     }
+  }
+  .block-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin: 0 0 4px;
+  }
+  .usage-list {
+    display: grid;
+    gap: 8px;
+  }
+  .usage-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface);
+  }
+  .usage-meta {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+  }
+  .usage-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-primary);
+  }
+  .usage-name code {
+    font-size: 12px;
+    color: var(--text-muted);
+    background: var(--bg-inset);
+    padding: 1px 5px;
+    border-radius: 4px;
+  }
+  .usage-desc {
+    font-size: 12px;
+    color: var(--text-muted);
+  }
+  .usage-row select {
+    flex: 0 0 200px;
+    max-width: 200px;
+  }
+  .custom-providers {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--border-muted);
+  }
+  .custom-head {
+    display: grid;
+    gap: 2px;
+  }
+  .custom-card {
+    padding: 10px;
+    border: 1px solid var(--border-muted);
+    border-radius: var(--radius-sm);
+    background: var(--bg-inset);
+    display: grid;
+    gap: 8px;
+  }
+  .custom-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .custom-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .empty {
+    padding: 10px;
+    border: 1px dashed var(--border-default);
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 13px;
+    background: var(--bg-inset);
+  }
+  .add-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .add-row input {
+    flex: 1 1 auto;
+  }
+  .ghost-btn {
+    height: 30px;
+    padding: 0 12px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border-muted);
+    background: var(--bg-inset);
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+  .warning-list {
+    display: grid;
+    gap: 4px;
+    padding: 8px 10px;
+    border: 1px solid var(--accent-amber, #f59e0b);
+    border-radius: var(--radius-sm);
+    background: color-mix(in srgb, var(--accent-amber, #f59e0b) 12%, transparent);
+  }
+  .warning-list p { margin: 0; }
+  .warning-head { font-weight: 600; }
+  @media (max-width: 549px) {
+    .custom-grid { grid-template-columns: 1fr; }
+    .usage-row { flex-direction: column; align-items: stretch; }
+    .usage-row select { flex: 1 1 auto; max-width: none; }
   }
 </style>

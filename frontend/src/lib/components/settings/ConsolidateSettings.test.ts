@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
 
 // Slimmed consolidate card: enable toggle + interval only. Provider/usage
-// editing moved to LLMProviderSettings (see LLMProviderSettings.test.ts).
+// editing moved to LLMEnrichmentSettings (per-usage override block).
 const mocks = vi.hoisted(() => ({
   fetchConsolidateConfig: vi.fn(),
   saveConsolidateConfig: vi.fn(),

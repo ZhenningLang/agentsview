@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   startEnrichJob: vi.fn(),
   stopEnrichJob: vi.fn(),
   fetchEnrichJob: vi.fn(),
+  fetchLLMProviders: vi.fn(),
+  saveLLMProviders: vi.fn(),
 }));
 
 vi.mock("../../api/llm.js", () => ({
@@ -27,16 +29,22 @@ vi.mock("../../api/llm.js", () => ({
   startEnrichJob: mocks.startEnrichJob,
   stopEnrichJob: mocks.stopEnrichJob,
   fetchEnrichJob: mocks.fetchEnrichJob,
+  fetchLLMProviders: mocks.fetchLLMProviders,
+  saveLLMProviders: mocks.saveLLMProviders,
 }));
 
 import { sync } from "../../stores/sync.svelte.js";
 
 // @ts-ignore
 import LLMEnrichmentSettings from "./LLMEnrichmentSettings.svelte";
+import { setLocale } from "../../i18n/index.svelte";
 
 async function flush() {
-  await Promise.resolve();
-  await tick();
+  // Several cycles: the save path now awaits saveLLMConfig then saveLLMProviders.
+  for (let i = 0; i < 4; i++) {
+    await Promise.resolve();
+    await tick();
+  }
 }
 
 describe("LLMEnrichmentSettings", () => {
@@ -45,6 +53,7 @@ describe("LLMEnrichmentSettings", () => {
   let store: Map<string, string>;
 
   beforeEach(() => {
+    setLocale("en");
     sync.serverVersion = null;
     store = new Map();
     Object.defineProperty(globalThis, "localStorage", {
@@ -130,6 +139,8 @@ describe("LLMEnrichmentSettings", () => {
         api_key_preview: "5678",
       },
     });
+    mocks.fetchLLMProviders.mockReset().mockResolvedValue({ providers: {}, usage: {}, usage_warnings: [] });
+    mocks.saveLLMProviders.mockReset().mockResolvedValue({ providers: {}, usage: {}, usage_warnings: [] });
     mocks.saveLLMConfig.mockReset().mockImplementation(async (payload) => ({
       enabled: payload.enabled ?? true,
       base_url: payload.base_url ?? "https://api.deepseek.com/v1",
@@ -423,5 +434,60 @@ describe("LLMEnrichmentSettings", () => {
     expect(model.value).toBe("deepseek-chat");
     expect(embedBaseUrl.value).toBe("https://openrouter.ai/api/v1");
     expect(embedModel.value).toBe("openai/text-embedding-3-large");
+  });
+
+  // ---- Per-usage model override block (merged from the removed LLMProviderSettings) ----
+
+  it("renders the 3 per-usage override rows and the custom-provider empty state", async () => {
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+    expect(document.querySelector('[data-testid="usage-extract"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="usage-consolidate"]')).toBeTruthy();
+    expect(document.querySelector('[data-testid="usage-recall_rerank"]')).toBeTruthy();
+    // enrich/embed are NOT in the override block (configured by the provider blocks)
+    expect(document.querySelector('[data-testid="usage-enrich"]')).toBeFalsy();
+    expect(document.querySelector('[data-testid="usage-embed"]')).toBeFalsy();
+    expect(document.querySelector('[data-testid="custom-empty"]')).toBeTruthy();
+  });
+
+  it("loads existing custom providers and usage bindings from the registry", async () => {
+    mocks.fetchLLMProviders.mockResolvedValue({
+      providers: { "cheap-consolidate": { enabled: true, base_url: "https://x", model: "m", has_api_key: true, api_key_preview: "…9" } },
+      usage: { consolidate: "cheap-consolidate" },
+      usage_warnings: [],
+    });
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+    expect(document.querySelector('[data-testid="custom-cheap-consolidate"]')).toBeTruthy();
+    const sel = document.querySelector('[data-testid="usage-consolidate"] select') as HTMLSelectElement;
+    expect(sel.value).toBe("cheap-consolidate");
+  });
+
+  it("adds a custom provider and saves it with the usage binding payload", async () => {
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+    // add a custom provider
+    const nameInput = document.querySelector(".add-row input") as HTMLInputElement;
+    nameInput.value = "cheap";
+    nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    (document.querySelector(".add-row button") as HTMLButtonElement).click();
+    await flush();
+    expect(document.querySelector('[data-testid="custom-cheap"]')).toBeTruthy();
+    // bind extract → cheap
+    const sel = document.querySelector('[data-testid="usage-extract"] select') as HTMLSelectElement;
+    sel.value = "cheap";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    // save
+    const save = Array.from(document.querySelectorAll("button")).find((b) =>
+      b.textContent?.includes("Save LLM config"),
+    ) as HTMLButtonElement;
+    save.click();
+    await flush();
+    expect(mocks.saveLLMProviders).toHaveBeenCalledTimes(1);
+    const payload = mocks.saveLLMProviders.mock.calls[0][0];
+    expect(payload.providers.cheap).toBeTruthy();
+    expect(payload.usage.extract).toBe("cheap");
   });
 });
