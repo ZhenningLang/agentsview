@@ -11,8 +11,11 @@
   import RemoteSettings from "./RemoteSettings.svelte";
   import WorktreeMappingSettings from "./WorktreeMappingSettings.svelte";
   import LLMEnrichmentSettings from "./LLMEnrichmentSettings.svelte";
+  import LLMProviderSettings from "./LLMProviderSettings.svelte";
   import ConsolidateSettings from "./ConsolidateSettings.svelte";
   import MemoryBackupSettings from "./MemoryBackupSettings.svelte";
+  import LanguageSwitcher from "./LanguageSwitcher.svelte";
+  import { t } from "../../i18n/index.svelte";
 
   let authTokenInput: string = $state("");
 
@@ -32,6 +35,7 @@
 <div class="settings-page">
   <div class="settings-header">
     <h2 class="settings-title">Settings</h2>
+    <LanguageSwitcher />
   </div>
 
   {#if settings.loading}
@@ -96,6 +100,7 @@
       <GithubSettings />
       <RemoteSettings />
       <LLMEnrichmentSettings />
+      <LLMProviderSettings />
       <ConsolidateSettings />
       <MemoryBackupSettings />
 
@@ -131,6 +136,10 @@
 
   .settings-header {
     margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
   }
 
   .settings-title {
