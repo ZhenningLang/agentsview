@@ -306,7 +306,7 @@
       <button
         class="refresh-btn"
         class:querying={usage.isQuerying}
-        onclick={() => usage.fetchAll()}
+        onclick={() => usage.fetchAll({ fresh: true })}
         disabled={usage.isQuerying}
         title="Refresh"
         aria-label="Refresh usage data"

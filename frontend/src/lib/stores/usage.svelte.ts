@@ -430,8 +430,9 @@ class UsageStore {
   //
   // User-driven calls (filter/range changes, manual refresh) omit the
   // flag and keep the immediate abort-and-restart behavior.
-  async fetchAll(options: { background?: boolean } = {}) {
+  async fetchAll(options: { background?: boolean; fresh?: boolean } = {}) {
     const background = options.background ?? false;
+    const fresh = options.fresh ?? false;
     this.rollDates();
     const key = this.paramsKey();
     // inFlightParamsKey is non-null for the whole fetchAll lifecycle
@@ -449,6 +450,7 @@ class UsageStore {
     try {
       const loadedSummary = await this.fetchSummary({
         loadComparison: false,
+        fresh,
       });
       if (fetchVersion !== this.fetchAllVersion || !loadedSummary) return;
       await this.fetchTopSessions(loadedSummary.params);
@@ -472,7 +474,7 @@ class UsageStore {
   }
 
   async fetchSummary(
-    options: { loadComparison?: boolean } = {},
+    options: { loadComparison?: boolean; fresh?: boolean } = {},
   ): Promise<LoadedUsageSummary | null> {
     const loadComparison = options.loadComparison ?? true;
     const v = ++this.versions.summary;
@@ -487,7 +489,12 @@ class UsageStore {
     // error state in place until we have a definitive result.
     if (isFirstLoad) this.errors.summary = null;
     try {
+      // noCache is set per-request (only on a user "refresh"), never in
+      // baseParams/paramsKey, so it can't perturb the coalescing key.
+      // It rides along in loaded.params so top-sessions and comparison
+      // bypass the server cache for the same refresh.
       const params = this.baseParams();
+      if (options.fresh) params.noCache = true;
       const data = await callGenerated(() =>
         UsageService.getApiV1UsageSummary(params),
         signal,

@@ -930,3 +930,38 @@ describe("UsageStore background refresh coalescing", () => {
     await inFlight;
   });
 });
+
+describe("UsageStore manual-refresh cache bypass", () => {
+  beforeEach(() => {
+    installStorage();
+    localStorage.removeItem(TOGGLES_KEY);
+    localStorage.removeItem("usage-filters");
+    vi.clearAllMocks();
+  });
+
+  it("sets no_cache on a fresh (refresh-button) fetch across all panels", async () => {
+    const { usage } = await loadStore();
+    await usage.fetchAll({ fresh: true });
+
+    const summaryArgs =
+      usageServiceMocks.getApiV1UsageSummary.mock.calls.at(-1)?.[0];
+    expect(summaryArgs?.noCache).toBe(true);
+
+    const topArgs =
+      usageServiceMocks.getApiV1UsageTopSessions.mock.calls.at(-1)?.[0];
+    expect(topArgs?.noCache).toBe(true);
+
+    const comparisonArgs =
+      usageServiceMocks.getApiV1UsageComparison.mock.calls.at(-1)?.[0];
+    expect(comparisonArgs?.noCache).toBe(true);
+  });
+
+  it("does not set no_cache on a normal fetch", async () => {
+    const { usage } = await loadStore();
+    await usage.fetchAll();
+
+    const summaryArgs =
+      usageServiceMocks.getApiV1UsageSummary.mock.calls.at(-1)?.[0];
+    expect(summaryArgs?.noCache).toBeUndefined();
+  });
+});

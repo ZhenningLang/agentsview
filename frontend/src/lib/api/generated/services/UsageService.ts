@@ -29,6 +29,7 @@ export class UsageService {
     activeSince,
     includeOneShot = true,
     includeAutomated,
+    noCache,
   }: {
     /**
      * Current period total cost
@@ -90,6 +91,10 @@ export class UsageService {
      * Include automated sessions
      */
     includeAutomated?: boolean,
+    /**
+     * Bypass the server-side usage cache and recompute
+     */
+    noCache?: boolean,
   }): CancelablePromise<Comparison> {
     return __request(OpenAPI, {
       method: 'GET',
@@ -109,6 +114,7 @@ export class UsageService {
         'active_since': activeSince,
         'include_one_shot': includeOneShot,
         'include_automated': includeAutomated,
+        'no_cache': noCache,
         'current_cost': currentCost,
       },
       errors: {
@@ -146,6 +152,7 @@ export class UsageService {
     activeSince,
     includeOneShot = true,
     includeAutomated,
+    noCache,
   }: {
     /**
      * Range start date
@@ -203,6 +210,10 @@ export class UsageService {
      * Include automated sessions
      */
     includeAutomated?: boolean,
+    /**
+     * Bypass the server-side usage cache and recompute
+     */
+    noCache?: boolean,
   }): CancelablePromise<UsageSummaryResponse> {
     return __request(OpenAPI, {
       method: 'GET',
@@ -222,6 +233,7 @@ export class UsageService {
         'active_since': activeSince,
         'include_one_shot': includeOneShot,
         'include_automated': includeAutomated,
+        'no_cache': noCache,
       },
       errors: {
         400: `Bad Request`,
@@ -258,6 +270,7 @@ export class UsageService {
     activeSince,
     includeOneShot = true,
     includeAutomated,
+    noCache,
     limit = 20,
   }: {
     /**
@@ -317,6 +330,10 @@ export class UsageService {
      */
     includeAutomated?: boolean,
     /**
+     * Bypass the server-side usage cache and recompute
+     */
+    noCache?: boolean,
+    /**
      * Maximum number of sessions
      */
     limit?: number,
@@ -339,6 +356,7 @@ export class UsageService {
         'active_since': activeSince,
         'include_one_shot': includeOneShot,
         'include_automated': includeAutomated,
+        'no_cache': noCache,
         'limit': limit,
       },
       errors: {

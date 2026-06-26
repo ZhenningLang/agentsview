@@ -81,6 +81,12 @@ type Server struct {
 	// (manual or periodic). Nil only before New finishes.
 	enrichJob *enrichJob
 
+	// usage analytics caches: short-TTL, filter-keyed result caches
+	// that spare the DB from re-scanning ~100k rows on every refresh.
+	// Backend-agnostic (they wrap s.db), so SQLite and PG share them.
+	dailyUsageCache  *ttlCache[db.DailyUsageResult]
+	topSessionsCache *ttlCache[[]db.TopSessionEntry]
+
 	// basePath is a URL prefix for reverse-proxy deployments
 	// (e.g. "/agentsview"). When set, all routes are served
 	// under this prefix and a <base href> tag is injected
@@ -158,6 +164,12 @@ func New(
 		spaFS:      dist,
 		spaHandler: http.FileServerFS(dist),
 		enrichJob:  newEnrichJob(),
+		dailyUsageCache: newTTLCache[db.DailyUsageResult](
+			usageCacheTTL, usageCacheMaxEntries,
+		),
+		topSessionsCache: newTTLCache[[]db.TopSessionEntry](
+			usageCacheTTL, usageCacheMaxEntries,
+		),
 	}
 	for _, opt := range opts {
 		opt(s)

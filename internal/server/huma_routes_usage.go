@@ -32,6 +32,7 @@ type UsageFilterInput struct {
 	ActiveSince      string `query:"active_since" format:"date-time" doc:"Filter sessions active since this RFC3339 timestamp"`
 	IncludeOneShot   bool   `query:"include_one_shot" default:"true" doc:"Include one-shot sessions"`
 	IncludeAutomated bool   `query:"include_automated" doc:"Include automated sessions"`
+	NoCache          bool   `query:"no_cache" doc:"Bypass the server-side usage cache and recompute"`
 }
 
 type usageTopSessionsInput struct {
@@ -89,7 +90,7 @@ func (s *Server) humaUsageSummary(
 	if err != nil {
 		return nil, err
 	}
-	result, err := s.db.GetDailyUsage(ctx, f)
+	result, err := s.cachedDailyUsage(ctx, f, in.NoCache)
 	if err != nil {
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
@@ -121,7 +122,7 @@ func (s *Server) humaUsageComparison(
 	if err != nil {
 		return nil, err
 	}
-	comparison, err := s.computeUsageComparison(ctx, f, in.CurrentCost)
+	comparison, err := s.computeUsageComparison(ctx, f, in.CurrentCost, in.NoCache)
 	if err != nil {
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
@@ -138,6 +139,7 @@ func (s *Server) computeUsageComparison(
 	ctx context.Context,
 	f db.UsageFilter,
 	currentCost float64,
+	noCache bool,
 ) (*Comparison, error) {
 	fromT, err := time.Parse("2006-01-02", f.From)
 	if err != nil {
@@ -167,7 +169,7 @@ func (s *Server) computeUsageComparison(
 		ActiveSince:      f.ActiveSince,
 		Breakdowns:       false,
 	}
-	priorResult, err := s.db.GetDailyUsage(ctx, priorFilter)
+	priorResult, err := s.cachedDailyUsage(ctx, priorFilter, noCache)
 	if err != nil {
 		return nil, err
 	}
@@ -198,7 +200,7 @@ func (s *Server) humaUsageTopSessions(
 	if limit > 100 {
 		limit = 100
 	}
-	entries, err := s.db.GetTopSessionsByCost(ctx, f, limit)
+	entries, err := s.cachedTopSessions(ctx, f, limit, in.NoCache)
 	if err != nil {
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled
