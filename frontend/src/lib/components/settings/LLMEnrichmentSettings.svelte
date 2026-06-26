@@ -110,7 +110,11 @@
     embedKeyPreview: "",
   });
 
-  type Provider = { uid: number; name: string; vendor: string; base_url: string; api_key: string };
+  // keySource records where this provider's real key lives server-side, so a
+  // masked (unchanged) key survives a rename or a first-time save of a legacy
+  // default: "" = new/freshly-typed, "@llm"/"@llm.embed" = legacy slots, any
+  // other value = the registry name the key is currently stored under.
+  type Provider = { uid: number; name: string; vendor: string; base_url: string; api_key: string; keySource: string };
   type Binding = { providerUid: number | null; model: string };
   let providers = $state<Provider[]>([]);
   let bindings = $state<Record<UsageKey, Binding>>({
@@ -180,7 +184,7 @@
 
   // Seed a provider from a legacy [llm]/[llm.embed] connection if no existing
   // provider already covers that base URL. Returns the provider uid to bind to.
-  function seedProvider(list: Provider[], baseUrl: string, hasKey: boolean, preview: string): number | null {
+  function seedProvider(list: Provider[], baseUrl: string, hasKey: boolean, preview: string, keySource: string): number | null {
     const url = (baseUrl ?? "").trim();
     if (!url) return null;
     const norm = url.replace(/\/+$/, "");
@@ -194,7 +198,7 @@
       if (!taken.has(candidate)) { name = candidate; break; }
     }
     const uid = uidCounter++;
-    list.push({ uid, name, vendor, base_url: url, api_key: maskedValue(hasKey, preview) });
+    list.push({ uid, name, vendor, base_url: url, api_key: maskedValue(hasKey, preview), keySource });
     return uid;
   }
 
@@ -209,12 +213,13 @@
         vendor: matchVendor(p.base_url ?? ""),
         base_url: p.base_url ?? "",
         api_key: maskedValue(p.has_api_key, p.api_key_preview),
+        keySource: name, // registry: the key lives under this name
       });
     }
     loadedRegistryNames = regNames;
     // Migrate legacy defaults into the unified list (idempotent by base URL).
-    const chatSeed = seedProvider(list, cfg.base_url ?? "", cfg.has_api_key, cfg.api_key_preview ?? "");
-    const embedSeed = seedProvider(list, cfg.embed?.base_url ?? "", cfg.embed?.has_api_key ?? false, cfg.embed?.api_key_preview ?? "");
+    const chatSeed = seedProvider(list, cfg.base_url ?? "", cfg.has_api_key, cfg.api_key_preview ?? "", "@llm");
+    const embedSeed = seedProvider(list, cfg.embed?.base_url ?? "", cfg.embed?.has_api_key ?? false, cfg.embed?.api_key_preview ?? "", "@llm.embed");
     providers = list;
 
     const usage = resp.usage ?? {};
@@ -272,7 +277,7 @@
   // --- Provider editing ---
   function addProvider() {
     const vendor = "deepseek";
-    providers = [...providers, { uid: uidCounter++, name: autoName(vendor), vendor, base_url: vendorById(vendor).baseUrl, api_key: "" }];
+    providers = [...providers, { uid: uidCounter++, name: autoName(vendor), vendor, base_url: vendorById(vendor).baseUrl, api_key: "", keySource: "" }];
   }
   function removeProvider(uid: number) {
     const remaining = providers.filter((p) => p.uid !== uid);
@@ -302,14 +307,19 @@
       const name = p.name.trim();
       if (!name) continue;
       nameByUid.set(p.uid, name);
-      provs[name] = {
+      const api_key = keyPayload(p.api_key);
+      const patch: LLMProviderConfigPayload = {
         enabled: true,
         base_url: p.base_url.trim(),
-        api_key: keyPayload(p.api_key),
+        api_key,
         model: "",
         reasoning_effort: "",
         balance_url: "",
       };
+      // When the key is masked (unchanged), tell the backend where the real key
+      // lives so a rename or first-time legacy save doesn't drop it.
+      if (api_key === keySentinel && p.keySource) patch.key_from = p.keySource;
+      provs[name] = patch;
     }
     const usage: Record<string, string> = {};
     const usage_model: Record<string, string> = {};

@@ -128,6 +128,9 @@ export interface LLMProviderConfigPayload {
   model?: string;
   reasoning_effort?: string;
   balance_url?: string;
+  // Inherit the key from another source when api_key is masked: "@llm" /
+  // "@llm.embed" for legacy defaults, or a registry name (the old name on rename).
+  key_from?: string;
 }
 
 export interface LLMProvidersPayload {
