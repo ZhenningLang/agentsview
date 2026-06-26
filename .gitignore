@@ -71,3 +71,4 @@ graphify-out/
 
 # accidental self-referential symlink guard
 frontend/node_modules
+memory_telemetry.jsonl
