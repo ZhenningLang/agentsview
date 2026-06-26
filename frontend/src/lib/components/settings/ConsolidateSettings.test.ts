@@ -87,6 +87,32 @@ describe("ConsolidateSettings (slimmed)", () => {
     expect(mocks.saveConsolidateConfig).toHaveBeenCalledWith({ interval: "6h" });
   });
 
+  it("blocks save on an invalid interval and shows an inline error", async () => {
+    component = mount(ConsolidateSettings, { target: host });
+    await flush();
+    const interval = host.querySelector('input[type="text"]') as HTMLInputElement;
+    const save = host.querySelector(".save-btn") as HTMLButtonElement;
+
+    for (const bad of ["abc", "0s", "5 minutes", ""]) {
+      interval.value = bad;
+      interval.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+      expect(save.disabled, `"${bad}" should disable save`).toBe(true);
+      expect(host.querySelector('[data-testid="interval-invalid"]')).toBeTruthy();
+    }
+
+    save.click();
+    await flush();
+    expect(mocks.saveConsolidateConfig).not.toHaveBeenCalled();
+
+    // A valid duration re-enables save and clears the error.
+    interval.value = "90m";
+    interval.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    expect(save.disabled).toBe(false);
+    expect(host.querySelector('[data-testid="interval-invalid"]')).toBeFalsy();
+  });
+
   it("does NOT render provider/usage editing (moved to LLM config)", async () => {
     component = mount(ConsolidateSettings, { target: host });
     await flush();

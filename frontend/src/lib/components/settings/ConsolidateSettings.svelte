@@ -23,6 +23,26 @@
     return value.trim().replace(/^(\d+)h0m0s$/, "$1h");
   }
 
+  // Mirror the backend (time.ParseDuration + must be > 0): a sequence of
+  // <number><unit> tokens whose total is positive. Returns total ms, or null
+  // when malformed, so the UI can validate before hitting the server.
+  const DURATION_UNIT_MS: Record<string, number> = {
+    ns: 1e-6, us: 1e-3, "µs": 1e-3, ms: 1, s: 1e3, m: 6e4, h: 3.6e6,
+  };
+  function parseGoDuration(value: string): number | null {
+    const str = value.trim();
+    if (!/^(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(str)) return null;
+    let total = 0;
+    for (const match of str.matchAll(/(\d+(?:\.\d+)?)(ns|us|µs|ms|s|m|h)/g)) {
+      total += parseFloat(match[1]!) * (DURATION_UNIT_MS[match[2]!] ?? 0);
+    }
+    return total;
+  }
+  const intervalValid = $derived.by(() => {
+    const ms = parseGoDuration(form.interval);
+    return ms != null && ms > 0;
+  });
+
   async function load() {
     if (remote) return;
     loading = true;
@@ -39,7 +59,7 @@
   }
 
   async function saveInterval() {
-    if (!canEdit || saving) return;
+    if (!canEdit || saving || !intervalValid) return;
     saving = true;
     error = "";
     message = "";
@@ -91,12 +111,22 @@
       </button>
       <label>
         <span>{t("consolidate.interval")}</span>
-        <input type="text" bind:value={form.interval} placeholder="24h" />
+        <input
+          type="text"
+          bind:value={form.interval}
+          placeholder="24h"
+          aria-invalid={!intervalValid}
+          class:invalid={!intervalValid}
+        />
       </label>
-      <button type="button" class="save-btn" onclick={saveInterval} disabled={!canEdit || saving}>
+      <button type="button" class="save-btn" onclick={saveInterval} disabled={!canEdit || saving || !intervalValid}>
         {saving ? t("common.saving") : t("common.save")}
       </button>
     </div>
+
+    {#if !intervalValid}
+      <p class="error" role="alert" data-testid="interval-invalid">{t("consolidate.intervalInvalid")}</p>
+    {/if}
 
     <p class="hint">{t("consolidate.modelHint")}</p>
 
@@ -129,6 +159,9 @@
     border-radius: var(--radius-sm);
     background: var(--bg-surface);
     color: var(--text-primary);
+  }
+  input.invalid {
+    border-color: var(--accent-red, #ef4444);
   }
   .save-btn,
   .toggle-btn {
