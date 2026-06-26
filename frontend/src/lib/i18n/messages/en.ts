@@ -34,25 +34,20 @@ export const en: Record<string, string> = {
   "enrich.stop": "Stop",
   "enrich.refresh": "Refresh status",
 
-  // Providers (model sources · unified list)
+  // Providers (model sources · vendor+key, multiple instances)
   "providers.title": "Providers · Model sources",
-  "providers.desc": "Configure every model source (URL / key / model) here. Usage assignment below picks one per usage.",
-  "providers.defaultChat": "Default chat model",
-  "providers.defaultChatHint": "Fallback for chat usages: used by enrich / extract / consolidate / rerank when not assigned a specific provider.",
-  "providers.defaultEmbed": "Default embedding model",
-  "providers.defaultEmbedHint": "Vector model: used by semantic search / recall when not assigned. Leave empty to disable embeddings.",
-  "providers.badgeChat": "chat",
-  "providers.badgeEmbed": "embed",
-  "providers.builtin": "built-in",
+  "providers.desc": "Each = name (editable) + vendor + API key. Multiple per vendor allowed (different keys/accounts). Models are set per usage below.",
+  "providers.name": "Name",
+  "providers.vendor": "Vendor",
+  "providers.customVendor": "Custom",
   "providers.add": "Add provider",
-  "providers.addName": "provider name (e.g. cheap-consolidate)",
-  "providers.noCustom": "No extra providers yet. Add one when a usage needs a different model.",
+  "providers.empty": "No providers yet. Click “Add provider” to configure one (vendor + key).",
 
-  // Usage assignment (pick one provider per usage)
+  // Usage assignment (pick a provider + model per usage)
   "assign.title": "Usage assignment",
-  "assign.desc": "Which model each usage uses. Defaults to the matching built-in; pick one of the Providers above to differentiate.",
-  "assign.defaultChat": "Default chat model",
-  "assign.defaultEmbed": "Default embedding model",
+  "assign.desc": "For each usage: pick a configured provider + the model it runs.",
+  "assign.use": "Use",
+  "assign.noProvider": "(configure a provider above first)",
   "assign.dangling": "These usages are bound to a missing provider and fell back to default:",
 
   // language switch

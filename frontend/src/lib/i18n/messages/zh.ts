@@ -34,25 +34,20 @@ export const zh: Record<string, string> = {
   "enrich.stop": "停止",
   "enrich.refresh": "刷新状态",
 
-  // Providers(模型来源 · 统一列表)
+  // Providers(模型来源 · 厂商+Key,可多实例)
   "providers.title": "Providers · 模型来源",
-  "providers.desc": "在这里配置所有模型来源(地址 / 密钥 / 模型)。下方「用途分配」为每个用途选一个。",
-  "providers.defaultChat": "默认对话模型",
-  "providers.defaultChatHint": "对话类用途的兜底:增强 / 抽取 / 巩固 / 重排未单独指定时用它。",
-  "providers.defaultEmbed": "默认嵌入模型",
-  "providers.defaultEmbedHint": "向量模型:语义检索 / 召回未单独指定时用它。留空则不启用向量。",
-  "providers.badgeChat": "对话",
-  "providers.badgeEmbed": "嵌入",
-  "providers.builtin": "内置",
-  "providers.add": "添加 Provider",
-  "providers.addName": "provider 名称(如 cheap-consolidate)",
-  "providers.noCustom": "暂无额外 provider。需要为某个用途用不同模型时,在这里添加。",
+  "providers.desc": "每个 = 名字(可改) + 厂商 + API Key。同一厂商可建多个(不同 Key/账号)。模型在下方「用途分配」里填。",
+  "providers.name": "名称",
+  "providers.vendor": "厂商",
+  "providers.customVendor": "自定义",
+  "providers.add": "添加 provider",
+  "providers.empty": "还没有 provider。点「添加 provider」配一个(厂商 + Key)。",
 
-  // 用途分配(每个用途选一个 provider)
+  // 用途分配(每个用途:选 provider + 填模型)
   "assign.title": "用途分配",
-  "assign.desc": "每个用途使用哪个模型。默认用对应的内置模型;需要差异化时,从上面的 Provider 里选一个。",
-  "assign.defaultChat": "默认对话模型",
-  "assign.defaultEmbed": "默认嵌入模型",
+  "assign.desc": "每个用途:选一个已配好的 provider + 填该用途用的模型。",
+  "assign.use": "用",
+  "assign.noProvider": "(先在上面配一个 provider)",
   "assign.dangling": "下列用途绑定了不存在的 provider,已回退到默认:",
 
   // 语言切换

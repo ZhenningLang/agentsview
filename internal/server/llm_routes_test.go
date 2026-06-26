@@ -396,6 +396,52 @@ func TestLLMProvidersPatchDeletesProvidersAndClearsUsage(t *testing.T) {
 	assert.NotContains(t, usage, "consolidate")
 }
 
+// TestLLMProvidersPatchRoundTripsUsageModel locks the new model: a provider
+// holds only the connection, and the per-usage model is sent via usage_model
+// and reflected back on GET.
+func TestLLMProvidersPatchRoundTripsUsageModel(t *testing.T) {
+	te := setup(t, withLLMConfig(func(c *config.LLMConfig) {
+		c.Enabled = true
+		c.BaseURL = "https://legacy/v1"
+		c.APIKey = "legacy-key"
+		c.Model = "legacy-model"
+	}))
+
+	w := requestJSON(te, http.MethodPatch, "/api/v1/config/llm/providers", `{
+		"providers": {"deepseek-1": {"enabled": true, "base_url": "https://api.deepseek.com", "api_key": "ds-key"}},
+		"usage": {"extract": "deepseek-1"},
+		"usage_model": {"extract": "deepseek-reasoner"}
+	}`)
+	assertStatus(t, w, http.StatusOK)
+	resp := decode[map[string]any](t, w)
+	assert.Equal(t, "deepseek-1", resp["usage"].(map[string]any)["extract"])
+	assert.Equal(t, "deepseek-reasoner", resp["usage_model"].(map[string]any)["extract"])
+
+	// GET reflects it back.
+	g := requestJSON(te, http.MethodGet, "/api/v1/config/llm/providers", "")
+	assertStatus(t, g, http.StatusOK)
+	got := decode[map[string]any](t, g)
+	assert.Equal(t, "deepseek-reasoner", got["usage_model"].(map[string]any)["extract"])
+}
+
+// TestLLMProvidersPatchPrunesUsageModelWhenUnbound locks that clearing a usage
+// binding also drops its dangling model.
+func TestLLMProvidersPatchPrunesUsageModelWhenUnbound(t *testing.T) {
+	te := setup(t, withLLMConfig(func(c *config.LLMConfig) {
+		c.Providers = map[string]config.LLMConfig{"deepseek-1": {BaseURL: "https://api.deepseek.com", APIKey: "ds-key"}}
+		c.Usage = map[string]string{"extract": "deepseek-1"}
+		c.UsageModel = map[string]string{"extract": "deepseek-reasoner"}
+	}))
+
+	// Unbind extract (provider ""): its model must be pruned.
+	w := requestJSON(te, http.MethodPatch, "/api/v1/config/llm/providers", `{"usage": {"extract": ""}}`)
+	assertStatus(t, w, http.StatusOK)
+	resp := decode[map[string]any](t, w)
+	if um, ok := resp["usage_model"].(map[string]any); ok {
+		assert.NotContains(t, um, "extract")
+	}
+}
+
 func TestConsolidateConfigGetAndPatchRoundTrip(t *testing.T) {
 	te := setup(t)
 
