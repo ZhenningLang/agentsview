@@ -82,6 +82,7 @@ export const zh: Record<string, string> = {
   "consolidate.title": "记忆巩固",
   "consolidate.desc": "后台定时把暂存候选巩固进长期记忆。默认关闭,开启后按间隔运行。",
   "consolidate.interval": "运行间隔",
+  "consolidate.intervalInvalid": "请填写有效的时间间隔(如 1h、30m、24h),需大于 0。",
   "consolidate.modelHint": "用哪个模型?在上方「LLM 配置」里设置 consolidate 的绑定。",
   "consolidate.stateSaved": "巩固开关已保存",
   "consolidate.intervalSaved": "巩固间隔已保存",

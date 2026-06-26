@@ -82,6 +82,7 @@ export const en: Record<string, string> = {
   "consolidate.title": "Memory Consolidation",
   "consolidate.desc": "Background worker that periodically consolidates staged candidates into long-term memory. Off by default; runs on the interval once enabled.",
   "consolidate.interval": "Interval",
+  "consolidate.intervalInvalid": "Enter a valid duration (e.g. 1h, 30m, 24h), greater than 0.",
   "consolidate.modelHint": "Which model? Set the consolidate binding in “LLM Configuration” above.",
   "consolidate.stateSaved": "Consolidate worker state saved",
   "consolidate.intervalSaved": "Consolidate interval saved",
