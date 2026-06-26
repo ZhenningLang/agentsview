@@ -104,6 +104,7 @@ type llmConfigPatch struct {
 type llmProvidersPatch struct {
 	Providers       map[string]llmProviderConfigPatch `json:"providers,omitempty"`
 	Usage           map[string]string                 `json:"usage,omitempty"`
+	UsageModel      map[string]string                 `json:"usage_model,omitempty"`
 	DeleteProviders []string                          `json:"delete_providers,omitempty"`
 }
 
@@ -144,6 +145,7 @@ type llmConfigResponse struct {
 	Embed               llmEmbedConfigResponse               `json:"embed"`
 	Providers           map[string]llmProviderConfigResponse `json:"providers,omitempty"`
 	Usage               map[string]string                    `json:"usage,omitempty"`
+	UsageModel          map[string]string                    `json:"usage_model,omitempty"`
 	UsageWarnings       []string                             `json:"usage_warnings,omitempty"`
 }
 
@@ -315,7 +317,8 @@ func (s *Server) humaPatchLLMProviders(
 	s.mu.Lock()
 	providers := applyLLMProvidersPatch(s.cfg.LLM.Providers, in.Body.Providers, in.Body.DeleteProviders)
 	usage := applyLLMUsagePatch(s.cfg.LLM.Usage, in.Body.Usage, in.Body.DeleteProviders)
-	err := s.cfg.SaveLLMProviders(providers, usage)
+	usageModel := applyLLMUsageModelPatch(s.cfg.LLM.UsageModel, in.Body.UsageModel, usage)
+	err := s.cfg.SaveLLMProviders(providers, usage, usageModel)
 	llm := s.cfg.LLM
 	s.mu.Unlock()
 	if err != nil {
@@ -501,6 +504,41 @@ func applyLLMUsagePatch(current, patch map[string]string, deleteProviders []stri
 	return out
 }
 
+// applyLLMUsageModelPatch merges per-usage model overrides and prunes any model
+// whose usage is no longer bound to a provider, so a model never outlives its
+// binding. boundUsage is the usage->provider map after the usage patch applied.
+func applyLLMUsageModelPatch(current, patch, boundUsage map[string]string) map[string]string {
+	out := make(map[string]string, len(current)+len(patch))
+	for usage, model := range current {
+		usage = strings.TrimSpace(usage)
+		model = strings.TrimSpace(model)
+		if usage != "" && model != "" {
+			out[usage] = model
+		}
+	}
+	for usage, model := range patch {
+		usage = strings.TrimSpace(usage)
+		model = strings.TrimSpace(model)
+		if usage == "" {
+			continue
+		}
+		if model == "" {
+			delete(out, usage)
+			continue
+		}
+		out[usage] = model
+	}
+	for usage := range out {
+		if _, ok := boundUsage[usage]; !ok {
+			delete(out, usage)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 func shouldReplaceLLMAPIKey(value string) bool {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -556,6 +594,16 @@ func llmConfigResponseFromConfig(llm config.LLMConfig) llmConfigResponse {
 			provider = strings.TrimSpace(provider)
 			if usage != "" && provider != "" {
 				resp.Usage[usage] = provider
+			}
+		}
+	}
+	if len(llm.UsageModel) > 0 {
+		resp.UsageModel = make(map[string]string, len(llm.UsageModel))
+		for usage, model := range llm.UsageModel {
+			usage = strings.TrimSpace(usage)
+			model = strings.TrimSpace(model)
+			if usage != "" && model != "" {
+				resp.UsageModel[usage] = model
 			}
 		}
 	}

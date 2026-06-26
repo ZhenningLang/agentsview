@@ -1088,6 +1088,89 @@ enrich = "deepseek-chat"
 	assert.Equal(t, "env-model", unbound.Model)
 }
 
+// TestLLMConfig_ResolveUsageModelOverride locks the new model: a provider
+// supplies only the connection (base_url/api_key); the per-usage model comes
+// from [llm.usage_model] and overrides the provider/base model.
+func TestLLMConfig_ResolveUsageModelOverride(t *testing.T) {
+	dir := setupTestEnv(t)
+	data := []byte(`
+[llm]
+enabled = true
+base_url = "https://legacy.example.test/v1"
+api_key = "legacy-key"
+model = "legacy-model"
+reasoning_effort = "medium"
+
+[llm.embed]
+base_url = "https://legacy.example.test/v1"
+api_key = "legacy-key"
+model = "legacy-embed-model"
+
+[llm.providers.deepseek-1]
+base_url = "https://api.deepseek.com"
+api_key = "ds-key"
+
+[llm.providers.openrouter-1]
+base_url = "https://openrouter.ai/api/v1"
+api_key = "or-key"
+
+[llm.usage]
+enrich = "deepseek-1"
+extract = "deepseek-1"
+embed = "openrouter-1"
+
+[llm.usage_model]
+enrich = "deepseek-chat"
+extract = "deepseek-reasoner"
+embed = "openai/text-embedding-3-large"
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), data, 0o600))
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+
+	enrich := cfg.ResolveUsageLLM("enrich")
+	assert.Equal(t, "https://api.deepseek.com", enrich.BaseURL)
+	assert.Equal(t, "ds-key", enrich.APIKey)
+	assert.Equal(t, "deepseek-chat", enrich.Model)
+	// reasoning_effort is preserved from the [llm] base (not surfaced per-provider).
+	assert.Equal(t, "medium", enrich.ReasoningEffort)
+
+	// Same provider/key, different model on a different usage.
+	extract := cfg.ResolveUsageLLM("extract")
+	assert.Equal(t, "ds-key", extract.APIKey)
+	assert.Equal(t, "deepseek-reasoner", extract.Model)
+
+	embed := cfg.ResolveUsageLLM("embed")
+	assert.Equal(t, "https://openrouter.ai/api/v1", embed.Embed.BaseURL)
+	assert.Equal(t, "or-key", embed.Embed.APIKey)
+	assert.Equal(t, "openai/text-embedding-3-large", embed.Embed.Model)
+}
+
+// TestLLMConfig_SaveLLMProvidersRoundTripsUsageModel locks that usage_model
+// persists through SaveLLMProviders and survives reload.
+func TestLLMConfig_SaveLLMProvidersRoundTripsUsageModel(t *testing.T) {
+	dir := setupTestEnv(t)
+	writeConfig(t, dir, map[string]any{
+		"llm": map[string]any{"enabled": true, "base_url": "https://x/v1", "api_key": "k", "model": "m"},
+	})
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+
+	require.NoError(t, cfg.SaveLLMProviders(
+		map[string]LLMConfig{"deepseek-1": {Enabled: true, BaseURL: "https://api.deepseek.com", APIKey: "ds-key"}},
+		map[string]string{"extract": "deepseek-1"},
+		map[string]string{"extract": "deepseek-reasoner"},
+	))
+
+	reloaded, err := LoadMinimal()
+	require.NoError(t, err)
+	assert.Equal(t, "deepseek-reasoner", reloaded.LLM.UsageModel["extract"])
+	got := reloaded.ResolveUsageLLM("extract")
+	assert.Equal(t, "ds-key", got.APIKey)
+	assert.Equal(t, "deepseek-reasoner", got.Model)
+}
+
 func TestLLMConfig_DanglingUsageBindings(t *testing.T) {
 	cfg := Config{LLM: LLMConfig{
 		Enabled: true,

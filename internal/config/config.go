@@ -100,7 +100,11 @@ type LLMConfig struct {
 	Embed               LLMEmbedConfig       `toml:"embed" json:"embed,omitempty"`
 	Providers           map[string]LLMConfig `toml:"providers" json:"providers,omitempty"`
 	Usage               map[string]string    `toml:"usage" json:"usage,omitempty"`
-	llmEnvEnabledSet    bool
+	// UsageModel holds the per-usage model override. Providers carry only the
+	// connection (base_url/api_key); the model a usage runs is stored here so a
+	// single provider/key can serve different models across usages.
+	UsageModel       map[string]string `toml:"usage_model" json:"usage_model,omitempty"`
+	llmEnvEnabledSet bool
 }
 
 // AutomatedConfig holds user-supplied additions to the
@@ -380,16 +384,37 @@ func (c *Config) resolveLegacyConsolidateLLM() LLMConfig {
 func (c *Config) ResolveUsageLLM(usage string) LLMConfig {
 	usage = strings.TrimSpace(usage)
 	if usage == "consolidate" {
-		return c.ConsolidateLLM()
+		base := c.ConsolidateLLM()
+		if m := c.usageModelOverride(usage); m != "" {
+			base.Model = m
+		}
+		return base
 	}
 	base := c.ResolveLLM()
 	if provider, ok := c.resolveBoundProvider(usage); ok {
 		base = overlayProvider(base, provider)
 	}
 	if usage == "embed" {
-		return c.resolveUsageEmbed(base, usage)
+		base = c.resolveUsageEmbed(base, usage)
+		if m := c.usageModelOverride(usage); m != "" {
+			base.Embed.Model = m
+		}
+		return base
+	}
+	if m := c.usageModelOverride(usage); m != "" {
+		base.Model = m
 	}
 	return base
+}
+
+// usageModelOverride returns the per-usage model override, or "" when unset.
+// This is the model a usage runs; the bound provider supplies only the
+// connection (base_url/api_key).
+func (c *Config) usageModelOverride(usage string) string {
+	if c == nil || len(c.LLM.UsageModel) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(c.LLM.UsageModel[strings.TrimSpace(usage)])
 }
 
 // DanglingLLMUsageBindings returns usage names that point to missing providers.
@@ -1253,6 +1278,9 @@ func mergeLLMConfig(c *Config, file LLMConfig, meta toml.MetaData) {
 	if len(file.Usage) > 0 {
 		c.LLM.Usage = normalizeLLMUsage(file.Usage)
 	}
+	if len(file.UsageModel) > 0 {
+		c.LLM.UsageModel = normalizeLLMUsage(file.UsageModel)
+	}
 }
 
 func normalizeLLMProviders(in map[string]LLMConfig) map[string]LLMConfig {
@@ -1270,6 +1298,7 @@ func normalizeLLMProviders(in map[string]LLMConfig) map[string]LLMConfig {
 		provider.Embed = LLMEmbedConfig{}
 		provider.Providers = nil
 		provider.Usage = nil
+		provider.UsageModel = nil
 		out[name] = provider
 	}
 	if len(out) == 0 {
@@ -2060,6 +2089,9 @@ func (c *Config) SaveLLMConfig(llm LLMConfig) error {
 	if llm.Usage == nil {
 		llm.Usage = c.LLM.Usage
 	}
+	if llm.UsageModel == nil {
+		llm.UsageModel = c.LLM.UsageModel
+	}
 	existing["llm"] = llm
 	if err := c.writeConfigMap(existing); err != nil {
 		return err
@@ -2071,10 +2103,23 @@ func (c *Config) SaveLLMConfig(llm LLMConfig) error {
 // SaveLLMProviders persists named provider and usage bindings without touching
 // legacy LLM fields. Existing provider API keys survive masked or empty patch
 // values so the config API can round-trip redacted responses safely.
-func (c *Config) SaveLLMProviders(providers map[string]LLMConfig, usage map[string]string) error {
+func (c *Config) SaveLLMProviders(providers map[string]LLMConfig, usage, usageModel map[string]string) error {
 	llm := c.LLM
+	// SaveLLMProviders is the authoritative writer for these three maps, so use
+	// non-nil empties when cleared: SaveLLMConfig's nil-guard would otherwise
+	// restore the stale values (a nil map reads as "field not specified").
 	llm.Providers = normalizeLLMProviders(providers)
+	if llm.Providers == nil {
+		llm.Providers = map[string]LLMConfig{}
+	}
 	llm.Usage = normalizeLLMUsage(usage)
+	if llm.Usage == nil {
+		llm.Usage = map[string]string{}
+	}
+	llm.UsageModel = normalizeLLMUsage(usageModel)
+	if llm.UsageModel == nil {
+		llm.UsageModel = map[string]string{}
+	}
 	return c.SaveLLMConfig(llm)
 }
 

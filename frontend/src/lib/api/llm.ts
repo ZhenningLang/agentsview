@@ -95,6 +95,7 @@ export interface LLMProviderConfigResponse {
 export interface LLMProvidersResponse extends LLMConfigResponse {
   providers?: Record<string, LLMProviderConfigResponse>;
   usage?: Record<string, string>;
+  usage_model?: Record<string, string>;
   usage_warnings?: string[];
 }
 
@@ -132,6 +133,7 @@ export interface LLMProviderConfigPayload {
 export interface LLMProvidersPayload {
   providers?: Record<string, LLMProviderConfigPayload>;
   usage?: Record<string, string>;
+  usage_model?: Record<string, string>;
   delete_providers?: string[];
 }
 
