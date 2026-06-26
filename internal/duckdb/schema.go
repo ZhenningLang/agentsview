@@ -579,6 +579,8 @@ var mirrorTables = []tableSpec{
 			body TEXT NOT NULL DEFAULT '',
 			body_tokens INTEGER NOT NULL DEFAULT 0,
 			source_mtime BIGINT NOT NULL DEFAULT 0,
+			llm_embedding BLOB,
+			llm_embedding_dim INTEGER NOT NULL DEFAULT 0,
 			synced_at TEXT NOT NULL DEFAULT ''
 		)`,
 		columns: []columnSpec{
@@ -593,6 +595,8 @@ var mirrorTables = []tableSpec{
 			{"body", "body TEXT NOT NULL DEFAULT ''"},
 			{"body_tokens", "body_tokens INTEGER NOT NULL DEFAULT 0"},
 			{"source_mtime", "source_mtime BIGINT NOT NULL DEFAULT 0"},
+			{"llm_embedding", "llm_embedding BLOB"},
+			{"llm_embedding_dim", "llm_embedding_dim INTEGER NOT NULL DEFAULT 0"},
 			{"synced_at", "synced_at TEXT NOT NULL DEFAULT ''"},
 		},
 		indexes: []string{

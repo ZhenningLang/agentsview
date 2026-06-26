@@ -33,6 +33,7 @@ type CCSyncer struct {
 	root      string
 	tokenizer skills.Tokenizer
 	writer    Writer
+	embedder  Embedder
 	now       func() time.Time
 }
 
@@ -51,6 +52,13 @@ func NewCCSyncer(root string, w Writer, tk skills.Tokenizer) *CCSyncer {
 	}
 }
 
+// NewCCSyncerWithEmbedder mirrors NewSyncerWithEmbedder for CC-native rows.
+func NewCCSyncerWithEmbedder(root string, w Writer, tk skills.Tokenizer, e Embedder) *CCSyncer {
+	s := NewCCSyncer(root, w, tk)
+	s.embedder = e
+	return s
+}
+
 // Sync scans <root>/*/memory/*.md, parses each note, and full-replaces the
 // CC-native rows. It is fail-open on a missing/unreadable root (no rows, no
 // error, matching the skills/vault syncers) and fail-soft per file: one
@@ -64,6 +72,7 @@ func (s *CCSyncer) Sync(ctx context.Context) error {
 		return s.writer.ReplaceMemoriesBySource(ctx, db.SourceCCNative, nil)
 	}
 	syncedAt := s.now().UTC().Format("2006-01-02T15:04:05.000Z")
+	previous := loadPreviousEmbeddings(ctx, s.writer, db.SourceCCNative, s.embedder)
 
 	memories := make([]db.Memory, 0, 64)
 	for _, proj := range projects {
@@ -97,6 +106,9 @@ func (s *CCSyncer) Sync(ctx context.Context) error {
 				continue
 			}
 			m.SyncedAt = syncedAt
+			if err := populateMemoryEmbedding(ctx, s.embedder, &m, previous); err != nil {
+				return err
+			}
 			memories = append(memories, m)
 		}
 	}

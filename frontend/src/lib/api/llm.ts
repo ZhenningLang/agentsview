@@ -82,6 +82,22 @@ export interface LLMConfigResponse {
   embed: LLMEmbedConfigResponse;
 }
 
+export interface LLMProviderConfigResponse {
+  enabled: boolean;
+  base_url?: string;
+  model?: string;
+  reasoning_effort?: string;
+  balance_url?: string;
+  has_api_key: boolean;
+  api_key_preview?: string;
+}
+
+export interface LLMProvidersResponse extends LLMConfigResponse {
+  providers?: Record<string, LLMProviderConfigResponse>;
+  usage?: Record<string, string>;
+  usage_warnings?: string[];
+}
+
 export interface LLMEmbedConfigPayload {
   base_url?: string;
   api_key?: string;
@@ -102,6 +118,30 @@ export interface LLMConfigPayload {
   periodic?: boolean;
   balance_url?: string;
   embed?: LLMEmbedConfigPayload;
+}
+
+export interface LLMProviderConfigPayload {
+  enabled?: boolean;
+  base_url?: string;
+  api_key?: string;
+  model?: string;
+  reasoning_effort?: string;
+  balance_url?: string;
+}
+
+export interface LLMProvidersPayload {
+  providers?: Record<string, LLMProviderConfigPayload>;
+  usage?: Record<string, string>;
+  delete_providers?: string[];
+}
+
+export interface ConsolidateConfigResponse {
+  enabled: boolean;
+  interval: string;
+}
+
+export interface ConsolidateConfigPayload {
+  interval?: string;
 }
 
 export interface LLMTestChannelResult {
@@ -132,6 +172,26 @@ async function postJSON<T>(
     `${getBase()}${path}`,
     authHeaders({
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body ?? {}),
+      signal,
+    }),
+  );
+  if (!res.ok) {
+    throw new ApiError(res.status, await responseErrorMessage(res));
+  }
+  return (await res.json()) as T;
+}
+
+async function patchJSON<T>(
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+): Promise<T> {
+  const res = await fetch(
+    `${getBase()}${path}`,
+    authHeaders({
+      method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body ?? {}),
       signal,
@@ -181,6 +241,30 @@ export function saveLLMConfig(
   signal?: AbortSignal,
 ): Promise<LLMConfigResponse> {
   return postJSON<LLMConfigResponse>("/config/llm", payload, signal);
+}
+
+export function fetchLLMProviders(signal?: AbortSignal): Promise<LLMProvidersResponse> {
+  return getJSON<LLMProvidersResponse>("/config/llm/providers", signal);
+}
+
+export function saveLLMProviders(
+  payload: LLMProvidersPayload,
+  signal?: AbortSignal,
+): Promise<LLMProvidersResponse> {
+  return patchJSON<LLMProvidersResponse>("/config/llm/providers", payload, signal);
+}
+
+export function fetchConsolidateConfig(
+  signal?: AbortSignal,
+): Promise<ConsolidateConfigResponse> {
+  return getJSON<ConsolidateConfigResponse>("/config/consolidate", signal);
+}
+
+export function saveConsolidateConfig(
+  payload: ConsolidateConfigPayload,
+  signal?: AbortSignal,
+): Promise<ConsolidateConfigResponse> {
+  return patchJSON<ConsolidateConfigResponse>("/config/consolidate", payload, signal);
 }
 
 export function testLLMConnection(

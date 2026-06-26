@@ -10,12 +10,18 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"go.kenn.io/agentsview/internal/llm"
 )
 
 // LLMClient is the narrow LLM surface the worker needs. *llm.Client satisfies
 // it via ChatJSON. Tests substitute a stub so a cycle never hits the network.
 type LLMClient interface {
 	ChatJSON(ctx context.Context, system, user string) (string, error)
+}
+
+type llmUsageClient interface {
+	ChatJSONUsage(ctx context.Context, system, user string) (string, llm.Usage, error)
 }
 
 // ScriptResult is the parsed outcome of one assist_consolidate.py invocation.
@@ -126,7 +132,14 @@ func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
 		ids = append(ids, c.effectiveID())
 	}
 
-	raw, err := w.LLM.ChatJSON(ctx, systemPrompt, BuildUserPrompt(candidates))
+	started := time.Now()
+	raw, usage, err := w.chatJSON(ctx, systemPrompt, BuildUserPrompt(candidates))
+	rec.LLMCallCount++
+	rec.LLMDurationMS += int(time.Since(started).Milliseconds())
+	rec.ProviderUsage = "consolidate"
+	if usage.TotalTokens > 0 || usage.PromptTokens > 0 || usage.CompletionTokens > 0 {
+		rec.LLMUsage = &LLMUsage{PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens}
+	}
 	if err != nil {
 		rec.Error = fmt.Sprintf("llm: %v", err)
 		w.record(rec)
@@ -134,6 +147,7 @@ func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
 	}
 
 	decisions, err := ParseDecisions(raw, ids)
+	rec.AddCount, rec.UpdateCount, rec.SkipCount = decisionCounts(decisions)
 	if err != nil {
 		// Defensive parse failure: skip the cycle, audit it, never write.
 		rec.Error = fmt.Sprintf("parsing decisions: %v", err)
@@ -181,6 +195,28 @@ func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
 
 	w.record(rec)
 	return rec, nil
+}
+
+func (w *Worker) chatJSON(ctx context.Context, system, user string) (string, llm.Usage, error) {
+	if c, ok := w.LLM.(llmUsageClient); ok {
+		return c.ChatJSONUsage(ctx, system, user)
+	}
+	raw, err := w.LLM.ChatJSON(ctx, system, user)
+	return raw, llm.Usage{}, err
+}
+
+func decisionCounts(decisions map[string]Decision) (adds, updates, skips int) {
+	for _, decision := range decisions {
+		switch decision.Action {
+		case ActionADD:
+			adds++
+		case ActionUPDATE:
+			updates++
+		case ActionSKIP:
+			skips++
+		}
+	}
+	return adds, updates, skips
 }
 
 // writeDecisionFile writes the per-candidate decision map as the JSON the

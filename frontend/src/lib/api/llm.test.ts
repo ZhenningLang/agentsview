@@ -10,9 +10,13 @@ import {
 import { ApiError, setAuthToken } from "./runtime.js";
 import {
   fetchBalance,
+  fetchConsolidateConfig,
   fetchEnrichStatus,
+  fetchLLMProviders,
   fetchLLMConfig,
   fetchSemanticSearchStatus,
+  saveConsolidateConfig,
+  saveLLMProviders,
   saveLLMConfig,
   semanticSearch,
   testLLMConnection,
@@ -216,6 +220,124 @@ describe("LLM API helpers", () => {
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
       enabled: false,
       api_key: "********",
+    });
+  });
+
+  it("fetches and patches provider registry and usage bindings", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: false,
+            min_user_messages: 0,
+            reenrich_msg_delta: 0,
+            reenrich_idle_minutes: 0,
+            concurrency: 0,
+            periodic: false,
+            has_api_key: false,
+            embed: { has_api_key: false },
+            providers: {
+              "deepseek-chat": {
+                enabled: true,
+                base_url: "https://deepseek.example/v1",
+                model: "deepseek-chat",
+                has_api_key: true,
+                api_key_preview: "1234",
+              },
+            },
+            usage: { consolidate: "deepseek-chat" },
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            enabled: false,
+            min_user_messages: 0,
+            reenrich_msg_delta: 0,
+            reenrich_idle_minutes: 0,
+            concurrency: 0,
+            periodic: false,
+            has_api_key: false,
+            embed: { has_api_key: false },
+            providers: {
+              "openrouter-chat": {
+                enabled: true,
+                base_url: "https://openrouter.ai/api/v1",
+                model: "openai/gpt-4o-mini",
+                has_api_key: false,
+              },
+            },
+            usage: { consolidate: "openrouter-chat" },
+          }),
+          { status: 200 },
+        ),
+      );
+
+    await expect(fetchLLMProviders()).resolves.toMatchObject({
+      providers: { "deepseek-chat": { model: "deepseek-chat" } },
+      usage: { consolidate: "deepseek-chat" },
+    });
+    await expect(
+      saveLLMProviders({
+        providers: {
+          "openrouter-chat": {
+            enabled: true,
+            base_url: "https://openrouter.ai/api/v1",
+            model: "openai/gpt-4o-mini",
+          },
+        },
+        usage: { consolidate: "openrouter-chat" },
+        delete_providers: ["old-chat"],
+      }),
+    ).resolves.toMatchObject({ usage: { consolidate: "openrouter-chat" } });
+
+    expect(fetchMock.mock.calls[0]![0]).toBe("/api/v1/config/llm/providers");
+    const [path, init] = fetchMock.mock.calls[1]!;
+    expect(path).toBe("/api/v1/config/llm/providers");
+    expect(init).toMatchObject({ method: "PATCH" });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      providers: {
+        "openrouter-chat": {
+          enabled: true,
+          base_url: "https://openrouter.ai/api/v1",
+          model: "openai/gpt-4o-mini",
+        },
+      },
+      usage: { consolidate: "openrouter-chat" },
+      delete_providers: ["old-chat"],
+    });
+  });
+
+  it("fetches and saves consolidate config interval", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ enabled: false, interval: "24h0m0s" }), {
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ enabled: true, interval: "90m0s" }), {
+          status: 200,
+        }),
+      );
+
+    await expect(fetchConsolidateConfig()).resolves.toEqual({
+      enabled: false,
+      interval: "24h0m0s",
+    });
+    await expect(saveConsolidateConfig({ interval: "90m" })).resolves.toEqual({
+      enabled: true,
+      interval: "90m0s",
+    });
+
+    expect(fetchMock.mock.calls[1]![0]).toBe("/api/v1/config/consolidate");
+    const [path, init] = fetchMock.mock.calls[1]!;
+    expect(path).toBe("/api/v1/config/consolidate");
+    expect(init).toMatchObject({ method: "PATCH" });
+    expect(JSON.parse((init as RequestInit).body as string)).toEqual({
+      interval: "90m",
     });
   });
 

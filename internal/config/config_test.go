@@ -456,6 +456,32 @@ func TestSaveLLMConfig_PersistsLLMSectionAndPreservesExistingKeys(t *testing.T) 
 	assert.Equal(t, llm, cfg.LLM)
 }
 
+func TestSaveLLMConfig_PreservesExistingProvidersAndUsage(t *testing.T) {
+	tmp := setupTestEnv(t)
+	cfg := Config{DataDir: tmp, LLM: LLMConfig{
+		Providers: map[string]LLMConfig{
+			"deepseek-chat": {
+				BaseURL: "https://provider.example/v1",
+				APIKey:  "provider-secret",
+				Model:   "deepseek-chat",
+			},
+		},
+		Usage: map[string]string{"enrich": "deepseek-chat"},
+	}}
+
+	require.NoError(t, cfg.SaveLLMConfig(LLMConfig{
+		Enabled: true,
+		BaseURL: "https://chat.example/v1",
+		Model:   "chat-model",
+	}))
+
+	var loaded Config
+	_, err := toml.DecodeFile(filepath.Join(tmp, configFileName), &loaded)
+	require.NoError(t, err)
+	assert.Equal(t, "https://provider.example/v1", loaded.LLM.Providers["deepseek-chat"].BaseURL)
+	assert.Equal(t, "deepseek-chat", loaded.LLM.Usage["enrich"])
+}
+
 func TestLoadFile_ReadsDirArrays(t *testing.T) {
 	dir := setupTestEnv(t)
 	writeConfig(t, dir, map[string]any{
@@ -892,6 +918,192 @@ func TestLLMConfig_ResolveEmbedFallback(t *testing.T) {
 	assert.Empty(t, resolved.Embed.Model, "empty embed model remains the disabled signal")
 }
 
+func TestLLMConfig_ResolveUsageLegacyParity(t *testing.T) {
+	cfg := Config{
+		LLM: LLMConfig{
+			Enabled:             true,
+			BaseURL:             "https://chat.example.test/v1",
+			APIKey:              "chat-key",
+			Model:               "chat-model",
+			ReasoningEffort:     "high",
+			MinUserMessages:     4,
+			ReenrichMsgDelta:    12,
+			ReenrichIdleMinutes: 8,
+			Concurrency:         2,
+			Periodic:            true,
+			BalanceURL:          "https://chat.example.test/balance",
+			Embed: LLMEmbedConfig{
+				BaseURL:    "https://embed.example.test/v1",
+				APIKey:     "embed-key",
+				Model:      "embed-model",
+				BalanceURL: "https://embed.example.test/balance",
+			},
+		},
+		Consolidate: LLMConfig{
+			BaseURL:         "https://consolidate.example.test/v1",
+			APIKey:          "consolidate-key",
+			Model:           "consolidate-model",
+			ReasoningEffort: "medium",
+		},
+	}
+
+	assert.Equal(t, cfg.ResolveLLM(), cfg.ResolveUsageLLM("enrich"))
+	assert.Equal(t, cfg.ResolveLLM(), cfg.ResolveUsageLLM("embed"))
+	assert.Equal(t, cfg.ConsolidateLLM(), cfg.ResolveUsageLLM("consolidate"))
+	assert.Equal(t, cfg.ResolveLLM(), cfg.ResolveUsageLLM("extract"))
+	assert.Equal(t, cfg.ResolveLLM(), cfg.ResolveUsageLLM("recall_rerank"))
+}
+
+func TestLLMConfig_ResolveUsageProviders(t *testing.T) {
+	dir := setupTestEnv(t)
+	data := []byte(`
+[llm]
+enabled = true
+base_url = "https://legacy.example.test/v1"
+api_key = "legacy-key"
+model = "legacy-model"
+min_user_messages = 7
+concurrency = 2
+
+[llm.embed]
+base_url = "https://legacy-embed.example.test/v1"
+api_key = "legacy-embed-key"
+model = "legacy-embed-model"
+
+[llm.providers.deepseek-chat]
+base_url = "https://deepseek.example.test/v1"
+api_key = "deepseek-key"
+model = "deepseek-chat"
+reasoning_effort = "low"
+
+[llm.providers.openrouter-embed]
+base_url = "https://openrouter.example.test/api/v1"
+api_key = "openrouter-key"
+model = "openai/text-embedding-3-large"
+balance_url = "https://openrouter.example.test/balance"
+
+[llm.usage]
+enrich = "deepseek-chat"
+extract = "deepseek-chat"
+consolidate = "deepseek-chat"
+embed = "openrouter-embed"
+recall_rerank = "deepseek-chat"
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), data, 0o600))
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+
+	for _, usage := range []string{"enrich", "extract", "consolidate", "recall_rerank"} {
+		got := cfg.ResolveUsageLLM(usage)
+		assert.True(t, got.Enabled, usage)
+		assert.Equal(t, "https://deepseek.example.test/v1", got.BaseURL, usage)
+		assert.Equal(t, "deepseek-key", got.APIKey, usage)
+		assert.Equal(t, "deepseek-chat", got.Model, usage)
+		assert.Equal(t, "low", got.ReasoningEffort, usage)
+		assert.Equal(t, 7, got.MinUserMessages, usage)
+		assert.Equal(t, 2, got.Concurrency, usage)
+	}
+	embed := cfg.ResolveUsageLLM("embed")
+	assert.True(t, embed.Enabled)
+	assert.Equal(t, "https://openrouter.example.test/api/v1", embed.Embed.BaseURL)
+	assert.Equal(t, "openrouter-key", embed.Embed.APIKey)
+	assert.Equal(t, "openai/text-embedding-3-large", embed.Embed.Model)
+	assert.Equal(t, "https://openrouter.example.test/balance", embed.Embed.BalanceURL)
+}
+
+func TestLLMConfig_ResolveUsageFallbackAndEnv(t *testing.T) {
+	dir := setupTestEnv(t)
+	writeConfig(t, dir, map[string]any{
+		"llm": map[string]any{
+			"enabled":  true,
+			"base_url": "https://config.example.test/v1",
+			"api_key":  "config-key",
+			"model":    "config-model",
+			"embed": map[string]any{
+				"model": "config-embed-model",
+			},
+		},
+		"consolidate": map[string]any{
+			"model": "config-consolidate-model",
+		},
+	})
+	t.Setenv("AGENTSVIEW_LLM_BASE_URL", "https://env.example.test/v1")
+	t.Setenv("AGENTSVIEW_LLM_API_KEY", "env-key")
+	t.Setenv("AGENTSVIEW_LLM_MODEL", "env-model")
+	t.Setenv("AGENTSVIEW_CONSOLIDATE_MODEL", "env-consolidate-model")
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+
+	enrich := cfg.ResolveUsageLLM("enrich")
+	assert.Equal(t, "https://env.example.test/v1", enrich.BaseURL)
+	assert.Equal(t, "env-key", enrich.APIKey)
+	assert.Equal(t, "env-model", enrich.Model)
+
+	embed := cfg.ResolveUsageLLM("embed")
+	assert.Equal(t, "https://env.example.test/v1", embed.Embed.BaseURL)
+	assert.Equal(t, "env-key", embed.Embed.APIKey)
+	assert.Equal(t, "config-embed-model", embed.Embed.Model)
+
+	consolidate := cfg.ResolveUsageLLM("consolidate")
+	assert.Equal(t, "https://env.example.test/v1", consolidate.BaseURL)
+	assert.Equal(t, "env-key", consolidate.APIKey)
+	assert.Equal(t, "env-consolidate-model", consolidate.Model)
+}
+
+func TestLLMConfig_ResolveUsageBoundProviderOverridesLegacyEnv(t *testing.T) {
+	dir := setupTestEnv(t)
+	data := []byte(`
+[llm]
+enabled = true
+base_url = "https://legacy.example.test/v1"
+api_key = "legacy-key"
+model = "legacy-model"
+
+[llm.providers.deepseek-chat]
+base_url = "https://provider.example.test/v1"
+api_key = "provider-key"
+model = "provider-model"
+
+[llm.usage]
+enrich = "deepseek-chat"
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, configFileName), data, 0o600))
+	t.Setenv("AGENTSVIEW_LLM_BASE_URL", "https://env.example.test/v1")
+	t.Setenv("AGENTSVIEW_LLM_API_KEY", "env-key")
+	t.Setenv("AGENTSVIEW_LLM_MODEL", "env-model")
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+
+	got := cfg.ResolveUsageLLM("enrich")
+	assert.Equal(t, "https://provider.example.test/v1", got.BaseURL)
+	assert.Equal(t, "provider-key", got.APIKey)
+	assert.Equal(t, "provider-model", got.Model)
+
+	unbound := cfg.ResolveUsageLLM("extract")
+	assert.Equal(t, "https://env.example.test/v1", unbound.BaseURL)
+	assert.Equal(t, "env-key", unbound.APIKey)
+	assert.Equal(t, "env-model", unbound.Model)
+}
+
+func TestLLMConfig_DanglingUsageBindings(t *testing.T) {
+	cfg := Config{LLM: LLMConfig{
+		Enabled: true,
+		BaseURL: "https://legacy.example.test/v1",
+		APIKey:  "legacy-key",
+		Model:   "legacy-model",
+		Usage:   map[string]string{"embed": "typo-provider"},
+	}}
+
+	assert.Equal(t, cfg.ResolveLLM(), cfg.ResolveUsageLLM("embed"))
+	assert.Equal(t, []string{"embed"}, cfg.DanglingLLMUsageBindings())
+
+	cfg.LLM.Providers = map[string]LLMConfig{}
+	assert.Equal(t, []string{"embed"}, cfg.DanglingLLMUsageBindings())
+}
+
 func TestLLMConfig_RedactsSecrets(t *testing.T) {
 	cfg := Config{LLM: LLMConfig{
 		BaseURL: "https://chat.example.test/v1",
@@ -936,6 +1148,26 @@ func TestMemoryBackup_PersistAndReload(t *testing.T) {
 	require.NoError(t, reloaded.loadFile(), "loadFile")
 	assert.Equal(t, "alice/agent-memory", reloaded.MemoryBackupRepo)
 	assert.True(t, reloaded.MemoryBackupLinked)
+}
+
+func TestConsolidateSettingsReloadAndEnvOverride(t *testing.T) {
+	dir := setupTestEnv(t)
+	writeConfig(t, dir, map[string]any{
+		"consolidate_enabled":  true,
+		"consolidate_interval": "2h",
+	})
+
+	cfg, err := LoadMinimal()
+	require.NoError(t, err)
+	assert.True(t, cfg.ConsolidateEnabled)
+	assert.Equal(t, 2*time.Hour, cfg.ConsolidateInterval)
+
+	t.Setenv("AGENTSVIEW_CONSOLIDATE_ENABLED", "false")
+	t.Setenv("AGENTSVIEW_CONSOLIDATE_INTERVAL", "30m")
+	cfg, err = LoadMinimal()
+	require.NoError(t, err)
+	assert.False(t, cfg.ConsolidateEnabled)
+	assert.Equal(t, 30*time.Minute, cfg.ConsolidateInterval)
 }
 
 func TestPGConfig_ProjectFilter(t *testing.T) {

@@ -317,6 +317,8 @@ CREATE TABLE IF NOT EXISTS memory (
     body           TEXT NOT NULL DEFAULT '',
     body_tokens    INTEGER NOT NULL DEFAULT 0,
     source_mtime   BIGINT NOT NULL DEFAULT 0,
+    llm_embedding  BYTEA,
+    llm_embedding_dim INTEGER NOT NULL DEFAULT 0,
     synced_at      TEXT NOT NULL DEFAULT ''
 );
 
@@ -716,6 +718,16 @@ func EnsureSchema(
 			"memory", "source",
 			`source TEXT NOT NULL DEFAULT 'cross-agent'`,
 			"adding memory.source",
+		},
+		{
+			"memory", "llm_embedding",
+			`llm_embedding BYTEA`,
+			"adding memory.llm_embedding",
+		},
+		{
+			"memory", "llm_embedding_dim",
+			`llm_embedding_dim INT NOT NULL DEFAULT 0`,
+			"adding memory.llm_embedding_dim",
 		},
 	}
 	step = time.Now()

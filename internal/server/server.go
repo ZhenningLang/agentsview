@@ -22,6 +22,7 @@ import (
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/consolidate"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/extract"
 	"go.kenn.io/agentsview/internal/ghconnect"
 	"go.kenn.io/agentsview/internal/insight"
 	"go.kenn.io/agentsview/internal/llm"
@@ -104,6 +105,10 @@ type Server struct {
 	// configured / read-only store), in which case the enable endpoint reports
 	// "not available".
 	backupCtl *backup.Controller
+
+	// extractCtl is the runtime handle to the background LLM extraction worker.
+	// Nil means prerequisites were missing and the route reports unavailable.
+	extractCtl *extract.Controller
 }
 
 // New creates a new Server.
@@ -218,6 +223,12 @@ func WithUpdateChecker(f UpdateCheckFunc) Option {
 // reports the feature as unavailable.
 func WithConsolidateController(c *consolidate.Controller) Option {
 	return func(s *Server) { s.consolidateCtl = c }
+}
+
+// WithExtractController injects the background extraction controller so the
+// enable endpoint can arm/disarm the worker at runtime.
+func WithExtractController(c *extract.Controller) Option {
+	return func(s *Server) { s.extractCtl = c }
 }
 
 // WithBackupController injects the background backup-push controller so the

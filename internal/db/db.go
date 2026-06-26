@@ -771,6 +771,14 @@ func (db *DB) migrateColumns() error {
 			"ALTER TABLE memory ADD COLUMN source TEXT NOT NULL " +
 				"DEFAULT 'cross-agent'",
 		},
+		{
+			"memory", "llm_embedding",
+			"ALTER TABLE memory ADD COLUMN llm_embedding BLOB",
+		},
+		{
+			"memory", "llm_embedding_dim",
+			"ALTER TABLE memory ADD COLUMN llm_embedding_dim INTEGER NOT NULL DEFAULT 0",
+		},
 	}
 
 	for _, m := range migrations {

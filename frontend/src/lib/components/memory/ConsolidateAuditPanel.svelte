@@ -83,6 +83,7 @@
 <section class="consolidate-audit">
   <button
     class="toggle"
+    data-testid="consolidate-audit-toggle"
     onclick={() => {
       open = !open;
       if (open && runs.length === 0 && !loading) load();
@@ -101,6 +102,7 @@
           <button
             class="enable-toggle"
             class:on={enabled}
+            data-testid="consolidate-enable-toggle"
             onclick={toggle}
             disabled={toggling}
             role="switch"

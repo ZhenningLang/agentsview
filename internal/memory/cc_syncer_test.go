@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -131,4 +132,30 @@ func TestCrossAgentSyncerStampsSource(t *testing.T) {
 
 	require.Len(t, w.memories, 1)
 	assert.Equal(t, db.SourceCrossAgent, w.memories[0].Source)
+}
+
+func TestCCSyncWithEmbedderPopulatesMemoryEmbedding(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "projects")
+	writeCCNote(t, root, "projA", "a.md", "---\ntitle: A\n---\n\ncc body")
+	w := &fakeWriter{}
+	embedder := &fakeEmbedder{vector: []float32{0.5, 0.5}}
+	s := NewCCSyncerWithEmbedder(root, w, nil, embedder)
+
+	require.NoError(t, s.Sync(context.Background()))
+	require.Len(t, w.memories, 1)
+	assert.Equal(t, []float32{0.5, 0.5}, w.memories[0].LLMEmbedding)
+	assert.Equal(t, 2, w.memories[0].LLMEmbeddingDim)
+	assert.Equal(t, 1, embedder.calls)
+}
+
+func TestCCSyncWithEmbedderReturnsErrorOnEmbeddingFailure(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "projects")
+	writeCCNote(t, root, "projA", "a.md", "cc body")
+	w := &fakeWriter{}
+	s := NewCCSyncerWithEmbedder(root, w, nil, &fakeEmbedder{err: errors.New("embed failed")})
+
+	err := s.Sync(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "embedding memory")
+	assert.Empty(t, w.memories)
 }
