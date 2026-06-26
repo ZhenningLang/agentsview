@@ -859,3 +859,74 @@ describe("parseWindowDays", () => {
     expect(parseWindowDays("1000000000")).toBeNull();
   });
 });
+
+describe("UsageStore background refresh coalescing", () => {
+  beforeEach(() => {
+    installStorage();
+    localStorage.removeItem(TOGGLES_KEY);
+    localStorage.removeItem("usage-filters");
+    vi.clearAllMocks();
+  });
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  it("coalesces an identical background refresh into the in-flight query and runs one trailing refresh", async () => {
+    const { usage } = await loadStore();
+    const d1 = deferred<UsageSummaryResponse>();
+    usageServiceMocks.getApiV1UsageSummary.mockReturnValueOnce(d1.promise);
+
+    const inFlight = usage.fetchAll();
+    expect(usageServiceMocks.getApiV1UsageSummary).toHaveBeenCalledTimes(1);
+
+    // A live-event refresh with identical params while the first query
+    // is still running must NOT abort/restart it (the starvation bug).
+    await usage.fetchAll({ background: true });
+    expect(usageServiceMocks.getApiV1UsageSummary).toHaveBeenCalledTimes(1);
+
+    // Let the in-flight request finish; the coalesced refresh now runs
+    // exactly one trailing fetch to pick up data that arrived mid-flight.
+    d1.resolve(usageSummary());
+    await inFlight;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(usageServiceMocks.getApiV1UsageSummary).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not coalesce a background refresh when params change", async () => {
+    const { usage } = await loadStore();
+    const d1 = deferred<UsageSummaryResponse>();
+    usageServiceMocks.getApiV1UsageSummary.mockReturnValueOnce(d1.promise);
+
+    const inFlight = usage.fetchAll();
+    expect(usageServiceMocks.getApiV1UsageSummary).toHaveBeenCalledTimes(1);
+
+    usage.selectedModels = "opus";
+    await usage.fetchAll({ background: true });
+    expect(usageServiceMocks.getApiV1UsageSummary).toHaveBeenCalledTimes(2);
+
+    d1.resolve(usageSummary());
+    await inFlight;
+  });
+
+  it("does not coalesce foreground (user) calls", async () => {
+    const { usage } = await loadStore();
+    const d1 = deferred<UsageSummaryResponse>();
+    usageServiceMocks.getApiV1UsageSummary.mockReturnValueOnce(d1.promise);
+
+    const inFlight = usage.fetchAll();
+    expect(usageServiceMocks.getApiV1UsageSummary).toHaveBeenCalledTimes(1);
+
+    // A user-driven fetchAll (no background flag) restarts immediately.
+    void usage.fetchAll();
+    expect(usageServiceMocks.getApiV1UsageSummary).toHaveBeenCalledTimes(2);
+
+    d1.resolve(usageSummary());
+    await inFlight;
+  });
+});

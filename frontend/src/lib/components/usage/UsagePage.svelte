@@ -242,11 +242,11 @@
       urlWritebackReady = true;
     });
     refreshTimer = setInterval(
-      () => usage.fetchAll(),
+      () => usage.fetchAll({ background: true }),
       REFRESH_MS,
     );
     unsubEvents = events.subscribeDebounced(
-      () => usage.fetchAll(),
+      () => usage.fetchAll({ background: true }),
     );
   });
 

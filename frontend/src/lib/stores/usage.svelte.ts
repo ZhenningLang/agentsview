@@ -209,6 +209,12 @@ class UsageStore {
   };
   private fetchAllVersion = 0;
   private abortControllers: Partial<Record<UsagePanel, AbortController>> = {};
+  // Param signature of the fetchAll currently in flight, or null when
+  // idle. Used to skip redundant background refreshes (see fetchAll).
+  private inFlightParamsKey: string | null = null;
+  // Set when a background refresh is coalesced into an identical
+  // in-flight request, so we run one trailing refresh once it lands.
+  private pendingBackgroundRefresh = false;
 
   private get timezone(): string {
     return Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -400,23 +406,68 @@ class UsageStore {
     this.to = today();
   }
 
-  async fetchAll() {
+  // Stable signature of the current request params. activeSince embeds
+  // Date.now(), so it is normalized to a boolean to keep the key stable
+  // across background refreshes for an unchanged filter selection.
+  private paramsKey(): string {
+    const p = this.baseParams();
+    return JSON.stringify({
+      ...p,
+      activeSince: p.activeSince ? "active" : undefined,
+    });
+  }
+
+  // fetchAll loads summary, then top-sessions, then comparison.
+  //
+  // Background refreshes (live sync events, the periodic timer) pass
+  // { background: true }. When such a refresh arrives while an identical
+  // query is still running, restarting it would abort the in-flight
+  // request; under a steady stream of sync events that aborts and
+  // restarts the query faster than it can finish, so a slow range (e.g.
+  // "All") never completes and the page is stuck loading. Instead we let
+  // the running query finish and remember to refetch once, so newer data
+  // that arrived mid-flight is still picked up.
+  //
+  // User-driven calls (filter/range changes, manual refresh) omit the
+  // flag and keep the immediate abort-and-restart behavior.
+  async fetchAll(options: { background?: boolean } = {}) {
+    const background = options.background ?? false;
+    this.rollDates();
+    const key = this.paramsKey();
+    // inFlightParamsKey is non-null for the whole fetchAll lifecycle
+    // (summary + top-sessions), so this guards every full-scan stage,
+    // not just the summary phase.
+    if (background && this.inFlightParamsKey === key) {
+      this.pendingBackgroundRefresh = true;
+      return;
+    }
+    this.pendingBackgroundRefresh = false;
+    this.inFlightParamsKey = key;
     const fetchVersion = ++this.fetchAllVersion;
     this.invalidatePanel("topSessions");
-    this.rollDates();
     saveUsageFilters(this);
-    const loadedSummary = await this.fetchSummary({
-      loadComparison: false,
-    });
-    if (fetchVersion !== this.fetchAllVersion || !loadedSummary) return;
-    await this.fetchTopSessions(loadedSummary.params);
-    if (fetchVersion !== this.fetchAllVersion) return;
-    if (loadedSummary) {
+    try {
+      const loadedSummary = await this.fetchSummary({
+        loadComparison: false,
+      });
+      if (fetchVersion !== this.fetchAllVersion || !loadedSummary) return;
+      await this.fetchTopSessions(loadedSummary.params);
+      if (fetchVersion !== this.fetchAllVersion) return;
       void this.fetchComparison(
         loadedSummary.version,
         loadedSummary.summary,
         loadedSummary.params,
       );
+    } finally {
+      // Only the most recent fetchAll owns the in-flight state; a newer
+      // call (user action) has already taken it over.
+      if (fetchVersion === this.fetchAllVersion) {
+        this.inFlightParamsKey = null;
+        if (this.pendingBackgroundRefresh) {
+          this.pendingBackgroundRefresh = false;
+          void this.fetchAll({ background: true });
+        }
+      }
     }
   }
 
