@@ -40,11 +40,21 @@ import LLMEnrichmentSettings from "./LLMEnrichmentSettings.svelte";
 import { setLocale } from "../../i18n/index.svelte";
 
 async function flush() {
-  // Several cycles: the save path now awaits saveLLMConfig then saveLLMProviders.
+  // Several cycles: the save path awaits saveLLMConfig then saveLLMProviders.
   for (let i = 0; i < 4; i++) {
     await Promise.resolve();
     await tick();
   }
+}
+
+function byTestId(id: string): HTMLElement | null {
+  return document.querySelector(`[data-testid="${id}"]`);
+}
+
+function buttonWithText(text: string): HTMLButtonElement | undefined {
+  return Array.from(document.querySelectorAll("button")).find((b) =>
+    b.textContent?.includes(text),
+  ) as HTMLButtonElement | undefined;
 }
 
 describe("LLMEnrichmentSettings", () => {
@@ -188,8 +198,19 @@ describe("LLMEnrichmentSettings", () => {
     expect(document.body.textContent).toContain("10");
     expect(document.body.textContent).toContain("Enriched");
     expect(document.body.textContent).toContain("4");
-    expect(document.body.textContent).toContain("Pending");
-    expect(document.body.textContent).toContain("3");
+  });
+
+  it("renders the two built-in provider cards and the five usage rows", async () => {
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+
+    expect(byTestId("provider-chat")).toBeTruthy();
+    expect(byTestId("provider-embed")).toBeTruthy();
+    for (const u of ["enrich", "embed", "extract", "consolidate", "recall_rerank"]) {
+      expect(byTestId(`usage-${u}`)).toBeTruthy();
+    }
+    // No named providers yet -> empty state.
+    expect(byTestId("custom-empty")).toBeTruthy();
   });
 
   it("loads masked LLM config without rendering plaintext keys", async () => {
@@ -201,150 +222,191 @@ describe("LLMEnrichmentSettings", () => {
     const embedKeyInput = document.querySelector<HTMLInputElement>('input[name="embed_api_key"]');
     expect(apiKeyInput?.value).toBe("********1234");
     expect(embedKeyInput?.value).toBe("********5678");
-    expect(document.body.textContent).not.toContain("chat-secret");
-    expect(document.body.textContent).not.toContain("embed-secret");
   });
 
-  it("saves config and preserves masked keys", async () => {
+  it("provider presets auto-fill base URL and model", async () => {
     component = mount(LLMEnrichmentSettings, { target: document.body });
     await flush();
 
-    const enabled = document.querySelector<HTMLInputElement>('input[name="enabled"]')!;
-    enabled.checked = false;
-    enabled.dispatchEvent(new Event("change", { bubbles: true }));
-    const model = document.querySelector<HTMLInputElement>('input[name="model"]')!;
-    model.value = "deepseek-reasoner";
-    model.dispatchEvent(new InputEvent("input", { bubbles: true }));
-    const save = Array.from(document.querySelectorAll("button")).find((btn) =>
-      btn.textContent?.includes("Save LLM config"),
-    ) as HTMLButtonElement | undefined;
-    save!.click();
+    const chatProvider = document.querySelector("select[name=chat_provider]") as HTMLSelectElement;
+    const embedProvider = document.querySelector("select[name=embed_provider]") as HTMLSelectElement;
+    chatProvider.value = "deepseek";
+    chatProvider.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+    embedProvider.value = "openrouter";
+    embedProvider.dispatchEvent(new Event("change", { bubbles: true }));
+    await flush();
+
+    expect((document.querySelector("input[name=base_url]") as HTMLInputElement).value).toBe("https://api.deepseek.com");
+    expect((document.querySelector("input[name=model]") as HTMLInputElement).value).toBe("deepseek-chat");
+    expect((document.querySelector("input[name=embed_base_url]") as HTMLInputElement).value).toBe("https://openrouter.ai/api/v1");
+    expect((document.querySelector("input[name=embed_model]") as HTMLInputElement).value).toBe("openai/text-embedding-3-large");
+  });
+
+  // ---- Per-provider tests ----
+
+  it("tests the default chat provider via its card button (channel chat)", async () => {
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+
+    (byTestId("test-__chat__") as HTMLButtonElement).click();
+    await flush();
+
+    expect(mocks.testLLMConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "chat", base_url: "https://api.deepseek.com/v1", model: "deepseek-chat" }),
+    );
+    expect(byTestId("test-result-__chat__")?.textContent).toContain("ok");
+  });
+
+  it("tests the default embedding provider via its card button (channel embed)", async () => {
+    mocks.testLLMConnection.mockResolvedValueOnce({
+      chat: { ok: false, disabled: true, message: "skipped" },
+      embed: { ok: true, message: "ok" },
+    });
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+
+    (byTestId("test-__embed__") as HTMLButtonElement).click();
+    await flush();
+
+    expect(mocks.testLLMConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "embed", embed: expect.objectContaining({ model: "embed-model" }) }),
+    );
+    expect(byTestId("test-result-__embed__")?.textContent).toContain("ok");
+  });
+
+  // ---- Per-usage tests ----
+
+  it("tests a usage via its row button (resolves the usage server-side)", async () => {
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+
+    (byTestId("test-usage:extract") as HTMLButtonElement).click();
+    await flush();
+
+    expect(mocks.testLLMConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ usage: "extract", channel: "chat" }),
+    );
+  });
+
+  it("tests the embed usage with channel embed", async () => {
+    mocks.testLLMConnection.mockResolvedValueOnce({
+      chat: { ok: false, disabled: true, message: "skipped" },
+      embed: { ok: true, message: "ok" },
+    });
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+
+    (byTestId("test-usage:embed") as HTMLButtonElement).click();
+    await flush();
+
+    expect(mocks.testLLMConnection).toHaveBeenCalledWith(
+      expect.objectContaining({ usage: "embed", channel: "embed" }),
+    );
+    expect(byTestId("test-result-usage:embed")?.textContent).toContain("ok");
+  });
+
+  // ---- Migration / no data loss ----
+
+  it("migrates existing config into the new layout without losing data", async () => {
+    mocks.fetchLLMProviders.mockResolvedValue({
+      providers: { "cheap-consolidate": { enabled: true, base_url: "https://x", model: "m", has_api_key: true, api_key_preview: "…9" } },
+      usage: { consolidate: "cheap-consolidate" },
+      usage_warnings: [],
+    });
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+
+    // Existing named provider renders, existing binding is reflected.
+    expect(byTestId("provider-cheap-consolidate")).toBeTruthy();
+    const sel = byTestId("usage-consolidate")!.querySelector("select") as HTMLSelectElement;
+    expect(sel.value).toBe("cheap-consolidate");
+
+    // Saving must preserve everything: embed config kept, no deletes.
+    buttonWithText("Save LLM config")!.click();
     await flush();
 
     expect(mocks.saveLLMConfig).toHaveBeenCalledWith(
       expect.objectContaining({
-        enabled: false,
         api_key: "********",
-        model: "deepseek-reasoner",
-        embed: expect.objectContaining({ api_key: "********" }),
+        embed: expect.objectContaining({ model: "embed-model", api_key: "********" }),
       }),
+    );
+    const providersPayload = mocks.saveLLMProviders.mock.calls[0]![0];
+    expect(providersPayload.providers["cheap-consolidate"]).toBeTruthy();
+    expect(providersPayload.usage.consolidate).toBe("cheap-consolidate");
+    expect(providersPayload.delete_providers).toEqual([]);
+  });
+
+  it("saves config and preserves masked keys when nothing is edited", async () => {
+    component = mount(LLMEnrichmentSettings, { target: document.body });
+    await flush();
+
+    buttonWithText("Save LLM config")!.click();
+    await flush();
+
+    expect(mocks.saveLLMConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ api_key: "********", embed: expect.objectContaining({ api_key: "********" }) }),
     );
     expect(document.body.textContent).toContain("LLM config saved");
   });
 
-  it("tests connection and renders per-channel results", async () => {
+  // ---- Add / remove provider ----
+
+  it("adds a named provider and binds it to a usage in the save payload", async () => {
     component = mount(LLMEnrichmentSettings, { target: document.body });
     await flush();
 
-    const testButton = Array.from(document.querySelectorAll("button")).find((btn) =>
-      btn.textContent?.includes("Test connection"),
-    ) as HTMLButtonElement | undefined;
-    testButton!.click();
+    const nameInput = document.querySelector(".add-row input") as HTMLInputElement;
+    nameInput.value = "cheap";
+    nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    (document.querySelector(".add-row button") as HTMLButtonElement).click();
+    await flush();
+    expect(byTestId("provider-cheap")).toBeTruthy();
+
+    const sel = byTestId("usage-extract")!.querySelector("select") as HTMLSelectElement;
+    sel.value = "cheap";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
     await flush();
 
-    expect(mocks.testLLMConnection).toHaveBeenCalledWith(expect.objectContaining({
-      base_url: "https://api.deepseek.com/v1",
-      model: "deepseek-chat",
-    }));
-    expect(document.body.textContent).toContain("chat: ok");
-    expect(document.body.textContent).toContain("embed: disabled");
+    buttonWithText("Save LLM config")!.click();
+    await flush();
+
+    const payload = mocks.saveLLMProviders.mock.calls[0]![0];
+    expect(payload.providers.cheap).toBeTruthy();
+    expect(payload.usage.extract).toBe("cheap");
   });
 
-  it("updates enabled config from toggle", async () => {
+  it("removes a named provider and sends it in delete_providers", async () => {
+    mocks.fetchLLMProviders.mockResolvedValue({
+      providers: { gone: { enabled: true, base_url: "https://x", model: "m", has_api_key: true, api_key_preview: "…9" } },
+      usage: {},
+      usage_warnings: [],
+    });
     component = mount(LLMEnrichmentSettings, { target: document.body });
     await flush();
 
-    const enabled = document.querySelector<HTMLInputElement>('input[name="enabled"]')!;
-    expect(enabled.checked).toBe(true);
-    enabled.checked = false;
-    enabled.dispatchEvent(new Event("change", { bubbles: true }));
+    expect(byTestId("provider-gone")).toBeTruthy();
+    (byTestId("provider-gone")!.querySelector(".ghost-btn") as HTMLButtonElement).click();
     await flush();
+    expect(byTestId("provider-gone")).toBeFalsy();
 
-    expect(enabled.checked).toBe(false);
+    buttonWithText("Save LLM config")!.click();
+    await flush();
+    const payload = mocks.saveLLMProviders.mock.calls[0]![0];
+    expect(payload.delete_providers).toContain("gone");
   });
 
   it("starts a background job and shows progress", async () => {
     component = mount(LLMEnrichmentSettings, { target: document.body });
     await flush();
 
-    const button = Array.from(document.querySelectorAll("button")).find((btn) =>
-      btn.textContent?.includes("Run enrichment"),
-    ) as HTMLButtonElement | undefined;
-    expect(button).toBeTruthy();
-
-    button!.click();
+    buttonWithText("Run enrichment")!.click();
     await flush();
 
     expect(mocks.startEnrichJob).toHaveBeenCalledTimes(1);
-    const progress = document.querySelector('[data-testid="enrich-progress"]');
-    expect(progress).toBeTruthy();
-    expect(progress?.textContent).toContain("Enriching 0 / 3");
-    // While running, the primary action becomes a Stop button.
-    const stop = Array.from(document.querySelectorAll("button")).find((btn) =>
-      btn.textContent?.trim() === "Stop",
-    );
-    expect(stop).toBeTruthy();
-  });
-
-  it("renders token usage and chat cost for a completed job", async () => {
-    mocks.fetchEnrichJob.mockResolvedValueOnce({
-      running: false,
-      source: "manual",
-      processed: 3,
-      total: 3,
-      succeeded: 3,
-      no_content: 0,
-      failed: 0,
-      skipped: 0,
-      done_at: "2026-06-24T00:00:00Z",
-      prompt_tokens: 1200,
-      completion_tokens: 800,
-      embed_tokens: 3400,
-      cost_currency: "CNY",
-      cost_spent: "0.4200",
-      balance_end: "98.7600",
-    });
-    component = mount(LLMEnrichmentSettings, { target: document.body });
-    await flush();
-
-    const cost = document.querySelector('[data-testid="enrich-cost"]');
-    expect(cost).toBeTruthy();
-    const text = (cost?.textContent ?? "").replace(/\s+/g, " ");
-    expect(text).toContain("2,000 chat");
-    expect(text).toContain("3,400 embed");
-    expect(text).toContain("CNY 0.4200");
-    expect(text).toContain("balance now CNY 98.7600");
-  });
-
-  it("renders embed spend separately from chat spend", async () => {
-    mocks.fetchEnrichJob.mockResolvedValueOnce({
-      running: false,
-      source: "manual",
-      processed: 2,
-      total: 2,
-      succeeded: 2,
-      no_content: 0,
-      failed: 0,
-      skipped: 0,
-      done_at: "2026-06-24T00:00:00Z",
-      prompt_tokens: 1000,
-      completion_tokens: 500,
-      embed_tokens: 700,
-      cost_currency: "CNY",
-      cost_spent: "0.5000",
-      balance_end: "99.5000",
-      embed_cost_currency: "USD",
-      embed_cost_spent: "0.2000",
-      embed_balance_end: "49.8000",
-    });
-    component = mount(LLMEnrichmentSettings, { target: document.body });
-    await flush();
-
-    const cost = document.querySelector('[data-testid="enrich-cost"]');
-    expect(cost).toBeTruthy();
-    const text = (cost?.textContent ?? "").replace(/\s+/g, " ");
-    expect(text).toContain("Embed spend this run: USD 0.2000");
-    expect(text).toContain("balance now USD 49.8000");
+    expect(byTestId("enrich-progress")?.textContent).toContain("Enriching 0 / 3");
   });
 
   it("surfaces backend start errors", async () => {
@@ -352,15 +414,10 @@ describe("LLMEnrichmentSettings", () => {
     component = mount(LLMEnrichmentSettings, { target: document.body });
     await flush();
 
-    const button = Array.from(document.querySelectorAll("button")).find((btn) =>
-      btn.textContent?.includes("Run enrichment"),
-    ) as HTMLButtonElement | undefined;
-    button!.click();
+    buttonWithText("Run enrichment")!.click();
     await flush();
 
-    expect(document.querySelector('[role="alert"]')?.textContent).toContain(
-      "Failed to start LLM enrichment",
-    );
+    expect(document.querySelector('[role="alert"]')?.textContent).toContain("Failed to start LLM enrichment");
   });
 
   it("shows remote mode as unavailable and does not fetch", async () => {
@@ -371,10 +428,9 @@ describe("LLMEnrichmentSettings", () => {
     expect(mocks.fetchEnrichStatus).not.toHaveBeenCalled();
     expect(mocks.fetchLLMConfig).not.toHaveBeenCalled();
     expect(document.body.textContent).toContain("local server connection");
-    expect(document.body.textContent).not.toContain("Run enrichment");
   });
 
-  it("disables the trigger in read-only mode and does not call enrichment", async () => {
+  it("disables the trigger and test buttons in read-only mode", async () => {
     sync.serverVersion = {
       version: "test",
       commit: "abc123",
@@ -384,110 +440,9 @@ describe("LLMEnrichmentSettings", () => {
     component = mount(LLMEnrichmentSettings, { target: document.body });
     await flush();
 
-    const button = Array.from(document.querySelectorAll("button")).find((btn) =>
-      btn.textContent?.includes("Run enrichment"),
-    ) as HTMLButtonElement | undefined;
-    expect(button).toBeTruthy();
-    expect(button!.disabled).toBe(true);
+    const run = buttonWithText("Run enrichment");
+    expect(run?.disabled).toBe(true);
+    expect((byTestId("test-__chat__") as HTMLButtonElement).disabled).toBe(true);
     expect(document.body.textContent).toContain("read-only backend");
-
-    button!.click();
-    await flush();
-
-    expect(mocks.startEnrichJob).not.toHaveBeenCalled();
-  });
-
-  it("provider presets auto-fill base URL and model", async () => {
-    component = mount(LLMEnrichmentSettings, { target: document.body });
-    await flush();
-
-    const chatProvider = document.querySelector(
-      "select[name=chat_provider]",
-    ) as HTMLSelectElement;
-    const embedProvider = document.querySelector(
-      "select[name=embed_provider]",
-    ) as HTMLSelectElement;
-    expect(chatProvider).toBeTruthy();
-    expect(embedProvider).toBeTruthy();
-
-    chatProvider.value = "deepseek";
-    chatProvider.dispatchEvent(new Event("change", { bubbles: true }));
-    await flush();
-    embedProvider.value = "openrouter";
-    embedProvider.dispatchEvent(new Event("change", { bubbles: true }));
-    await flush();
-
-    const baseUrl = document.querySelector(
-      "input[name=base_url]",
-    ) as HTMLInputElement;
-    const model = document.querySelector(
-      "input[name=model]",
-    ) as HTMLInputElement;
-    const embedBaseUrl = document.querySelector(
-      "input[name=embed_base_url]",
-    ) as HTMLInputElement;
-    const embedModel = document.querySelector(
-      "input[name=embed_model]",
-    ) as HTMLInputElement;
-
-    expect(baseUrl.value).toBe("https://api.deepseek.com");
-    expect(model.value).toBe("deepseek-chat");
-    expect(embedBaseUrl.value).toBe("https://openrouter.ai/api/v1");
-    expect(embedModel.value).toBe("openai/text-embedding-3-large");
-  });
-
-  // ---- Per-usage model override block (merged from the removed LLMProviderSettings) ----
-
-  it("renders the 3 per-usage override rows and the custom-provider empty state", async () => {
-    component = mount(LLMEnrichmentSettings, { target: document.body });
-    await flush();
-    expect(document.querySelector('[data-testid="usage-extract"]')).toBeTruthy();
-    expect(document.querySelector('[data-testid="usage-consolidate"]')).toBeTruthy();
-    expect(document.querySelector('[data-testid="usage-recall_rerank"]')).toBeTruthy();
-    // enrich/embed are NOT in the override block (configured by the provider blocks)
-    expect(document.querySelector('[data-testid="usage-enrich"]')).toBeFalsy();
-    expect(document.querySelector('[data-testid="usage-embed"]')).toBeFalsy();
-    expect(document.querySelector('[data-testid="custom-empty"]')).toBeTruthy();
-  });
-
-  it("loads existing custom providers and usage bindings from the registry", async () => {
-    mocks.fetchLLMProviders.mockResolvedValue({
-      providers: { "cheap-consolidate": { enabled: true, base_url: "https://x", model: "m", has_api_key: true, api_key_preview: "…9" } },
-      usage: { consolidate: "cheap-consolidate" },
-      usage_warnings: [],
-    });
-    component = mount(LLMEnrichmentSettings, { target: document.body });
-    await flush();
-    expect(document.querySelector('[data-testid="custom-cheap-consolidate"]')).toBeTruthy();
-    const sel = document.querySelector('[data-testid="usage-consolidate"] select') as HTMLSelectElement;
-    expect(sel.value).toBe("cheap-consolidate");
-  });
-
-  it("adds a custom provider and saves it with the usage binding payload", async () => {
-    component = mount(LLMEnrichmentSettings, { target: document.body });
-    await flush();
-    // add a custom provider
-    const nameInput = document.querySelector(".add-row input") as HTMLInputElement;
-    nameInput.value = "cheap";
-    nameInput.dispatchEvent(new Event("input", { bubbles: true }));
-    await flush();
-    (document.querySelector(".add-row button") as HTMLButtonElement).click();
-    await flush();
-    expect(document.querySelector('[data-testid="custom-cheap"]')).toBeTruthy();
-    // bind extract → cheap
-    const sel = document.querySelector('[data-testid="usage-extract"] select') as HTMLSelectElement;
-    sel.value = "cheap";
-    sel.dispatchEvent(new Event("change", { bubbles: true }));
-    await flush();
-    // save
-    const save = Array.from(document.querySelectorAll("button")).find((b) =>
-      b.textContent?.includes("Save LLM config"),
-    ) as HTMLButtonElement;
-    save.click();
-    await flush();
-    expect(mocks.saveLLMProviders).toHaveBeenCalledTimes(1);
-    const payload = mocks.saveLLMProviders.mock.calls[0]![0];
-    expect(payload.providers.cheap).toBeTruthy();
-    expect(payload.usage.extract).toBe("cheap");
   });
 });

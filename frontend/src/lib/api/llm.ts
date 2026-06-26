@@ -155,6 +155,15 @@ export interface LLMTestResponse {
   embed: LLMTestChannelResult;
 }
 
+// Routing hints for POST /llm/test. `usage` tests a usage's effective resolved
+// config; `provider` tests a stored named provider (its real secret); `channel`
+// restricts to one transport. All optional — raw connection fields still work.
+export interface LLMTestRequest extends LLMConfigPayload {
+  usage?: string;
+  provider?: string;
+  channel?: "chat" | "embed";
+}
+
 async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${getBase()}${path}`, authHeaders({ signal }));
   if (!res.ok) {
@@ -268,7 +277,7 @@ export function saveConsolidateConfig(
 }
 
 export function testLLMConnection(
-  payload: LLMConfigPayload = {},
+  payload: LLMTestRequest = {},
   signal?: AbortSignal,
 ): Promise<LLMTestResponse> {
   return postJSON<LLMTestResponse>("/llm/test", payload, signal);
