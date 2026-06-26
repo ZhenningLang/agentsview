@@ -11,7 +11,6 @@
   import RemoteSettings from "./RemoteSettings.svelte";
   import WorktreeMappingSettings from "./WorktreeMappingSettings.svelte";
   import LLMEnrichmentSettings from "./LLMEnrichmentSettings.svelte";
-  import LLMProviderSettings from "./LLMProviderSettings.svelte";
   import ConsolidateSettings from "./ConsolidateSettings.svelte";
   import MemoryBackupSettings from "./MemoryBackupSettings.svelte";
   import LanguageSwitcher from "./LanguageSwitcher.svelte";
@@ -100,7 +99,6 @@
       <GithubSettings />
       <RemoteSettings />
       <LLMEnrichmentSettings />
-      <LLMProviderSettings />
       <ConsolidateSettings />
       <MemoryBackupSettings />
 
