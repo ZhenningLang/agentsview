@@ -5,7 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestPythonScriptRunner_NonZeroExitNotError verifies the exec wrapper treats a
@@ -38,6 +42,38 @@ func TestPythonScriptRunner_NonZeroExitNotError(t *testing.T) {
 	if res.Stdout == "" || res.Stderr == "" {
 		t.Errorf("stdout/stderr should be captured: %+v", res)
 	}
+}
+
+func TestPythonScriptRunner_RunSetsChildWorkingDirectoryToRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake shell python not supported on windows")
+	}
+
+	binDir := t.TempDir()
+	root := t.TempDir()
+	recordPath := filepath.Join(t.TempDir(), "cwd.txt")
+	fakePython := filepath.Join(binDir, "fakepython")
+	script := "#!/bin/sh\n" +
+		"pwd > " + shellQuote(recordPath) + "\n" +
+		"exit 0\n"
+	require.NoError(t, os.WriteFile(fakePython, []byte(script), 0o755))
+
+	r := PythonScriptRunner{Python: fakePython}
+	res, err := r.Run(context.Background(), root, "raw", filepath.Join(t.TempDir(), "decision.json"))
+
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.ExitCode)
+	recorded, err := os.ReadFile(recordPath)
+	require.NoError(t, err)
+	expectedCWD, err := filepath.EvalSymlinks(root)
+	require.NoError(t, err)
+	actualCWD, err := filepath.EvalSymlinks(strings.TrimSpace(string(recorded)))
+	require.NoError(t, err)
+	assert.Equal(t, expectedCWD, actualCWD)
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 // TestPythonScriptRunner_SpawnFailure verifies a missing interpreter surfaces as
