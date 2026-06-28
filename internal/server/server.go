@@ -28,6 +28,7 @@ import (
 	"go.kenn.io/agentsview/internal/llm"
 	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/synthesize"
 	"go.kenn.io/agentsview/internal/web"
 	"go.kenn.io/kit/daemon"
 )
@@ -115,6 +116,10 @@ type Server struct {
 	// extractCtl is the runtime handle to the background LLM extraction worker.
 	// Nil means prerequisites were missing and the route reports unavailable.
 	extractCtl *extract.Controller
+
+	// synthesizeCtl is the runtime handle to the background topic-synthesis
+	// worker. Nil means prerequisites were missing and the route reports unavailable.
+	synthesizeCtl *synthesize.Controller
 }
 
 // New creates a new Server.
@@ -241,6 +246,12 @@ func WithConsolidateController(c *consolidate.Controller) Option {
 // enable endpoint can arm/disarm the worker at runtime.
 func WithExtractController(c *extract.Controller) Option {
 	return func(s *Server) { s.extractCtl = c }
+}
+
+// WithSynthesizeController injects the background topic-synthesis controller so
+// the enable/audit routes can report and toggle it.
+func WithSynthesizeController(c *synthesize.Controller) Option {
+	return func(s *Server) { s.synthesizeCtl = c }
 }
 
 // WithBackupController injects the background backup-push controller so the

@@ -20,6 +20,7 @@ func (s *Server) registerTypedAPIRoutes() {
 	s.registerConsolidateRoutes()
 	s.registerExtractRoutes()
 	s.registerStagingRoutes()
+	s.registerSynthesizeRoutes()
 	s.registerVaultRoutes()
 	s.registerSearchRoutes()
 	s.registerSecretsRoutes()

@@ -257,6 +257,15 @@ type Config struct {
 	// default (20).
 	ConsolidateBatchSize int `json:"consolidate_batch_size,omitempty" toml:"consolidate_batch_size"`
 
+	// SynthesizeEnabled gates the background topic-synthesis worker (atomic
+	// notes -> coherent topic notes). Default OFF: it auto-writes into
+	// memory/user, so the first run is an explicit opt-in.
+	SynthesizeEnabled bool `json:"synthesize_enabled" toml:"synthesize_enabled"`
+
+	// SynthesizeInterval is the period between synthesis runs once enabled. Zero
+	// selects the default (24h).
+	SynthesizeInterval time.Duration `json:"synthesize_interval,omitempty" toml:"synthesize_interval"`
+
 	// ExtractEnabled gates the background LLM extraction worker. It defaults to
 	// OFF so no LLM/file side effect happens without explicit opt-in.
 	ExtractEnabled bool `json:"extract_enabled" toml:"extract_enabled"`
@@ -356,6 +365,14 @@ func (c *Config) ResolveConsolidateBatchSize() int {
 		return c.ConsolidateBatchSize
 	}
 	return defaultConsolidateBatchSize
+}
+
+// ResolveSynthesizeInterval returns the effective synthesis interval (default 24h).
+func (c *Config) ResolveSynthesizeInterval() time.Duration {
+	if c.SynthesizeInterval > 0 {
+		return c.SynthesizeInterval
+	}
+	return 24 * time.Hour
 }
 
 // ResolveExtractInterval returns the effective extraction interval,
@@ -855,6 +872,8 @@ func (c *Config) loadFile() error {
 		ConsolidateEnabled             bool                       `toml:"consolidate_enabled"`
 		ConsolidateInterval            time.Duration              `toml:"consolidate_interval"`
 		ConsolidateBatchSize           int                        `toml:"consolidate_batch_size"`
+		SynthesizeEnabled              bool                       `toml:"synthesize_enabled"`
+		SynthesizeInterval             time.Duration              `toml:"synthesize_interval"`
 	}
 	meta, err := toml.DecodeFile(path, &file)
 	if err != nil {
@@ -939,6 +958,12 @@ func (c *Config) loadFile() error {
 	}
 	if file.ConsolidateBatchSize > 0 && c.ConsolidateBatchSize == 0 {
 		c.ConsolidateBatchSize = file.ConsolidateBatchSize
+	}
+	if meta.IsDefined("synthesize_enabled") {
+		c.SynthesizeEnabled = file.SynthesizeEnabled
+	}
+	if file.SynthesizeInterval > 0 && c.SynthesizeInterval == 0 {
+		c.SynthesizeInterval = file.SynthesizeInterval
 	}
 	if !c.envExtractEnabledSet && meta.IsDefined("extract_enabled") {
 		c.ExtractEnabled = file.ExtractEnabled
@@ -2226,6 +2251,11 @@ func (c *Config) SaveSettings(patch map[string]any) error {
 	if v, ok := patch["extract_enabled"]; ok {
 		if b, ok := v.(bool); ok {
 			c.ExtractEnabled = b
+		}
+	}
+	if v, ok := patch["synthesize_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			c.SynthesizeEnabled = b
 		}
 	}
 	if v, ok := patch["extract_interval"]; ok {
