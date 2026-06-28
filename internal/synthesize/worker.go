@@ -16,7 +16,11 @@ import (
 
 const (
 	defaultMinSimilarity = 0.55
-	defaultMaxClusters   = 8
+	// defaultMaxClusters caps clusters folded per cycle. With the ~4h interval
+	// this comfortably keeps up with new atomics and self-clears a burst backlog
+	// over a few cycles (verified: resync between cycles excludes folded sources,
+	// so a higher cap does not re-synthesize already-folded clusters).
+	defaultMaxClusters = 20
 )
 
 // LLMClient is the narrow LLM surface the worker needs.
