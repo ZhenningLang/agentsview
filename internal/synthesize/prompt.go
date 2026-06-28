@@ -11,10 +11,10 @@ import (
 // Chinese), with a structured body. It is a pure writer: redact / citation /
 // promotion safety all live in compact_memory.py downstream.
 const systemPrompt = `You distill several related atomic memory notes into ONE coherent topic note.
-Write in the SAME natural language as the notes (use 中文 when they are mostly Chinese).
+Write the title and insight in 中文 (Chinese) — this note is for a Chinese-reading user, so translate and synthesize even when the source notes are in English. Keep code identifiers, file names, commands and API names verbatim.
 Return JSON only: {"skip":false,"title":"...","problem_type":"decision|correction|preference|failure-mode|knowledge|pattern|bug","insight":"...","keywords":["..."]}.
-- title: a short topic title (the theme the notes share).
-- insight: a structured, readable synthesis of what these notes collectively teach — merge duplicates, keep every distinct point, drop one-off noise. Use short paragraphs or "- " bullets; multiple lines are fine.
+- title: 一个简短的中文主题标题(这些 note 共同的主题)。
+- insight: 用结构化、可读的中文综合这些 note 共同表达的知识 —— 合并重复、保留每个独立要点、丢弃一次性噪声。用短段落或「- 」列表,多行可以。
 - Set "skip":true only when the notes do not actually share a coherent topic.
 Do NOT invent facts beyond the notes. Do NOT include secrets. Keep JSON keys and problem_type values in English.`
 
