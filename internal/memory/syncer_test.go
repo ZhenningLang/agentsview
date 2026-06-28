@@ -1,8 +1,10 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -154,6 +156,46 @@ func TestSyncFailSoftOnBadFrontmatter(t *testing.T) {
 	assert.True(t, goodOK, "good note should sync despite a bad sibling")
 	_, badOK := by["bad.md"]
 	assert.False(t, badOK, "malformed note should be skipped fail-soft")
+}
+
+// A skipped malformed note must be logged, never silently dropped — a silently
+// vanished memory is the failure mode this guards against.
+func TestSyncLogsSkippedMalformedNote(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	bad := "---\ntitle: Bad\n  : : broken yaml [\n---\n\nbad body\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bad.md"), []byte(bad), 0o644))
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	w := &fakeWriter{}
+	s := NewSyncer(dir, w, nil)
+	require.NoError(t, s.Sync(context.Background()))
+
+	assert.Contains(t, buf.String(), "bad.md")
+	assert.Contains(t, buf.String(), "malformed frontmatter")
+}
+
+// A title containing ':' '#' and quotes, when emitted as a YAML double-quoted
+// scalar (the form assist_consolidate.py now renders), must parse and round-trip
+// — previously such notes broke strict YAML and vanished from the store.
+func TestSyncParsesQuotedSpecialCharTitle(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	writeNote(t, dir, "tricky.md",
+		"title: \"decision: # Scope Alignment: add or \\\"refactor\\\"\"\n"+
+			"date: 2026-06-28\nproblem_type: decision\n"+
+			"type: semantic\nstatus: active\norigin_session: ses_1",
+		"body")
+
+	w := &fakeWriter{}
+	s := NewSyncer(dir, w, nil)
+	require.NoError(t, s.Sync(context.Background()))
+
+	require.Len(t, w.memories, 1)
+	assert.Equal(t, "tricky.md", w.memories[0].RelPath)
+	assert.Equal(t, `decision: # Scope Alignment: add or "refactor"`, w.memories[0].Title)
 }
 
 func TestSyncNoFrontmatterTreatsAllAsBody(t *testing.T) {
