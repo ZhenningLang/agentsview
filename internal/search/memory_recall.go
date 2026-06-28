@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"errors"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -12,6 +13,15 @@ import (
 )
 
 const MinMemoryRecallSemanticScore = 0.78
+
+// ftsTermRE matches significant ASCII terms (≥3 chars) for the lexical recall
+// query. It uses alphanumeric runs only — matching FTS5's default unicode61
+// tokenizer, which splits on '-' '_' ':' etc — so "lzn-preview" yields "lzn"
+// and "preview" (the tokens actually stored), while camelCase identifiers like
+// "commitPoolItemsEqual" stay whole. ftsMaxTerms caps how many are OR'd.
+var ftsTermRE = regexp.MustCompile(`[A-Za-z][A-Za-z0-9]{2,}`)
+
+const ftsMaxTerms = 12
 
 type MemoryRecallRequest struct {
 	Query  string
@@ -69,10 +79,13 @@ func MemoryRecall(
 		return resp, err
 	}
 	lexicalFilter := req.Filter
-	lexicalFilter.Q = query
-	lexical, err := store.ListMemories(ctx, lexicalFilter)
-	if err != nil {
-		lexical = nil
+	lexicalFilter.Q = ftsQueryFromText(query)
+	var lexical []db.Memory
+	if lexicalFilter.Q != "" {
+		lexical, err = store.ListMemories(ctx, lexicalFilter)
+		if err != nil {
+			lexical = nil
+		}
 	}
 
 	hits := mergeMemoryRecall(queryVector, embedded, lexical)
@@ -86,6 +99,33 @@ func MemoryRecall(
 	resp.Hits = hits
 	resp.Count = len(hits)
 	return resp, nil
+}
+
+// ftsQueryFromText turns an arbitrary candidate blob into a safe FTS5 MATCH
+// expression. Passing the raw blob is doubly broken: punctuation like ':' '(' ')'
+// is FTS5 syntax (a stray colon throws a query error, so lexical recall silently
+// returns nothing), and bare space-separated tokens are implicitly ANDed (so a
+// long blob matches almost nothing). Instead we extract significant ASCII tokens
+// (code identifiers, file names, error words — which are shared across natural
+// languages) and OR them as quoted literals. CJK prose is dropped; the shared
+// identifiers carry the cross-language duplicate signal. Returns "" when no
+// usable term exists, so the caller skips the lexical leg entirely.
+func ftsQueryFromText(text string) string {
+	matches := ftsTermRE.FindAllString(text, -1)
+	seen := map[string]struct{}{}
+	terms := make([]string, 0, ftsMaxTerms)
+	for _, m := range matches {
+		key := strings.ToLower(m)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		terms = append(terms, `"`+m+`"`)
+		if len(terms) >= ftsMaxTerms {
+			break
+		}
+	}
+	return strings.Join(terms, " OR ")
 }
 
 func mergeMemoryRecall(queryVector []float32, embedded, lexical []db.Memory) []MemoryRecallHit {

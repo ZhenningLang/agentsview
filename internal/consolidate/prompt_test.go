@@ -42,3 +42,13 @@ func TestSystemPromptDocumentsDestructiveActionsAndNoteIDContract(t *testing.T) 
 	assert.Contains(t, systemPrompt, "INVALIDATE")
 	assert.Contains(t, systemPrompt, "similar_memories[].note_id")
 }
+
+func TestSystemPromptInstructsBatchAndCrossLanguageDedup(t *testing.T) {
+	lower := strings.ToLower(systemPrompt)
+	// Within-batch dedup: the model sees the whole batch and must collapse
+	// duplicate candidates captured from overlapping sessions.
+	assert.Contains(t, lower, "duplicate")
+	assert.Contains(t, lower, "batch")
+	// Cross-language / reworded restatements count as duplicates (EN vs ZH).
+	assert.Contains(t, lower, "language")
+}

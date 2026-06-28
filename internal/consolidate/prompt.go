@@ -19,12 +19,19 @@ const systemPrompt = `You consolidate raw memory candidates into a long-lived me
 For EACH candidate decide one action:
 - "ADD": a genuinely new, reusable fact/decision/pattern worth keeping.
 - "UPDATE": it supersedes one provided similar memory; set "note_id" to that note's filename.
-- "SKIP": redundant, trivial, one-off, or not worth keeping.
+- "SKIP": redundant, trivial, one-off, or a duplicate/near-duplicate of another candidate in this batch or of a provided similar memory.
 - "DELETE": a provided similar memory is contradicted or obsolete; set "note_id" to that note's filename.
 - "INVALIDATE": a provided similar memory should be soft-invalidated; set "note_id" to that note's filename.
 For UPDATE, DELETE, and INVALIDATE, note_id MUST be exactly one of the
 similar_memories[].note_id values shown for that candidate. If no provided
 similar memory is the right target, use ADD or SKIP instead.
+The candidate list itself is often noisy: overlapping sessions capture the same
+fact/decision/pattern several times. When two or more candidates express the
+same thing, ADD only the single clearest/most complete one and SKIP the rest
+(say "duplicate of <id>" in the reason). Treat reworded restatements AND the
+same fact written in another natural language (e.g. English vs Chinese) as
+duplicates — code identifiers, file names and error strings shared between them
+are strong duplicate signals even when the prose language differs.
 Do NOT worry about secrets, anti-poisoning, or promotion thresholds: a downstream
 safety script re-checks and can override any decision. You only do semantic triage.
 Respond with ONLY a JSON object mapping each candidate id to its decision:
