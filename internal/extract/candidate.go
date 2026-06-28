@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -42,6 +43,8 @@ type Candidate struct {
 	Category       string   `json:"category"`
 	ProblemType    string   `json:"problem_type,omitempty"`
 	OriginSession  string   `json:"origin_session"`
+	OriginProject  string   `json:"origin_project"`
+	Scope          string   `json:"scope"`
 	SourcePlatform string   `json:"source_platform"`
 	SourceRoles    []string `json:"source_roles"`
 	Why            string   `json:"why,omitempty"`
@@ -65,6 +68,7 @@ func NewCandidate(in LLMCandidate, sess db.Session, msgs []db.Message, now time.
 	if !ok {
 		return Candidate{}, fmt.Errorf("unsupported category %q", in.Category)
 	}
+	originProject, scope := originScope(sess)
 	c := Candidate{
 		Summary:        strings.TrimSpace(in.Summary),
 		Evidence:       strings.TrimSpace(in.Evidence),
@@ -72,6 +76,8 @@ func NewCandidate(in LLMCandidate, sess db.Session, msgs []db.Message, now time.
 		Category:       category,
 		ProblemType:    problemType,
 		OriginSession:  originSession(sess.ID),
+		OriginProject:  originProject,
+		Scope:          scope,
 		SourcePlatform: strings.ToLower(strings.TrimSpace(sess.Agent)),
 		SourceRoles:    sourceRoles(msgs),
 		Why:            strings.TrimSpace(in.Why),
@@ -85,6 +91,27 @@ func NewCandidate(in LLMCandidate, sess db.Session, msgs []db.Message, now time.
 	}
 	c.ID = CandidateID(c)
 	return c, nil
+}
+
+// originScope maps an extracted session to (origin_project, scope), mirroring
+// dotfiles classify_origin_scope so extract-produced candidates carry the same
+// user-vs-project tag the hook-capture path does. The dotfiles repo, home, and
+// the agent config dirs (~/.claude, ~/.config) are general/user; any other repo
+// is "project" named by the session's project. Sessions carry a Project name
+// (basename) and an optional Cwd path; the Cwd is used only to detect the
+// user buckets. Unknown/empty -> ("", "user").
+func originScope(sess db.Session) (string, string) {
+	cwd := filepath.ToSlash(strings.TrimSpace(sess.Cwd))
+	if cwd != "" {
+		if strings.Contains(cwd+"/", "/.claude/") || strings.Contains(cwd+"/", "/.config/") {
+			return "", "user"
+		}
+	}
+	switch strings.TrimSpace(sess.Project) {
+	case "", ".dotfiles", "dotfiles":
+		return "", "user"
+	}
+	return strings.TrimSpace(sess.Project), "project"
 }
 
 func normalizeCategory(category string) string {
@@ -215,6 +242,8 @@ func candidateMap(c Candidate) map[string]any {
 		"category":        c.Category,
 		"problem_type":    c.ProblemType,
 		"origin_session":  c.OriginSession,
+		"origin_project":  c.OriginProject,
+		"scope":           c.Scope,
 		"source_platform": c.SourcePlatform,
 		"source_roles":    c.SourceRoles,
 		"why":             c.Why,

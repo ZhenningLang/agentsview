@@ -18,6 +18,25 @@ import (
 	"go.kenn.io/agentsview/internal/llm"
 )
 
+func TestNewCandidateTagsOriginScope(t *testing.T) {
+	now := time.Unix(0, 0).UTC()
+	in := LLMCandidate{Summary: "s", Evidence: "e", Implication: "i", Category: "decision", Why: "because"}
+	// A project session -> project scope, named by the session's project.
+	proj, err := NewCandidate(in, db.Session{ID: "x", Agent: "kilo", Project: "ordo-ai", Cwd: "/Users/x/Projects/ordo-ai"}, nil, now)
+	require.NoError(t, err)
+	assert.Equal(t, "project", proj.Scope)
+	assert.Equal(t, "ordo-ai", proj.OriginProject)
+	// The dotfiles repo itself is general/user work.
+	usr, err := NewCandidate(in, db.Session{ID: "y", Agent: "cc", Project: ".dotfiles", Cwd: "/Users/x/.dotfiles"}, nil, now)
+	require.NoError(t, err)
+	assert.Equal(t, "user", usr.Scope)
+	assert.Equal(t, "", usr.OriginProject)
+	// An agent-config session (~/.claude) is general/user even with a name.
+	cfg, err := NewCandidate(in, db.Session{ID: "z", Agent: "cc", Project: "skills", Cwd: "/Users/x/.claude/skills"}, nil, now)
+	require.NoError(t, err)
+	assert.Equal(t, "user", cfg.Scope)
+}
+
 func TestCandidateCanonicalIDMatchesPythonCaptureAlgorithm(t *testing.T) {
 	c := fixedCandidate(t)
 	canonical, err := CanonicalForHash(c)
