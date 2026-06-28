@@ -381,6 +381,12 @@ func (c *Config) ConsolidateLLM() LLMConfig {
 
 func (c *Config) resolveLegacyConsolidateLLM() LLMConfig {
 	out := c.LLM
+	// Consolidation is a semantic-triage classifier, not a reasoning task. Do
+	// NOT inherit the base [llm] reasoning_effort: deepseek honors it (adds a
+	// thinking pass that ~tripled call latency in practice), which pushed cycles
+	// past the LLM client timeout and failed the whole cycle. An explicit
+	// [consolidate] or bound-provider reasoning_effort below still wins.
+	out.ReasoningEffort = ""
 	if c.Consolidate.BaseURL != "" {
 		out.BaseURL = c.Consolidate.BaseURL
 	}

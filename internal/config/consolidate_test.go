@@ -118,6 +118,24 @@ func TestConsolidateLLM_FallbackAndOverride(t *testing.T) {
 	}
 }
 
+// Consolidation is a semantic-triage classifier, not a reasoning task. It must
+// NOT inherit the base [llm] reasoning_effort: deepseek honors it (adds a
+// thinking pass that ~tripled latency in practice) and pushed cycles past the
+// LLM client timeout, failing the whole cycle. Reasoning stays off here.
+func TestConsolidateLLM_DisablesInheritedReasoning(t *testing.T) {
+	cfg := Config{
+		LLM: LLMConfig{
+			BaseURL:         "https://main.example/v1",
+			APIKey:          "main-key",
+			Model:           "deepseek-chat",
+			ReasoningEffort: "medium",
+		},
+	}
+	if got := cfg.ConsolidateLLM(); got.ReasoningEffort != "" {
+		t.Errorf("ConsolidateLLM ReasoningEffort = %q, want disabled (\"\")", got.ReasoningEffort)
+	}
+}
+
 func mkdirAll(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -855,9 +856,13 @@ func startConsolidate(
 	resync := consolidate.ResyncFunc(func(c context.Context) error {
 		return memory.NewSyncerWithEmbedder(dir, writer, nil, embedder).Sync(c)
 	})
+	// Background batch consolidation is not interactive; give it a longer HTTP
+	// timeout than the 30s default so a momentarily slow provider response does
+	// not fail the whole cycle (reasoning is already disabled in ConsolidateLLM).
+	consolidateHTTP := &http.Client{Timeout: 90 * time.Second}
 	worker := consolidate.NewWorker(
 		stagingDir, rawDir, root,
-		llm.New(cfg.ConsolidateLLM()),
+		llm.NewWithHTTPClient(cfg.ConsolidateLLM(), consolidateHTTP),
 		consolidate.PythonScriptRunner{},
 		consolidate.GitCommitter{Dir: dir},
 		resync,
