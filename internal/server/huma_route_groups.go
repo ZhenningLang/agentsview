@@ -19,6 +19,7 @@ func (s *Server) registerTypedAPIRoutes() {
 	s.registerMemoryQualityRoutes()
 	s.registerConsolidateRoutes()
 	s.registerExtractRoutes()
+	s.registerStagingRoutes()
 	s.registerVaultRoutes()
 	s.registerSearchRoutes()
 	s.registerSecretsRoutes()

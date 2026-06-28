@@ -160,10 +160,26 @@ type Candidate struct {
 	Evidence      string `json:"evidence"`
 	Implication   string `json:"implication"`
 	OriginSession string `json:"origin_session"`
+	OriginProject string `json:"origin_project"`
+	Scope         string `json:"scope"`
+	CreatedAt     string `json:"created_at"`
 
 	// fileName is the on-disk basename (without dir), used to derive the id
 	// when the file omits one. Not serialized.
 	fileName string
+}
+
+// EffectiveID is the exported form of effectiveID for callers outside the
+// package (e.g. the staging-pool viewer route).
+func (c Candidate) EffectiveID() string { return c.effectiveID() }
+
+// EffectiveScope returns the candidate's origin scope, defaulting to "user"
+// for candidates captured before scope tagging (empty scope field).
+func (c Candidate) EffectiveScope() string {
+	if s := strings.TrimSpace(c.Scope); s != "" {
+		return s
+	}
+	return "user"
 }
 
 // effectiveID returns the candidate's id, falling back to the filename stem
