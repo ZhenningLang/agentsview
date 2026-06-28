@@ -23,6 +23,7 @@ import (
 	"go.kenn.io/agentsview/internal/extract"
 	"go.kenn.io/agentsview/internal/llm"
 	"go.kenn.io/agentsview/internal/memory"
+	"go.kenn.io/agentsview/internal/memorygc"
 	"go.kenn.io/agentsview/internal/parser"
 	"go.kenn.io/agentsview/internal/secrets"
 	"go.kenn.io/agentsview/internal/server"
@@ -260,6 +261,12 @@ func runServe(cfg config.Config) {
 	// takes effect (with an immediate first push) without a restart. Fail-open:
 	// a nil controller leaves the enable endpoint reporting "not available".
 	backupController := startBackupPush(ctx, cfg, database)
+
+	// Memory data-lifecycle GC: a steady-cadence timer (no enable gate — GC is
+	// cheap and git-recoverable) that expires raw staging candidates, the
+	// drained-candidate archive, and long-archived user notes via the dotfiles
+	// python scripts. Started only when the dotfiles root resolves.
+	startMemoryGC(ctx, cfg)
 
 	rtOpts := serveRuntimeOptions{
 		Mode:          "serve",
@@ -820,6 +827,24 @@ func startVaultSync(
 			}
 		}
 	}()
+}
+
+// startMemoryGC starts the memory data-lifecycle GC loop (raw candidates,
+// consumed archive, long-archived user notes). It is unconditional hygiene with
+// no enable gate — deletions are conservative (retention windows) and fully
+// recoverable from the memory/user git history. It no-ops when the dotfiles root
+// cannot be resolved.
+func startMemoryGC(ctx context.Context, cfg config.Config) {
+	root := cfg.ResolveDotfilesRoot()
+	if root == "" {
+		return
+	}
+	gc := memorygc.GC{
+		Root:                root,
+		ArchivedNoteTTLDays: memorygc.DefaultArchivedNoteTTLDays,
+		Runner:              memorygc.ExecRunner{},
+	}
+	go gc.Run(ctx, memorygc.DefaultInterval)
 }
 
 // startConsolidate starts the background consolidation worker and returns a
