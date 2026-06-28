@@ -18,6 +18,14 @@ import (
 	"go.kenn.io/agentsview/internal/llm"
 )
 
+func TestSystemPromptPreservesSourceLanguage(t *testing.T) {
+	lower := strings.ToLower(systemPrompt)
+	// Memory content must be written in the conversation's language (Chinese
+	// sessions -> Chinese notes), not defaulted to English.
+	assert.Contains(t, lower, "language")
+	assert.Contains(t, systemPrompt, "中文")
+}
+
 func TestNewCandidateTagsOriginScope(t *testing.T) {
 	now := time.Unix(0, 0).UTC()
 	in := LLMCandidate{Summary: "s", Evidence: "e", Implication: "i", Category: "decision", Why: "because"}
