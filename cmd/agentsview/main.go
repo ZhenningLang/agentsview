@@ -30,6 +30,7 @@ import (
 	"go.kenn.io/agentsview/internal/signals"
 	"go.kenn.io/agentsview/internal/skills"
 	"go.kenn.io/agentsview/internal/sync"
+	"go.kenn.io/agentsview/internal/synthesize"
 	"go.kenn.io/agentsview/internal/telemetry"
 	"go.kenn.io/agentsview/internal/vault"
 )
@@ -268,6 +269,12 @@ func runServe(cfg config.Config) {
 	// python scripts. Started only when the dotfiles root resolves.
 	startMemoryGC(ctx, cfg)
 
+	// Topic-synthesis worker: background timer that clusters atomic notes and
+	// distills each cluster into one coherent topic note via compact_memory.py.
+	// Default OFF (auto-writes into memory/user); enabling from the UI fires an
+	// immediate cycle. Nil when prerequisites are missing (route reports unavailable).
+	synthesizeController := startSynthesize(ctx, cfg, database)
+
 	rtOpts := serveRuntimeOptions{
 		Mode:          "serve",
 		RequestedPort: cfg.Port,
@@ -289,6 +296,7 @@ func runServe(cfg config.Config) {
 		server.WithBroadcaster(broadcaster),
 		server.WithConsolidateController(consolidateController),
 		server.WithExtractController(extractController),
+		server.WithSynthesizeController(synthesizeController),
 		server.WithBackupController(backupController),
 	)
 
@@ -859,6 +867,45 @@ func startMemoryGC(ctx context.Context, cfg config.Config) {
 // when the store is not a local writer (PG/DuckDB serve modes never own the
 // SSOT files) — fail-open like the syncs above. A nil controller leaves the
 // server's enable endpoint reporting "not available", never panicking.
+// startSynthesize starts the background topic-synthesis worker: it clusters the
+// atomic notes and distills each cluster into one coherent topic note via
+// compact_memory.py. Like consolidate it is always started (when prerequisites
+// exist) so the UI toggle takes effect without a restart; SynthesizeEnabled
+// (default OFF) only sets the initial armed state. Returns nil when a writable
+// memory dir / dotfiles root is unavailable.
+func startSynthesize(
+	ctx context.Context, cfg config.Config, database db.Store,
+) *synthesize.Controller {
+	dir := cfg.ResolveMemoryDir()
+	root := cfg.ResolveDotfilesRoot()
+	if dir == "" || root == "" {
+		return nil
+	}
+	writer, ok := database.(memory.Writer)
+	if !ok {
+		return nil
+	}
+	embedder := llm.New(cfg.ResolveUsageLLM("embed"))
+	resync := consolidate.ResyncFunc(func(c context.Context) error {
+		return memory.NewSyncerWithEmbedder(dir, writer, nil, embedder).Sync(c)
+	})
+	// Synthesis is a generation task; reuse the consolidate LLM (reasoning off)
+	// with the same long background timeout so a slow response never fails a cycle.
+	synthHTTP := &http.Client{Timeout: 90 * time.Second}
+	worker := &synthesize.Worker{
+		Root:   root,
+		Store:  database,
+		LLM:    llm.NewWithHTTPClient(cfg.ConsolidateLLM(), synthHTTP),
+		Script: synthesize.PythonScriptRunner{},
+		Commit: consolidate.GitCommitter{Dir: dir},
+		Resync: resync,
+		Audit:  synthesize.NewAuditLog(synthesize.AuditPath(dir)),
+	}
+	ctrl := synthesize.NewController(worker, cfg.SynthesizeEnabled)
+	go ctrl.Run(ctx, cfg.ResolveSynthesizeInterval())
+	return ctrl
+}
+
 func startConsolidate(
 	ctx context.Context, cfg config.Config, database db.Store,
 ) *consolidate.Controller {
