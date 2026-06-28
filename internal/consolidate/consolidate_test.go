@@ -266,6 +266,78 @@ func TestWorker_WriteCommitsAndResyncs(t *testing.T) {
 	}
 }
 
+// --- staging drain: evaluated candidates are archived so they are never
+// re-sent to the LLM (the root cause of duplicate notes + an unbounded pool). ---
+
+func TestWorker_DrainsConsumedCandidatesToArchive(t *testing.T) {
+	script := &fakeScript{res: ScriptResult{Stdout: "write keep memory/user/keep.md\nskip drop duplicate\n", ExitCode: 0}}
+	w, rawDir := newTestWorker(t,
+		fakeLLM{resp: `{"keep":{"action":"ADD"},"drop":{"action":"SKIP"}}`}, script, &fakeCommitter{}, &fakeResyncer{})
+	writeCandidate(t, rawDir, "keep.json", map[string]any{"id": "keep", "summary": "s"})
+	writeCandidate(t, rawDir, "drop.json", map[string]any{"id": "drop", "summary": "s2"})
+
+	_, err := w.RunOnce(context.Background())
+	require.NoError(t, err)
+
+	// Both evaluated candidates (ADD and SKIP alike) are drained from the raw
+	// dir — keeping a SKIP'd candidate would re-burn LLM tokens every cycle.
+	entries, _ := os.ReadDir(rawDir)
+	jsonLeft := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") {
+			jsonLeft++
+		}
+	}
+	assert.Equal(t, 0, jsonLeft, "evaluated candidates should be drained from raw dir")
+
+	consumed := filepath.Join(w.StagingDir, "consumed")
+	for _, name := range []string{"keep.json", "drop.json"} {
+		_, statErr := os.Stat(filepath.Join(consumed, name))
+		assert.NoError(t, statErr, "expected %s archived under consumed/", name)
+	}
+}
+
+func TestWorker_CapsCandidatesPerCycle(t *testing.T) {
+	// A burst of 5 candidates with a per-cycle cap of 2: only 2 are sent to the
+	// LLM and drained this cycle; the other 3 wait for the next cycle. Bounds the
+	// prompt size + per-candidate recall calls when a backlog accumulates.
+	script := &fakeScript{res: ScriptResult{Stdout: "skip a x\nskip b x\n", ExitCode: 0}}
+	w, rawDir := newTestWorker(t,
+		fakeLLM{resp: `{"a":{"action":"SKIP"},"b":{"action":"SKIP"}}`}, script, &fakeCommitter{}, &fakeResyncer{})
+	w.BatchSize = 2
+	for _, id := range []string{"a", "b", "c", "d", "e"} {
+		writeCandidate(t, rawDir, id+".json", map[string]any{"id": id, "summary": "s" + id})
+	}
+
+	rec, err := w.RunOnce(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, 5, rec.CandidateCount, "CandidateCount should report the full backlog found")
+	assert.Equal(t, 2, rec.DrainedCount, "only the capped batch should be processed+drained")
+
+	entries, _ := os.ReadDir(rawDir)
+	jsonLeft := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") {
+			jsonLeft++
+		}
+	}
+	assert.Equal(t, 3, jsonLeft, "uncapped candidates must remain for the next cycle")
+}
+
+func TestWorker_DoesNotDrainWhenScriptProcessFails(t *testing.T) {
+	script := &fakeScript{err: errors.New("boom")}
+	w, rawDir := newTestWorker(t,
+		fakeLLM{resp: `{"c1":{"action":"ADD"}}`}, script, &fakeCommitter{}, &fakeResyncer{})
+	writeCandidate(t, rawDir, "c1.json", map[string]any{"id": "c1", "summary": "s"})
+
+	_, err := w.RunOnce(context.Background())
+	require.NoError(t, err) // script process failure is recoverable, recorded in rec.Error
+
+	_, statErr := os.Stat(filepath.Join(rawDir, "c1.json"))
+	assert.NoError(t, statErr, "candidate must remain for retry when the script process fails")
+}
+
 func TestWorker_RecallContextDrivesUpdateDeleteAndDecisionFile(t *testing.T) {
 	recaller := &fakeRecaller{notesByID: map[string][]ExistingNote{
 		"dup":        {{NoteID: "existing-dup.md", Title: "Duplicate", Excerpt: "same knowledge"}},
