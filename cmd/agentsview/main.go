@@ -850,8 +850,10 @@ func startConsolidate(
 	}
 	stagingDir := filepath.Join(root, "memory", ".staging")
 	rawDir := filepath.Join(stagingDir, "raw_memories")
+	embedCfg := cfg.ResolveUsageLLM("embed")
+	embedder := llm.New(embedCfg)
 	resync := consolidate.ResyncFunc(func(c context.Context) error {
-		return memory.NewSyncerWithEmbedder(dir, writer, nil, llm.New(cfg.ResolveUsageLLM("embed"))).Sync(c)
+		return memory.NewSyncerWithEmbedder(dir, writer, nil, embedder).Sync(c)
 	})
 	worker := consolidate.NewWorker(
 		stagingDir, rawDir, root,
@@ -860,6 +862,7 @@ func startConsolidate(
 		consolidate.GitCommitter{Dir: dir},
 		resync,
 		consolidate.NewAuditLog(consolidate.AuditPath(dir)),
+		consolidate.NewStoreMemoryRecaller(database, embedder, embedCfg),
 	)
 	ctrl := consolidate.NewController(worker, cfg.ConsolidateEnabled)
 	go ctrl.Run(ctx, cfg.ResolveConsolidateInterval())

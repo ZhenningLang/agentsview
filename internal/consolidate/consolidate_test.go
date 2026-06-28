@@ -6,11 +6,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/llm"
 )
 
@@ -50,6 +52,16 @@ func TestParseDecisions_UnknownActionBecomesSkip(t *testing.T) {
 	if got["a"].Action != ActionSKIP {
 		t.Errorf("unknown action = %q, want SKIP", got["a"].Action)
 	}
+}
+
+func TestParseDecisions_PreservesDeleteInvalidateNoteID(t *testing.T) {
+	raw := `{"delete-cand":{"action":"DELETE","note_id":"old.md"},"invalidate-cand":{"action":"INVALIDATE","note_id":"obsolete.md"}}`
+
+	got, err := ParseDecisions(raw, []string{"delete-cand", "invalidate-cand"})
+
+	require.NoError(t, err)
+	assert.Equal(t, Decision{Action: ActionDELETE, NoteID: "old.md"}, got["delete-cand"])
+	assert.Equal(t, Decision{Action: ActionINVALIDATE, NoteID: "obsolete.md"}, got["invalidate-cand"])
 }
 
 func TestParseDecisions_DropsHallucinatedIDs(t *testing.T) {
@@ -142,6 +154,38 @@ type fakeScript struct {
 	onRun  func(decisionFile string)
 }
 
+type promptAwareLLM struct {
+	t        *testing.T
+	response string
+	check    func(string)
+}
+
+func (f promptAwareLLM) ChatJSON(_ context.Context, _, user string) (string, error) {
+	if f.check != nil {
+		f.check(user)
+	}
+	return f.response, nil
+}
+
+type fakeRecaller struct {
+	notesByID map[string][]ExistingNote
+	err       error
+	calls     []recallCall
+}
+
+type recallCall struct {
+	id   string
+	topK int
+}
+
+func (f *fakeRecaller) Recall(_ context.Context, c Candidate, topK int) ([]ExistingNote, error) {
+	f.calls = append(f.calls, recallCall{id: c.effectiveID(), topK: topK})
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.notesByID[c.effectiveID()], nil
+}
+
 func (f *fakeScript) Run(_ context.Context, _, _, decisionFile string) (ScriptResult, error) {
 	f.called = true
 	f.gotDF = decisionFile
@@ -222,6 +266,112 @@ func TestWorker_WriteCommitsAndResyncs(t *testing.T) {
 	}
 }
 
+func TestWorker_RecallContextDrivesUpdateDeleteAndDecisionFile(t *testing.T) {
+	recaller := &fakeRecaller{notesByID: map[string][]ExistingNote{
+		"dup":        {{NoteID: "existing-dup.md", Title: "Duplicate", Excerpt: "same knowledge"}},
+		"newer":      {{NoteID: "old-decision.md", Title: "Old decision", Excerpt: "old threshold"}},
+		"delete-old": {{NoteID: "delete-target.md", Title: "Delete target", Excerpt: "bad rule"}},
+		"invalidate": {{NoteID: "obsolete.md", Title: "Obsolete", Excerpt: "outdated rule"}},
+	}}
+	script := &fakeScript{res: ScriptResult{Stdout: "skip dup duplicate\nupdate newer memory/user/old-decision.md\nsoft_invalidate delete-old memory/user/delete-target.md\nsoft_invalidate invalidate memory/user/obsolete.md\n", ExitCode: 0}}
+	script.onRun = func(decisionFile string) {
+		data, err := os.ReadFile(decisionFile)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), `"note_id":"old-decision.md"`)
+		assert.Contains(t, string(data), `"note_id":"delete-target.md"`)
+		assert.Contains(t, string(data), `"note_id":"obsolete.md"`)
+	}
+	llm := promptAwareLLM{t: t, response: `{"dup":{"action":"SKIP","reason":"duplicate"},"newer":{"action":"UPDATE","note_id":"old-decision.md"},"delete-old":{"action":"DELETE","note_id":"delete-target.md"},"invalidate":{"action":"INVALIDATE","note_id":"obsolete.md"}}`, check: func(user string) {
+		assert.Contains(t, user, `"similar_memories"`)
+		assert.Contains(t, user, `"note_id":"existing-dup.md"`)
+		assert.Contains(t, user, `"note_id":"old-decision.md"`)
+		assert.Contains(t, user, `"note_id":"delete-target.md"`)
+		assert.Contains(t, user, `"note_id":"obsolete.md"`)
+	}}
+	w, rawDir := newTestWorker(t, llm, script, &fakeCommitter{}, &fakeResyncer{})
+	w.Recall = recaller
+	writeCandidate(t, rawDir, "dup.json", map[string]any{"id": "dup", "summary": "same knowledge"})
+	writeCandidate(t, rawDir, "newer.json", map[string]any{"id": "newer", "summary": "new threshold"})
+	writeCandidate(t, rawDir, "delete-old.json", map[string]any{"id": "delete-old", "summary": "old rule is wrong"})
+	writeCandidate(t, rawDir, "invalidate.json", map[string]any{"id": "invalidate", "summary": "obsolete note should be invalidated"})
+
+	rec, err := w.RunOnce(context.Background())
+
+	require.NoError(t, err)
+	assert.True(t, script.called)
+	require.Len(t, recaller.calls, 4)
+	for _, call := range recaller.calls {
+		assert.Equal(t, recallTopK, call.topK)
+	}
+	assert.Equal(t, 1, rec.UpdateCount)
+	assert.Equal(t, 1, rec.SkipCount)
+	assert.Equal(t, 1, rec.DeleteCount)
+	assert.Equal(t, 1, rec.InvalidateCount)
+	require.Len(t, rec.Decisions, 4)
+	actions := map[string]string{}
+	noteIDs := map[string]string{}
+	for _, decision := range rec.Decisions {
+		actions[decision.CandidateID] = decision.Action
+		noteIDs[decision.CandidateID] = decision.NoteID
+	}
+	assert.Equal(t, string(ActionDELETE), actions["delete-old"])
+	assert.Equal(t, "delete-target.md", noteIDs["delete-old"])
+	assert.Equal(t, string(ActionINVALIDATE), actions["invalidate"])
+	assert.Equal(t, "obsolete.md", noteIDs["invalidate"])
+}
+
+func TestWorker_RecallDisabledFailsOpenWithoutErrorNote(t *testing.T) {
+	recaller := &fakeRecaller{}
+	script := &fakeScript{res: ScriptResult{Stdout: "skip c1 disabled_context\n", ExitCode: 0}}
+	llm := promptAwareLLM{t: t, response: `{"c1":{"action":"SKIP","reason":"disabled context"}}`, check: func(user string) {
+		assert.Contains(t, user, `"similar_memories":[]`)
+		assert.NotContains(t, user, `"note_id"`)
+	}}
+	w, rawDir := newTestWorker(t, llm, script, &fakeCommitter{}, &fakeResyncer{})
+	w.Recall = recaller
+	writeCandidate(t, rawDir, "c1.json", map[string]any{"id": "c1", "summary": "candidate still reaches LLM"})
+
+	rec, err := w.RunOnce(context.Background())
+
+	require.NoError(t, err)
+	assert.True(t, script.called)
+	assert.Equal(t, "", rec.Note)
+	assert.Equal(t, "", rec.Error)
+	assert.Equal(t, 1, rec.LLMCallCount)
+	require.Len(t, recaller.calls, 1)
+	assert.Equal(t, recallTopK, recaller.calls[0].topK)
+}
+
+func TestWorker_RecallFailureFailsOpenWithEmptyContext(t *testing.T) {
+	recaller := &fakeRecaller{err: errors.New("recall unavailable")}
+	script := &fakeScript{res: ScriptResult{Stdout: "skip c1 no_context\n", ExitCode: 0}}
+	llm := promptAwareLLM{t: t, response: `{"c1":{"action":"SKIP","reason":"no context"}}`, check: func(user string) {
+		assert.Contains(t, user, `"similar_memories":[]`)
+		assert.NotContains(t, user, `"note_id"`)
+	}}
+	w, rawDir := newTestWorker(t, llm, script, &fakeCommitter{}, &fakeResyncer{})
+	w.Recall = recaller
+	writeCandidate(t, rawDir, "c1.json", map[string]any{"id": "c1", "summary": "candidate still reaches LLM"})
+
+	rec, err := w.RunOnce(context.Background())
+
+	require.NoError(t, err)
+	assert.True(t, script.called)
+	assert.Contains(t, rec.Note, "memory recall failed")
+	assert.Equal(t, 1, rec.LLMCallCount)
+}
+
+func TestStoreMemoryRecallerRequestUsesCrossAgentFilterAndTopK(t *testing.T) {
+	req := (StoreMemoryRecaller{}).requestFor(Candidate{ID: "c1", ProblemType: "knowledge", Summary: "summary", Evidence: "evidence"}, recallTopK)
+
+	assert.Equal(t, recallTopK, req.TopK)
+	assert.Equal(t, db.SourceCrossAgent, req.Filter.Source)
+	assert.Contains(t, req.Query, "knowledge")
+	assert.Contains(t, req.Query, "summary")
+	assert.Contains(t, req.Query, "evidence")
+	assert.False(t, strings.Contains(req.Query, "  "))
+}
+
 func TestWorkerRecordsLLMMetricsAndDecisionCounts(t *testing.T) {
 	script := &fakeScript{res: ScriptResult{Stdout: "write c1 memory/user/c1.md\nskip c2 duplicate\n", ExitCode: 0}}
 	w, rawDir := newTestWorker(t,
@@ -239,6 +389,8 @@ func TestWorkerRecordsLLMMetricsAndDecisionCounts(t *testing.T) {
 	assert.Equal(t, 1, rec.AddCount)
 	assert.Equal(t, 0, rec.UpdateCount)
 	assert.Equal(t, 1, rec.SkipCount)
+	assert.Equal(t, 0, rec.DeleteCount)
+	assert.Equal(t, 0, rec.InvalidateCount)
 }
 
 // --- worker: SKIP-only does not commit ---
