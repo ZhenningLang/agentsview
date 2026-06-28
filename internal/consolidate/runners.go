@@ -41,6 +41,7 @@ func (r PythonScriptRunner) Run(
 		"--raw-dir", rawDirRel,
 		"--decision-file", decisionFile,
 	)
+	cmd.Dir = root
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

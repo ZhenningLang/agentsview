@@ -11,8 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/llm"
+	semantic "go.kenn.io/agentsview/internal/search"
 )
+
+const recallTopK = 5
 
 // LLMClient is the narrow LLM surface the worker needs. *llm.Client satisfies
 // it via ChatJSON. Tests substitute a stub so a cycle never hits the network.
@@ -56,6 +61,46 @@ type Resyncer interface {
 	Resync(ctx context.Context) error
 }
 
+type MemoryRecaller interface {
+	Recall(ctx context.Context, candidate Candidate, topK int) ([]ExistingNote, error)
+}
+
+type StoreMemoryRecaller struct {
+	Store    db.Store
+	Embedder semantic.Embedder
+	Config   config.LLMConfig
+}
+
+func NewStoreMemoryRecaller(store db.Store, embedder semantic.Embedder, cfg config.LLMConfig) StoreMemoryRecaller {
+	return StoreMemoryRecaller{Store: store, Embedder: embedder, Config: cfg}
+}
+
+func (r StoreMemoryRecaller) Recall(ctx context.Context, candidate Candidate, topK int) ([]ExistingNote, error) {
+	if r.Store == nil || r.Embedder == nil {
+		return nil, nil
+	}
+	resp, err := semantic.MemoryRecall(ctx, r.Store, r.Embedder, r.Config, r.requestFor(candidate, topK))
+	if err != nil || resp.Disabled {
+		return nil, err
+	}
+	notes := make([]ExistingNote, 0, len(resp.Hits))
+	for _, hit := range resp.Hits {
+		notes = append(notes, ExistingNoteFromRecallHit(hit))
+	}
+	return notes, nil
+}
+
+func (r StoreMemoryRecaller) requestFor(candidate Candidate, topK int) semantic.MemoryRecallRequest {
+	if topK <= 0 {
+		topK = recallTopK
+	}
+	return semantic.MemoryRecallRequest{
+		Query:  recallQuery(candidate),
+		TopK:   topK,
+		Filter: db.MemoryFilter{Source: db.SourceCrossAgent},
+	}
+}
+
 // Worker orchestrates one consolidation cycle: lock -> read candidates ->
 // LLM decision -> script exec -> commit -> resync -> audit. All side-effecting
 // collaborators are injected so the cycle is fully testable offline.
@@ -69,6 +114,7 @@ type Worker struct {
 	Commit Committer
 	Resync Resyncer
 	Audit  *AuditLog
+	Recall MemoryRecaller
 
 	now func() time.Time
 }
@@ -76,8 +122,12 @@ type Worker struct {
 // NewWorker builds a Worker with the default clock.
 func NewWorker(
 	stagingDir, rawDir, dotfilesRoot string,
-	llm LLMClient, script ScriptRunner, commit Committer, resync Resyncer, audit *AuditLog,
+	llm LLMClient, script ScriptRunner, commit Committer, resync Resyncer, audit *AuditLog, recall ...MemoryRecaller,
 ) *Worker {
+	var recaller MemoryRecaller
+	if len(recall) > 0 {
+		recaller = recall[0]
+	}
 	return &Worker{
 		StagingDir:   stagingDir,
 		RawDir:       rawDir,
@@ -87,6 +137,7 @@ func NewWorker(
 		Commit:       commit,
 		Resync:       resync,
 		Audit:        audit,
+		Recall:       recaller,
 		now:          time.Now,
 	}
 }
@@ -131,9 +182,10 @@ func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
 	for _, c := range candidates {
 		ids = append(ids, c.effectiveID())
 	}
+	similarByID := w.recallSimilar(ctx, candidates, &rec)
 
 	started := time.Now()
-	raw, usage, err := w.chatJSON(ctx, systemPrompt, BuildUserPrompt(candidates))
+	raw, usage, err := w.chatJSON(ctx, systemPrompt, BuildUserPrompt(candidates, similarByID))
 	rec.LLMCallCount++
 	rec.LLMDurationMS += int(time.Since(started).Milliseconds())
 	rec.ProviderUsage = "consolidate"
@@ -147,7 +199,7 @@ func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
 	}
 
 	decisions, err := ParseDecisions(raw, ids)
-	rec.AddCount, rec.UpdateCount, rec.SkipCount = decisionCounts(decisions)
+	rec.AddCount, rec.UpdateCount, rec.SkipCount, rec.DeleteCount, rec.InvalidateCount = decisionCounts(decisions)
 	if err != nil {
 		// Defensive parse failure: skip the cycle, audit it, never write.
 		rec.Error = fmt.Sprintf("parsing decisions: %v", err)
@@ -197,6 +249,41 @@ func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
 	return rec, nil
 }
 
+func (w *Worker) recallSimilar(ctx context.Context, candidates []Candidate, rec *RunRecord) map[string][]ExistingNote {
+	if w.Recall == nil {
+		return nil
+	}
+	similarByID := make(map[string][]ExistingNote, len(candidates))
+	var errs []string
+	for _, c := range candidates {
+		notes, err := w.Recall.Recall(ctx, c, recallTopK)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", c.effectiveID(), err))
+			continue
+		}
+		similarByID[c.effectiveID()] = notes
+	}
+	if len(errs) > 0 && rec != nil {
+		rec.Note = "memory recall failed: " + strings.Join(errs, "; ")
+	}
+	return similarByID
+}
+
+func recallQuery(c Candidate) string {
+	parts := []string{c.ProblemType, c.Category, c.Summary, c.Evidence, c.Implication}
+	return strings.Join(nonEmpty(parts), "\n")
+}
+
+func nonEmpty(parts []string) []string {
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
 func (w *Worker) chatJSON(ctx context.Context, system, user string) (string, llm.Usage, error) {
 	if c, ok := w.LLM.(llmUsageClient); ok {
 		return c.ChatJSONUsage(ctx, system, user)
@@ -205,7 +292,7 @@ func (w *Worker) chatJSON(ctx context.Context, system, user string) (string, llm
 	return raw, llm.Usage{}, err
 }
 
-func decisionCounts(decisions map[string]Decision) (adds, updates, skips int) {
+func decisionCounts(decisions map[string]Decision) (adds, updates, skips, deletes, invalidates int) {
 	for _, decision := range decisions {
 		switch decision.Action {
 		case ActionADD:
@@ -214,9 +301,13 @@ func decisionCounts(decisions map[string]Decision) (adds, updates, skips int) {
 			updates++
 		case ActionSKIP:
 			skips++
+		case ActionDELETE:
+			deletes++
+		case ActionINVALIDATE:
+			invalidates++
 		}
 	}
-	return adds, updates, skips
+	return adds, updates, skips, deletes, invalidates
 }
 
 // writeDecisionFile writes the per-candidate decision map as the JSON the

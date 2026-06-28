@@ -14,8 +14,9 @@ import (
 const MinMemoryRecallSemanticScore = 0.78
 
 type MemoryRecallRequest struct {
-	Query string
-	TopK  int
+	Query  string
+	TopK   int
+	Filter db.MemoryFilter
 }
 
 type MemoryRecallHit struct {
@@ -63,11 +64,13 @@ func MemoryRecall(
 		return resp, err
 	}
 
-	embedded, err := store.MemoryEmbeddings(ctx, db.MemoryFilter{})
+	embedded, err := store.MemoryEmbeddings(ctx, req.Filter)
 	if err != nil {
 		return resp, err
 	}
-	lexical, err := store.ListMemories(ctx, db.MemoryFilter{Q: query})
+	lexicalFilter := req.Filter
+	lexicalFilter.Q = query
+	lexical, err := store.ListMemories(ctx, lexicalFilter)
 	if err != nil {
 		lexical = nil
 	}
