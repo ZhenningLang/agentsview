@@ -864,6 +864,7 @@ func startConsolidate(
 		consolidate.NewAuditLog(consolidate.AuditPath(dir)),
 		consolidate.NewStoreMemoryRecaller(database, embedder, embedCfg),
 	)
+	worker.BatchSize = cfg.ResolveConsolidateBatchSize()
 	ctrl := consolidate.NewController(worker, cfg.ConsolidateEnabled)
 	go ctrl.Run(ctx, cfg.ResolveConsolidateInterval())
 	return ctrl

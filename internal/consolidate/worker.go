@@ -19,6 +19,11 @@ import (
 
 const recallTopK = 5
 
+// defaultBatchSize caps candidates processed per cycle when Worker.BatchSize is
+// unset, so a burst backlog is worked off over several cycles instead of one
+// oversized prompt + a flood of recall calls.
+const defaultBatchSize = 20
+
 // LLMClient is the narrow LLM surface the worker needs. *llm.Client satisfies
 // it via ChatJSON. Tests substitute a stub so a cycle never hits the network.
 type LLMClient interface {
@@ -109,6 +114,11 @@ type Worker struct {
 	RawDir       string // <dotfiles>/memory/.staging/raw_memories
 	DotfilesRoot string // <dotfiles> (assist_consolidate.py --root)
 
+	// BatchSize caps how many candidates one cycle processes (and drains).
+	// A backlog larger than this is worked off over successive cycles, bounding
+	// the LLM prompt size and per-candidate recall calls. <=0 uses the default.
+	BatchSize int
+
 	LLM    LLMClient
 	Script ScriptRunner
 	Commit Committer
@@ -178,6 +188,12 @@ func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
 		return rec, nil
 	}
 
+	// Cap this cycle to a bounded batch; the rest are worked off next cycle.
+	// CandidateCount above still reflects the full backlog for observability.
+	if cap := w.batchSize(); len(candidates) > cap {
+		candidates = candidates[:cap]
+	}
+
 	ids := make([]string, 0, len(candidates))
 	for _, c := range candidates {
 		ids = append(ids, c.effectiveID())
@@ -227,6 +243,17 @@ func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
 		rec.ScriptErrors = splitNonEmptyLines(res.Stderr)
 	}
 
+	// Archive every candidate the script just evaluated so it is never re-sent
+	// to the LLM next cycle (the root cause of duplicate notes + an unbounded
+	// staging pool). Best-effort: a drain failure is noted but never undoes the
+	// cycle's writes/commit.
+	if drained, derr := w.drainConsumed(candidates, decisions); derr != nil {
+		rec.Note = appendNote(rec.Note, fmt.Sprintf("drain failed: %v", derr))
+		rec.DrainedCount = drained
+	} else {
+		rec.DrainedCount = drained
+	}
+
 	wrote := anyWrite(rec.Decisions)
 	if wrote && w.Commit != nil {
 		if err := w.Commit.Commit(ctx, w.commitMessage(rec)); err != nil {
@@ -247,6 +274,57 @@ func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
 
 	w.record(rec)
 	return rec, nil
+}
+
+// drainConsumed moves every candidate present in the decision set out of the
+// raw dir into <staging>/consumed/, so an evaluated candidate (ADD/UPDATE/SKIP/
+// DELETE/INVALIDATE alike) is never re-read next cycle. Candidates that landed
+// after this cycle read the dir are absent from `decisions` and stay for the
+// next cycle. Moving (not deleting) keeps the pool recoverable; the dir is
+// gitignored local-only. Best-effort: the first move error is returned but
+// partial progress (moved count) is preserved.
+func (w *Worker) drainConsumed(candidates []Candidate, decisions map[string]Decision) (int, error) {
+	consumedDir := filepath.Join(w.StagingDir, "consumed")
+	moved := 0
+	var firstErr error
+	for _, c := range candidates {
+		if _, ok := decisions[c.effectiveID()]; !ok {
+			continue
+		}
+		if c.fileName == "" {
+			continue
+		}
+		if err := os.MkdirAll(consumedDir, 0o700); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if err := os.Rename(filepath.Join(w.RawDir, c.fileName), filepath.Join(consumedDir, c.fileName)); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		moved++
+	}
+	return moved, firstErr
+}
+
+// batchSize returns the effective per-cycle candidate cap.
+func (w *Worker) batchSize() int {
+	if w.BatchSize > 0 {
+		return w.BatchSize
+	}
+	return defaultBatchSize
+}
+
+// appendNote joins a new note onto any existing RunRecord note without clobbering.
+func appendNote(existing, add string) string {
+	if existing == "" {
+		return add
+	}
+	return existing + "; " + add
 }
 
 func (w *Worker) recallSimilar(ctx context.Context, candidates []Candidate, rec *RunRecord) map[string][]ExistingNote {

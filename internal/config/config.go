@@ -251,6 +251,12 @@ type Config struct {
 	// AGENTSVIEW_CONSOLIDATE_INTERVAL (a Go duration string).
 	ConsolidateInterval time.Duration `json:"consolidate_interval,omitempty" toml:"consolidate_interval"`
 
+	// ConsolidateBatchSize caps how many candidates one consolidation cycle
+	// processes, so a burst backlog is worked off over successive cycles instead
+	// of one oversized LLM prompt + a flood of recall calls. Zero selects the
+	// default (20).
+	ConsolidateBatchSize int `json:"consolidate_batch_size,omitempty" toml:"consolidate_batch_size"`
+
 	// ExtractEnabled gates the background LLM extraction worker. It defaults to
 	// OFF so no LLM/file side effect happens without explicit opt-in.
 	ExtractEnabled bool `json:"extract_enabled" toml:"extract_enabled"`
@@ -326,6 +332,10 @@ func (c *Config) ResolveBackupWorkspaceDir() string {
 // ConsolidateInterval is left at its zero value.
 const defaultConsolidateInterval = 24 * time.Hour
 
+// defaultConsolidateBatchSize caps candidates per consolidation cycle when
+// ConsolidateBatchSize is left at its zero value.
+const defaultConsolidateBatchSize = 20
+
 // defaultExtractInterval is the period between extraction runs when
 // ExtractInterval is left at its zero value.
 const defaultExtractInterval = 24 * time.Hour
@@ -337,6 +347,15 @@ func (c *Config) ResolveConsolidateInterval() time.Duration {
 		return c.ConsolidateInterval
 	}
 	return defaultConsolidateInterval
+}
+
+// ResolveConsolidateBatchSize returns the effective per-cycle candidate cap,
+// substituting the default for a non-positive configured value.
+func (c *Config) ResolveConsolidateBatchSize() int {
+	if c.ConsolidateBatchSize > 0 {
+		return c.ConsolidateBatchSize
+	}
+	return defaultConsolidateBatchSize
 }
 
 // ResolveExtractInterval returns the effective extraction interval,
@@ -829,6 +848,7 @@ func (c *Config) loadFile() error {
 		ExtractInterval                time.Duration              `toml:"extract_interval"`
 		ConsolidateEnabled             bool                       `toml:"consolidate_enabled"`
 		ConsolidateInterval            time.Duration              `toml:"consolidate_interval"`
+		ConsolidateBatchSize           int                        `toml:"consolidate_batch_size"`
 	}
 	meta, err := toml.DecodeFile(path, &file)
 	if err != nil {
@@ -910,6 +930,9 @@ func (c *Config) loadFile() error {
 	}
 	if meta.IsDefined("consolidate_interval") && !c.envConsolidateIntervalSet {
 		c.ConsolidateInterval = file.ConsolidateInterval
+	}
+	if file.ConsolidateBatchSize > 0 && c.ConsolidateBatchSize == 0 {
+		c.ConsolidateBatchSize = file.ConsolidateBatchSize
 	}
 	if !c.envExtractEnabledSet && meta.IsDefined("extract_enabled") {
 		c.ExtractEnabled = file.ExtractEnabled

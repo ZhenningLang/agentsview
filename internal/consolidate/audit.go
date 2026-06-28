@@ -39,6 +39,7 @@ type RunRecord struct {
 	Decisions       []DecisionRecord `json:"decisions,omitempty"`
 	ScriptExitCode  int              `json:"script_exit_code,omitempty"`
 	ScriptErrors    []string         `json:"script_errors,omitempty"`
+	DrainedCount    int              `json:"drained_count,omitempty"`
 	Committed       bool             `json:"committed"`
 	Resynced        bool             `json:"resynced"`
 	Skipped         bool             `json:"skipped,omitempty"`
