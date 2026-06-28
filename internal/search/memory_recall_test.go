@@ -12,6 +12,25 @@ import (
 	"go.kenn.io/agentsview/internal/db"
 )
 
+func TestFTSQueryFromText_ExtractsSafeORTerms(t *testing.T) {
+	// A candidate blob with code identifiers + FTS-hostile punctuation (':',
+	// '(', ')', CJK). The lexical query must become a quoted OR of significant
+	// terms so it (a) never throws an FTS5 syntax error and (b) matches notes
+	// sharing the same identifiers — even cross-language (ZH note body that also
+	// contains `commitPoolItemsEqual`).
+	in := "decision: commitPoolItemsEqual 比较了 signed URL 字段 (lzn-preview 部署)"
+	q := ftsQueryFromText(in)
+
+	assert.NotContains(t, q, ":", "FTS operator chars must not leak")
+	assert.NotContains(t, q, "(")
+	assert.Contains(t, q, `"commitPoolItemsEqual"`, "identifier must be a quoted term")
+	assert.Contains(t, q, " OR ", "terms must be OR-joined, not implicit-AND")
+	assert.Contains(t, q, `"preview"`)
+
+	// Pure punctuation / no extractable term yields an empty query (skip lexical).
+	assert.Equal(t, "", ftsQueryFromText("：、（）"))
+}
+
 type fakeMemoryRecallEmbedder struct {
 	vector []float32
 	called bool
