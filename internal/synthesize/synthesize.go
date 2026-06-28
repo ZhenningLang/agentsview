@@ -87,13 +87,14 @@ func ClusterNotes(notes []SourceNote, minSim float64) [][]SourceNote {
 // carry a "(because of <id>)" citation for each source in the insight; the
 // worker guarantees that before invoking the script.
 type Decision struct {
-	ID          string   `json:"id"`
-	Action      string   `json:"action"`
-	Title       string   `json:"title"`
-	Insight     string   `json:"insight"`
-	SourceIDs   []string `json:"source_ids"`
-	Keywords    []string `json:"keywords,omitempty"`
-	ProblemType string   `json:"problem_type,omitempty"`
+	ID           string            `json:"id"`
+	Action       string            `json:"action"`
+	Title        string            `json:"title"`
+	Insight      string            `json:"insight"`
+	SourceIDs    []string          `json:"source_ids"`
+	Keywords     []string          `json:"keywords,omitempty"`
+	ProblemType  string            `json:"problem_type,omitempty"`
+	StaleSources map[string]string `json:"stale_sources,omitempty"`
 }
 
 // ensureCitations appends a "(because of <id>)" for every source id missing from

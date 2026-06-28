@@ -151,14 +151,23 @@ func (w *Worker) synthesizeCluster(ctx context.Context, cluster []SourceNote) To
 		return TopicRecord{Title: d.Title, SourceIDs: sourceIDs, Skipped: true, Result: "skip llm_skip"}
 	}
 
+	// Fold the source atomics: mark each stale so it leaves active recall and the
+	// INDEX (dual-track — the file stays for audit until the 90d archived-note GC,
+	// and is git-recoverable). This is what shrinks the fragmented pool into the
+	// coherent topic layer.
+	stale := make(map[string]string, len(sourceIDs))
+	for _, id := range sourceIDs {
+		stale[id] = "folded into topic: " + d.Title
+	}
 	decision := Decision{
-		ID:          synthID(sourceIDs),
-		Action:      "ADD",
-		Title:       d.Title,
-		Insight:     ensureCitations(d.Insight, sourceIDs),
-		SourceIDs:   sourceIDs,
-		Keywords:    d.Keywords,
-		ProblemType: d.ProblemType,
+		ID:           synthID(sourceIDs),
+		Action:       "ADD",
+		Title:        d.Title,
+		Insight:      ensureCitations(d.Insight, sourceIDs),
+		SourceIDs:    sourceIDs,
+		Keywords:     d.Keywords,
+		ProblemType:  d.ProblemType,
+		StaleSources: stale,
 	}
 	file, err := writeDecisionFile(decision)
 	if err != nil {
