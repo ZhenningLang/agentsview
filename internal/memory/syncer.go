@@ -11,6 +11,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,7 +121,10 @@ func (s *Syncer) Sync(ctx context.Context) error {
 		}
 		m, parseErr := s.parseFile(path, name, info.ModTime().Unix())
 		if parseErr != nil {
-			// Fail-soft: skip this note, keep the rest.
+			// Fail-soft: skip this note, keep the rest — but never silently.
+			// A malformed frontmatter (e.g. an unquoted title with ':'/'#')
+			// previously vanished with no trace; log so it is observable.
+			log.Printf("memory sync: skipping %q: malformed frontmatter: %v", name, parseErr)
 			continue
 		}
 		m.SyncedAt = syncedAt
