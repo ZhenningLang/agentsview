@@ -78,6 +78,15 @@ export const zh: Record<string, string> = {
   "usage.recall_rerank": "召回重排",
   "usage.recall_rerank.desc": "对召回的记忆做相关性重排(可选,留空则不重排)。",
 
+  // 记忆抽取卡(会话 → 候选)
+  "extract.title": "记忆抽取",
+  "extract.desc": "后台定时扫各 agent 会话,用 LLM 提炼候选记忆进暂存池。默认关闭,开启后按间隔运行(间隔走配置/环境变量)。",
+  "extract.modelHint": "用哪个模型?在上方「LLM 配置」里设置 extract 的绑定。",
+  "extract.stateSaved": "抽取开关已保存",
+  "extract.toggleFailed": "切换抽取开关失败",
+  "extract.loadFailed": "读取抽取状态失败",
+  "extract.unavailable": "已记录开启,但当前进程未装载抽取 worker(缺前置条件),重启后生效。",
+
   // 记忆巩固卡(瘦身后)
   "consolidate.title": "记忆巩固",
   "consolidate.desc": "后台定时把暂存候选巩固进长期记忆。默认关闭,开启后按间隔运行。",

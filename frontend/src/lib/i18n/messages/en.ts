@@ -78,6 +78,15 @@ export const en: Record<string, string> = {
   "usage.recall_rerank": "Recall rerank",
   "usage.recall_rerank.desc": "Reranks recalled memories by relevance (optional; empty = no rerank).",
 
+  // extract card (sessions → candidates)
+  "extract.title": "Memory Extraction",
+  "extract.desc": "Background worker that periodically scans agent sessions and uses an LLM to distill candidate memories into the staging pool. Off by default; runs on the interval once enabled (interval via config/env).",
+  "extract.modelHint": "Which model? Set the extract binding in “LLM Configuration” above.",
+  "extract.stateSaved": "Extract worker state saved",
+  "extract.toggleFailed": "Failed to toggle extract worker",
+  "extract.loadFailed": "Failed to load extract state",
+  "extract.unavailable": "Enable recorded, but this process has no extract worker loaded (missing prerequisites); takes effect after restart.",
+
   // consolidate card (slimmed)
   "consolidate.title": "Memory Consolidation",
   "consolidate.desc": "Background worker that periodically consolidates staged candidates into long-term memory. Off by default; runs on the interval once enabled.",
