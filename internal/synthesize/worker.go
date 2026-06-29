@@ -163,15 +163,18 @@ func (w *Worker) synthesizeCluster(ctx context.Context, cluster []SourceNote) To
 	for _, id := range sourceIDs {
 		stale[id] = "folded into topic: " + d.Title
 	}
+	project, scope := clusterProject(cluster)
 	decision := Decision{
-		ID:           synthID(sourceIDs),
-		Action:       "ADD",
-		Title:        d.Title,
-		Insight:      ensureCitations(d.Insight, sourceIDs),
-		SourceIDs:    sourceIDs,
-		Keywords:     d.Keywords,
-		ProblemType:  d.ProblemType,
-		StaleSources: stale,
+		ID:            synthID(sourceIDs),
+		Action:        "ADD",
+		Title:         d.Title,
+		Insight:       ensureCitations(d.Insight, sourceIDs),
+		SourceIDs:     sourceIDs,
+		Keywords:      d.Keywords,
+		ProblemType:   d.ProblemType,
+		StaleSources:  stale,
+		OriginProject: project,
+		Scope:         scope,
 	}
 	file, err := writeDecisionFile(decision)
 	if err != nil {

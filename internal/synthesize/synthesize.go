@@ -24,6 +24,7 @@ type SourceNote struct {
 	ID        string
 	Title     string
 	Body      string
+	Project   string // origin_project of the source atomic ("" = general)
 	Embedding []float32
 }
 
@@ -45,7 +46,7 @@ func SourceNotesFromMemories(memories []db.Memory) []SourceNote {
 		if id == "" || strings.EqualFold(id, "INDEX") {
 			continue
 		}
-		out = append(out, SourceNote{ID: id, Title: m.Title, Body: m.Body, Embedding: m.LLMEmbedding})
+		out = append(out, SourceNote{ID: id, Title: m.Title, Body: m.Body, Project: m.OriginProject, Embedding: m.LLMEmbedding})
 	}
 	return out
 }
@@ -95,6 +96,38 @@ type Decision struct {
 	Keywords     []string          `json:"keywords,omitempty"`
 	ProblemType  string            `json:"problem_type,omitempty"`
 	StaleSources map[string]string `json:"stale_sources,omitempty"`
+	// OriginProject/Scope carry the topic's project dimension to
+	// compact_memory.py: a single shared project (scope=project) or a
+	// cross-project topic (scope=general, empty OriginProject = General bucket).
+	OriginProject string `json:"origin_project,omitempty"`
+	Scope         string `json:"scope,omitempty"`
+}
+
+// clusterProject derives the project dimension for a cluster of source notes:
+// when every source shares one non-empty project the topic belongs to that
+// project (scope=project); otherwise it is a cross-project topic (scope=general,
+// empty project = the General bucket). This makes the project label emerge
+// naturally from clustering — single-project topics stay tagged, cross-project
+// lessons become general.
+func clusterProject(cluster []SourceNote) (project, scope string) {
+	seen := ""
+	for _, n := range cluster {
+		p := strings.TrimSpace(n.Project)
+		if p == "" {
+			return "", "general" // any general source makes the topic general
+		}
+		if seen == "" {
+			seen = p
+			continue
+		}
+		if p != seen {
+			return "", "general" // spans multiple projects
+		}
+	}
+	if seen == "" {
+		return "", "general"
+	}
+	return seen, "project"
 }
 
 // ensureCitations appends a "(because of <id>)" for every source id missing from

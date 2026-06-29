@@ -32,6 +32,7 @@ type memoriesListInput struct {
 	Type          string `query:"type" doc:"Filter by frontmatter type"`
 	Status        string `query:"status" doc:"Filter by frontmatter status"`
 	OriginSession string `query:"origin_session" doc:"Filter by originating session id"`
+	OriginProject string `query:"origin_project" doc:"Filter by originating project ('' = General)"`
 	Q             string `query:"q" doc:"Full-text query over the note body"`
 }
 
@@ -48,6 +49,7 @@ func (s *Server) humaListMemories(
 		Type:          in.Type,
 		Status:        in.Status,
 		OriginSession: in.OriginSession,
+		OriginProject: in.OriginProject,
 		Q:             in.Q,
 	})
 	if err != nil {

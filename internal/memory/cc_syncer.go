@@ -145,6 +145,9 @@ func (s *CCSyncer) parseFile(
 		Type:          fm.Type,
 		Status:        fm.Status,
 		OriginSession: fm.OriginSession,
+		// CC-native auto-memory is user-global (no project frontmatter), so this
+		// is "" = General. A note that does carry origin_project is honoured.
+		OriginProject: fm.OriginProject,
 		Body:          body,
 		BodyTokens:    s.tokenizer.Count(body),
 		SourceMtime:   mtime,

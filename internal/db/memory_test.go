@@ -15,7 +15,8 @@ func sampleMemories() []Memory {
 		{
 			RelPath: "alpha.md", Title: "Alpha note", Date: "2026-06-20",
 			ProblemType: "knowledge", Type: "semantic", Status: "active",
-			OriginSession: "sess-a", Body: "the quick brown fox",
+			OriginSession: "sess-a", OriginProject: "oss-atlas",
+			Body:       "the quick brown fox",
 			BodyTokens: 5, SourceMtime: 100,
 			SyncedAt: "2026-06-23T00:00:00.000Z",
 		},
@@ -80,6 +81,9 @@ func TestReplaceAndListMemories(t *testing.T) {
 	assert.Equal(t, "beta.md", all[0].RelPath)
 	assert.Equal(t, "alpha.md", all[1].RelPath)
 	assert.Equal(t, "the quick brown fox", all[1].Body)
+	// origin_project round-trips through the column (alpha tagged, beta General).
+	assert.Equal(t, "oss-atlas", all[1].OriginProject)
+	assert.Equal(t, "", all[0].OriginProject)
 
 	// Full-replace semantics: a smaller set drops removed rows.
 	require.NoError(t, d.ReplaceMemories(ctx, sampleMemories()[:1]))
@@ -103,6 +107,7 @@ func TestListMemoriesFilters(t *testing.T) {
 		{"type", MemoryFilter{Type: "episodic"}, "beta.md"},
 		{"status", MemoryFilter{Status: "active"}, "alpha.md"},
 		{"origin_session", MemoryFilter{OriginSession: "sess-b"}, "beta.md"},
+		{"origin_project", MemoryFilter{OriginProject: "oss-atlas"}, "alpha.md"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

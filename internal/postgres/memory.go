@@ -15,7 +15,7 @@ import (
 // uses ILIKE substring search (same dialect the message search uses).
 
 const pgMemoryCols = `rel_path, source, title, date, problem_type, type, status,
-	origin_session, body, body_tokens, source_mtime, synced_at`
+	origin_session, origin_project, body, body_tokens, source_mtime, synced_at`
 
 const pgMemoryEmbeddingCols = `llm_embedding, llm_embedding_dim`
 
@@ -40,6 +40,9 @@ func (s *Store) ListMemories(
 	}
 	if f.OriginSession != "" {
 		preds = append(preds, "origin_session = "+pb.add(f.OriginSession))
+	}
+	if f.OriginProject != "" {
+		preds = append(preds, "origin_project = "+pb.add(f.OriginProject))
 	}
 	if f.Q != "" {
 		preds = append(preds,
@@ -107,6 +110,9 @@ func (s *Store) MemoryEmbeddings(
 	if f.OriginSession != "" {
 		preds = append(preds, "origin_session = "+pb.add(f.OriginSession))
 	}
+	if f.OriginProject != "" {
+		preds = append(preds, "origin_project = "+pb.add(f.OriginProject))
+	}
 	if f.Q != "" {
 		preds = append(preds, "body ILIKE '%' || "+pb.add(f.Q)+" || '%'")
 	}
@@ -134,7 +140,7 @@ func scanPGMemory(
 	var m db.Memory
 	if err := rows.Scan(
 		&m.RelPath, &m.Source, &m.Title, &m.Date, &m.ProblemType, &m.Type,
-		&m.Status, &m.OriginSession, &m.Body, &m.BodyTokens,
+		&m.Status, &m.OriginSession, &m.OriginProject, &m.Body, &m.BodyTokens,
 		&m.SourceMtime, &m.SyncedAt,
 	); err != nil {
 		return db.Memory{}, err
@@ -154,7 +160,7 @@ func scanMemoryEmbeddings(rows interface {
 		var dim int
 		if err := rows.Scan(
 			&m.RelPath, &m.Source, &m.Title, &m.Date, &m.ProblemType, &m.Type,
-			&m.Status, &m.OriginSession, &m.Body, &m.BodyTokens,
+			&m.Status, &m.OriginSession, &m.OriginProject, &m.Body, &m.BodyTokens,
 			&m.SourceMtime, &m.SyncedAt, &data, &dim,
 		); err != nil {
 			return nil, err

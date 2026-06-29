@@ -52,6 +52,7 @@ type frontmatter struct {
 	Type          string `yaml:"type"`
 	Status        string `yaml:"status"`
 	OriginSession string `yaml:"origin_session"`
+	OriginProject string `yaml:"origin_project"`
 }
 
 // Syncer reads a memory directory and persists the parsed notes.
@@ -202,6 +203,7 @@ func (s *Syncer) parseFile(
 		Type:          fm.Type,
 		Status:        fm.Status,
 		OriginSession: fm.OriginSession,
+		OriginProject: fm.OriginProject,
 		Body:          body,
 		BodyTokens:    s.tokenizer.Count(body),
 		SourceMtime:   mtime,
