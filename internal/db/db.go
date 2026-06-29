@@ -779,6 +779,11 @@ func (db *DB) migrateColumns() error {
 			"memory", "llm_embedding_dim",
 			"ALTER TABLE memory ADD COLUMN llm_embedding_dim INTEGER NOT NULL DEFAULT 0",
 		},
+		{
+			"memory", "origin_project",
+			"ALTER TABLE memory ADD COLUMN origin_project TEXT NOT NULL " +
+				"DEFAULT ''",
+		},
 	}
 
 	for _, m := range migrations {
@@ -827,6 +832,15 @@ func (db *DB) migrateColumns() error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_source ON memory(source)`,
 	); err != nil {
 		return fmt.Errorf("creating idx_memory_source: %w", err)
+	}
+
+	// idx_memory_origin_project, like idx_memory_source, is created here (after
+	// the ALTER above) rather than in schema.sql so it works on existing DBs
+	// whose memory table predates the origin_project column.
+	if _, err := w.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_memory_origin_project ON memory(origin_project)`,
+	); err != nil {
+		return fmt.Errorf("creating idx_memory_origin_project: %w", err)
 	}
 
 	if _, err := w.Exec(`

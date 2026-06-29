@@ -80,7 +80,8 @@ func TestSyncParsesFrontmatterAndBody(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "memory")
 	writeNote(t, dir, "alpha.md",
 		"title: Alpha\ndate: 2026-06-20\nproblem_type: knowledge\n"+
-			"type: semantic\nstatus: active\norigin_session: sess-a",
+			"type: semantic\nstatus: active\norigin_session: sess-a\n"+
+			"origin_project: oss-atlas",
 		"This is the alpha body.")
 	writeNote(t, dir, "beta.md",
 		"title: Beta\ndate: 2026-06-24\nproblem_type: incident\n"+
@@ -101,6 +102,8 @@ func TestSyncParsesFrontmatterAndBody(t *testing.T) {
 	assert.Equal(t, "semantic", alpha.Type)
 	assert.Equal(t, "active", alpha.Status)
 	assert.Equal(t, "sess-a", alpha.OriginSession)
+	assert.Equal(t, "oss-atlas", alpha.OriginProject)
+	assert.Equal(t, "", by["beta.md"].OriginProject)
 	assert.Contains(t, alpha.Body, "This is the alpha body.")
 	assert.Positive(t, alpha.BodyTokens)
 	assert.NotEmpty(t, alpha.SyncedAt)

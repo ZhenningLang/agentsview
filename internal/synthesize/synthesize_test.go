@@ -115,3 +115,53 @@ func TestWorkerSynthesizesCommitsAndAudits(t *testing.T) {
 	require.Len(t, recs, 1)
 	assert.Equal(t, 1, recs[0].WriteCount)
 }
+
+func TestClusterProjectDerivation(t *testing.T) {
+	cases := []struct {
+		name        string
+		cluster     []SourceNote
+		wantProject string
+		wantScope   string
+	}{
+		{
+			name:        "single shared project",
+			cluster:     []SourceNote{{Project: "oss-atlas"}, {Project: "oss-atlas"}},
+			wantProject: "oss-atlas",
+			wantScope:   "project",
+		},
+		{
+			name:        "spans multiple projects -> general",
+			cluster:     []SourceNote{{Project: "oss-atlas"}, {Project: "ordo_ai"}},
+			wantProject: "",
+			wantScope:   "general",
+		},
+		{
+			name:        "any general source -> general",
+			cluster:     []SourceNote{{Project: "oss-atlas"}, {Project: ""}},
+			wantProject: "",
+			wantScope:   "general",
+		},
+		{
+			name:        "all general -> general",
+			cluster:     []SourceNote{{Project: ""}, {Project: ""}},
+			wantProject: "",
+			wantScope:   "general",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			project, scope := clusterProject(tc.cluster)
+			assert.Equal(t, tc.wantProject, project)
+			assert.Equal(t, tc.wantScope, scope)
+		})
+	}
+}
+
+func TestSourceNotesFromMemoriesCarriesProject(t *testing.T) {
+	mems := []db.Memory{
+		{RelPath: "a.md", Title: "A", Body: "b", OriginProject: "oss-atlas", LLMEmbedding: []float32{1, 0}},
+	}
+	notes := SourceNotesFromMemories(mems)
+	require.Len(t, notes, 1)
+	assert.Equal(t, "oss-atlas", notes[0].Project)
+}

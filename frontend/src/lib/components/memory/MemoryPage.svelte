@@ -30,6 +30,18 @@
   let problemType = $state("");
   let type = $state("");
   let status = $state("");
+  // Project facet. "" = all; GENERAL sentinel = the General bucket (notes with
+  // an empty origin_project: user-global or cross-project); else a project name.
+  // Project filtering/grouping is done client-side over the loaded rows so the
+  // empty-string "General" bucket needs no API sentinel.
+  const GENERAL = "__general__";
+  let projectFilter = $state("");
+  let groupByProject = $state(false);
+
+  // Human-readable label for a note's project ("" = General bucket).
+  function projectLabel(p: string): string {
+    return p ? p : "通用";
+  }
 
   // Human-readable label for a memory's data source.
   function sourceLabel(s: string): string {
@@ -101,6 +113,10 @@
   const problemTypeOptions = $derived(uniqueValues("problem_type"));
   const typeOptions = $derived(uniqueValues("type"));
   const statusOptions = $derived(uniqueValues("status"));
+  // Non-empty project names for the facet; the General bucket is offered
+  // separately when any note has an empty origin_project.
+  const projectOptions = $derived(uniqueValues("origin_project"));
+  const hasGeneral = $derived(allMemories.some((m) => !m.origin_project));
 
   // Client-side sort over the server-filtered rows.
   let sortKey = $state<SortKey>("date");
@@ -129,17 +145,47 @@
     }),
   );
 
+  // Apply the project facet client-side (handles the empty-string General
+  // bucket without an API sentinel).
+  const visibleMemories = $derived(
+    sortedMemories.filter((m) => {
+      if (projectFilter === "") return true;
+      if (projectFilter === GENERAL) return !m.origin_project;
+      return m.origin_project === projectFilter;
+    }),
+  );
+
+  // Group visible rows by project for the "按项目分组" view. Named projects come
+  // first (alpha), the General bucket last. Returns [label, project, rows].
+  const groupedMemories = $derived.by(() => {
+    const groups = new Map<string, Memory[]>();
+    for (const m of visibleMemories) {
+      const key = m.origin_project || "";
+      const list = groups.get(key);
+      if (list) list.push(m);
+      else groups.set(key, [m]);
+    }
+    return [...groups.entries()]
+      .sort((a, b) => {
+        if (a[0] === "") return 1;
+        if (b[0] === "") return -1;
+        return a[0].localeCompare(b[0]);
+      })
+      .map(([project, rows]) => ({ project, label: projectLabel(project), rows }));
+  });
+
   function clearFilters() {
     query = "";
     source = "";
     problemType = "";
     type = "";
     status = "";
+    projectFilter = "";
     load();
   }
 
   const hasFilters = $derived(
-    !!(query.trim() || source || problemType || type || status),
+    !!(query.trim() || source || problemType || type || status || projectFilter),
   );
 
   // Detail modal: fetch the full note (body included) by rel_path.
@@ -409,6 +455,7 @@
       ["problem_type", m.problem_type],
       ["type", m.type],
       ["status", m.status],
+      ["origin_project", m.origin_project || "通用"],
       ["origin_session", m.origin_session],
       ["body_tokens", String(m.body_tokens)],
       ["synced_at", m.synced_at],
@@ -463,6 +510,19 @@
           <option value={opt}>{opt}</option>
         {/each}
       </select>
+      <select bind:value={projectFilter} aria-label="项目过滤">
+        <option value="">项目: 全部</option>
+        {#if hasGeneral}
+          <option value={GENERAL}>通用</option>
+        {/if}
+        {#each projectOptions as opt (opt)}
+          <option value={opt}>{opt}</option>
+        {/each}
+      </select>
+      <label class="group-toggle" title="按项目分组显示">
+        <input type="checkbox" bind:checked={groupByProject} />
+        按项目分组
+      </label>
       {#if hasFilters}
         <button class="clear" onclick={clearFilters}>清除</button>
       {/if}
@@ -476,7 +536,7 @@
     <div class="state">加载中…</div>
   {:else if error}
     <div class="state error">加载失败：{error}</div>
-  {:else if memories.length === 0}
+  {:else if visibleMemories.length === 0}
     <div class="state">
       {#if hasFilters}
         没有匹配的笔记。调整搜索词或 facet 过滤。
@@ -486,60 +546,82 @@
       {/if}
     </div>
   {:else}
-    <div class="count">{memories.length} 条</div>
-    <table class="grid">
-      <thead>
-        <tr>
-          <th class="sortable-th" onclick={() => toggleSort("title")}
-            >标题{sortIndicator("title")}</th
-          >
-          <th class="sortable-th" onclick={() => toggleSort("date")}
-            >日期{sortIndicator("date")}</th
-          >
-          <th>来源</th>
-          <th class="sortable-th" onclick={() => toggleSort("problem_type")}
-            >problem_type{sortIndicator("problem_type")}</th
-          >
-          <th>type</th>
-          <th>status</th>
-        </tr>
-      </thead>
-      <tbody>
-        {#each sortedMemories as m (m.rel_path)}
-          <tr class="clickable" onclick={() => openDetail(m.rel_path)}>
-            <td class="title">
-              <div class="title-main">{m.title || m.rel_path}</div>
-              {#if m.body}
-                <div class="snippet">{bodySnippet(m.body)}</div>
-              {/if}
-            </td>
-            <td class="nowrap">{m.date || "—"}</td>
-            <td>
-              <span class="badge source source-{m.source}"
-                >{sourceLabel(m.source)}</span
-              >
-            </td>
-            <td>
-              {#if m.problem_type}
-                <span class="badge facet">{m.problem_type}</span>
-              {:else}—{/if}
-            </td>
-            <td>
-              {#if m.type}
-                <span class="badge facet">{m.type}</span>
-              {:else}—{/if}
-            </td>
-            <td>
-              {#if m.status}
-                <span class="badge facet">{m.status}</span>
-              {:else}—{/if}
-            </td>
-          </tr>
-        {/each}
-      </tbody>
-    </table>
+    <div class="count">{visibleMemories.length} 条</div>
+    {#if groupByProject}
+      {#each groupedMemories as g (g.project)}
+        <div class="project-group">
+          <h3 class="project-head">
+            <span class="badge project" class:general={!g.project}>{g.label}</span>
+            <span class="project-count">{g.rows.length} 条</span>
+          </h3>
+          {@render memTable(g.rows)}
+        </div>
+      {/each}
+    {:else}
+      {@render memTable(visibleMemories)}
+    {/if}
   {/if}
 </div>
+
+{#snippet memTable(list: Memory[])}
+  <table class="grid">
+    <thead>
+      <tr>
+        <th class="sortable-th" onclick={() => toggleSort("title")}
+          >标题{sortIndicator("title")}</th
+        >
+        <th class="sortable-th" onclick={() => toggleSort("date")}
+          >日期{sortIndicator("date")}</th
+        >
+        <th>来源</th>
+        <th>项目</th>
+        <th class="sortable-th" onclick={() => toggleSort("problem_type")}
+          >problem_type{sortIndicator("problem_type")}</th
+        >
+        <th>type</th>
+        <th>status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {#each list as m (m.rel_path)}
+        <tr class="clickable" onclick={() => openDetail(m.rel_path)}>
+          <td class="title">
+            <div class="title-main">{m.title || m.rel_path}</div>
+            {#if m.body}
+              <div class="snippet">{bodySnippet(m.body)}</div>
+            {/if}
+          </td>
+          <td class="nowrap">{m.date || "—"}</td>
+          <td>
+            <span class="badge source source-{m.source}"
+              >{sourceLabel(m.source)}</span
+            >
+          </td>
+          <td>
+            <span class="badge project" class:general={!m.origin_project}
+              >{projectLabel(m.origin_project)}</span
+            >
+          </td>
+          <td>
+            {#if m.problem_type}
+              <span class="badge facet">{m.problem_type}</span>
+            {:else}—{/if}
+          </td>
+          <td>
+            {#if m.type}
+              <span class="badge facet">{m.type}</span>
+            {:else}—{/if}
+          </td>
+          <td>
+            {#if m.status}
+              <span class="badge facet">{m.status}</span>
+            {:else}—{/if}
+          </td>
+        </tr>
+      {/each}
+    </tbody>
+  </table>
+{/snippet}
 
 {#if detail || detailLoading || detailError}
   <div
@@ -817,6 +899,39 @@
   .badge.facet {
     background: color-mix(in srgb, var(--accent-indigo) 16%, transparent);
     color: var(--accent-indigo);
+  }
+  .badge.project {
+    white-space: nowrap;
+    background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+    color: var(--accent-blue);
+  }
+  .badge.project.general {
+    background: var(--bg-inset);
+    color: var(--text-secondary, #666);
+  }
+  .group-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.82rem;
+    color: var(--text-secondary, #666);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .project-group {
+    margin-bottom: 1.25rem;
+  }
+  .project-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0.75rem 0 0.4rem;
+    font-size: 0.9rem;
+  }
+  .project-count {
+    font-size: 0.74rem;
+    color: var(--text-secondary, #888);
+    font-weight: 400;
   }
   .badge.source {
     white-space: nowrap;

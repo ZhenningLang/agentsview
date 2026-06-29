@@ -455,6 +455,7 @@ CREATE TABLE IF NOT EXISTS memory (
     type           TEXT NOT NULL DEFAULT '',
     status         TEXT NOT NULL DEFAULT '',
     origin_session TEXT NOT NULL DEFAULT '',
+    origin_project TEXT NOT NULL DEFAULT '',
     body           TEXT NOT NULL DEFAULT '',
     body_tokens    INTEGER NOT NULL DEFAULT 0,
     source_mtime   INTEGER NOT NULL DEFAULT 0,

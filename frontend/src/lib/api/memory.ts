@@ -13,6 +13,9 @@ export interface Memory {
   type: string;
   status: string;
   origin_session: string;
+  // Project a note belongs to ("" = the General bucket: user-global or
+  // cross-project notes). Drives the project facet/grouping.
+  origin_project: string;
   body?: string;
   body_tokens: number;
   source_mtime: number;
@@ -27,6 +30,7 @@ export interface MemoryFilter {
   type?: string;
   status?: string;
   origin_session?: string;
+  origin_project?: string;
   q?: string;
 }
 
