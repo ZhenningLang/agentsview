@@ -16,6 +16,9 @@ export interface Memory {
   // Project a note belongs to ("" = the General bucket: user-global or
   // cross-project notes). Drives the project facet/grouping.
   origin_project: string;
+  feedback_vote: string;
+  feedback_comment: string;
+  feedback_status: string;
   body?: string;
   body_tokens: number;
   source_mtime: number;
@@ -31,6 +34,9 @@ export interface MemoryFilter {
   status?: string;
   origin_session?: string;
   origin_project?: string;
+  feedback_vote?: string;
+  feedback_comment?: string;
+  feedback_status?: string;
   q?: string;
 }
 
@@ -73,6 +79,9 @@ export async function fetchMemories(
   if (filter.type) params.set("type", filter.type);
   if (filter.status) params.set("status", filter.status);
   if (filter.origin_session) params.set("origin_session", filter.origin_session);
+  if (filter.origin_project) params.set("origin_project", filter.origin_project);
+  if (filter.feedback_vote) params.set("feedback_vote", filter.feedback_vote);
+  if (filter.feedback_status) params.set("feedback_status", filter.feedback_status);
   if (filter.q) params.set("q", filter.q);
   const qs = params.toString();
   const path = qs ? `/memories?${qs}` : "/memories";
@@ -122,6 +131,26 @@ export function putMemory(
     "PUT",
     `/memories/${encodeMemoryPath(relPath)}`,
     { content, base_sha: baseSHA },
+    signal,
+  );
+}
+
+export interface MemoryFeedbackInput {
+  vote: "up" | "down" | "";
+  comment: string;
+  status: "pending" | "handled" | "";
+  base_sha?: string;
+}
+
+export function setMemoryFeedback(
+  relPath: string,
+  feedback: MemoryFeedbackInput,
+  signal?: AbortSignal,
+): Promise<{ sha: string }> {
+  return sendJSON<{ sha: string }>(
+    "POST",
+    `/memories/${encodeMemoryPath(relPath)}/feedback`,
+    feedback,
     signal,
   );
 }

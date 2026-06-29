@@ -16,6 +16,7 @@ func sampleMemories() []Memory {
 			RelPath: "alpha.md", Title: "Alpha note", Date: "2026-06-20",
 			ProblemType: "knowledge", Type: "semantic", Status: "active",
 			OriginSession: "sess-a", OriginProject: "oss-atlas",
+			FeedbackVote: "down", FeedbackComment: "原因: 过度合并", FeedbackStatus: "pending",
 			Body:       "the quick brown fox",
 			BodyTokens: 5, SourceMtime: 100,
 			SyncedAt: "2026-06-23T00:00:00.000Z",
@@ -23,11 +24,42 @@ func sampleMemories() []Memory {
 		{
 			RelPath: "beta.md", Title: "Beta note", Date: "2026-06-24",
 			ProblemType: "incident", Type: "episodic", Status: "archived",
+			FeedbackVote: "up", FeedbackStatus: "handled",
 			OriginSession: "sess-b", Body: "lazy dog jumps over",
 			BodyTokens: 4, SourceMtime: 200,
 			SyncedAt: "2026-06-23T00:00:00.000Z",
 		},
 	}
+}
+
+func TestOpenMigratesLegacyMemoryFeedbackColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-memory-feedback.db")
+	d, err := Open(path)
+	require.NoError(t, err)
+	require.NoError(t, d.ReplaceMemories(context.Background(), sampleMemories()))
+	require.NoError(t, d.Close())
+
+	conn, err := sql.Open("sqlite3", makeDSN(path, false))
+	require.NoError(t, err)
+	_, err = conn.Exec("DROP INDEX idx_memory_feedback_vote")
+	require.NoError(t, err)
+	_, err = conn.Exec("DROP INDEX idx_memory_feedback_status")
+	require.NoError(t, err)
+	_, err = conn.Exec("ALTER TABLE memory DROP COLUMN feedback_vote")
+	require.NoError(t, err)
+	_, err = conn.Exec("ALTER TABLE memory DROP COLUMN feedback_comment")
+	require.NoError(t, err)
+	_, err = conn.Exec("ALTER TABLE memory DROP COLUMN feedback_status")
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+
+	d, err = Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	cols := sqliteLLMTableColumns(t, d, "memory")
+	assert.Equal(t, sqliteLLMColumnInfo{Type: "TEXT", NotNull: true, DefaultValue: "''"}, cols["feedback_vote"])
+	assert.Equal(t, sqliteLLMColumnInfo{Type: "TEXT", NotNull: true, DefaultValue: "''"}, cols["feedback_comment"])
+	assert.Equal(t, sqliteLLMColumnInfo{Type: "TEXT", NotNull: true, DefaultValue: "''"}, cols["feedback_status"])
 }
 
 func TestOpenMigratesLegacyMemoryEmbeddingColumns(t *testing.T) {
@@ -84,6 +116,9 @@ func TestReplaceAndListMemories(t *testing.T) {
 	// origin_project round-trips through the column (alpha tagged, beta General).
 	assert.Equal(t, "oss-atlas", all[1].OriginProject)
 	assert.Equal(t, "", all[0].OriginProject)
+	assert.Equal(t, "down", all[1].FeedbackVote)
+	assert.Equal(t, "原因: 过度合并", all[1].FeedbackComment)
+	assert.Equal(t, "pending", all[1].FeedbackStatus)
 
 	// Full-replace semantics: a smaller set drops removed rows.
 	require.NoError(t, d.ReplaceMemories(ctx, sampleMemories()[:1]))
@@ -108,6 +143,8 @@ func TestListMemoriesFilters(t *testing.T) {
 		{"status", MemoryFilter{Status: "active"}, "alpha.md"},
 		{"origin_session", MemoryFilter{OriginSession: "sess-b"}, "beta.md"},
 		{"origin_project", MemoryFilter{OriginProject: "oss-atlas"}, "alpha.md"},
+		{"feedback_vote", MemoryFilter{FeedbackVote: "down"}, "alpha.md"},
+		{"feedback_status", MemoryFilter{FeedbackStatus: "handled"}, "beta.md"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

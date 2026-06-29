@@ -282,6 +282,80 @@ func TestEnsureSchemaCreatesSessionTraversalIndex(t *testing.T) {
 		"CREATE INDEX IF NOT EXISTS idx_sessions_parent")
 }
 
+func TestEnsureSchemaCreatesMemoryFacetIndexesAfterLateColumns(t *testing.T) {
+	existing := schemaProbeExistingColumnsExceptMemoryFacets()
+	db, state := newSchemaProbeDB(t, existing)
+
+	require.NoError(t, EnsureSchema(context.Background(), db, "agentsview"))
+
+	sql := state.executedSQL()
+	assertMemoryIndexAfterAlter(t, sql, "origin_project", "idx_memory_origin_project")
+	assertMemoryIndexAfterAlter(t, sql, "feedback_vote", "idx_memory_feedback_vote")
+	assertMemoryIndexAfterAlter(t, sql, "feedback_status", "idx_memory_feedback_status")
+}
+
+func schemaProbeExistingColumnsExceptMemoryFacets() map[string][]string {
+	return map[string][]string{
+		"sessions": {
+			"created_at", "deleted_at",
+			"total_output_tokens", "peak_context_tokens",
+			"has_total_output_tokens",
+			"has_peak_context_tokens", "is_automated",
+			"tool_failure_signal_count", "tool_retry_count",
+			"edit_churn_count", "consecutive_failure_max",
+			"outcome", "outcome_confidence",
+			"ended_with_role", "final_failure_streak",
+			"signals_pending_since", "compaction_count",
+			"mid_task_compaction_count",
+			"context_pressure_max", "health_score",
+			"health_grade", "has_tool_calls",
+			"has_context_data", "data_version", "cwd",
+			"git_branch", "source_session_id",
+			"source_version", "parser_malformed_lines",
+			"is_truncated", "llm_title", "llm_summary",
+			"llm_keywords", "llm_embedding",
+			"llm_embedding_dim", "enriched_at",
+			"enriched_msg_count", "enrich_model",
+			"enrich_status", "enrich_error", "session_name",
+			"termination_status", "secret_leak_count",
+			"secrets_rules_version",
+		},
+		"messages": {
+			"model", "token_usage", "context_tokens",
+			"output_tokens", "has_context_tokens",
+			"has_output_tokens", "claude_message_id",
+			"claude_request_id", "source_type",
+			"source_subtype", "source_uuid",
+			"source_parent_uuid", "is_sidechain",
+			"is_compact_boundary", "thinking_text",
+		},
+		"tool_calls": {
+			"call_index",
+		},
+		"skills": {
+			"prompt", "prompt_tokens",
+		},
+		"memory": {
+			"rel_path", "source", "title", "date", "problem_type",
+			"type", "status", "origin_session", "body", "body_tokens",
+			"source_mtime", "llm_embedding", "llm_embedding_dim", "synced_at",
+		},
+	}
+}
+
+func assertMemoryIndexAfterAlter(t *testing.T, sql, column, index string) {
+	t.Helper()
+	alter := `ALTER TABLE "memory"`
+	columnDef := "ADD COLUMN IF NOT EXISTS " + column
+	create := "CREATE INDEX IF NOT EXISTS " + index
+	alterPos := strings.Index(sql, alter)
+	createPos := strings.LastIndex(sql, create)
+	require.NotEqual(t, -1, alterPos, "missing %s", alter)
+	require.Contains(t, sql[alterPos:], columnDef, "missing %s", columnDef)
+	require.NotEqual(t, -1, createPos, "missing %s", create)
+	assert.Greater(t, createPos, alterPos, "%s must be created after %s", index, column)
+}
+
 func TestEnsureSchemaGroupsMissingColumnMigrationsByTable(t *testing.T) {
 	db, state := newSchemaProbeDB(t, map[string][]string{
 		"sessions": {
@@ -319,7 +393,7 @@ func TestEnsureSchemaGroupsMissingColumnMigrationsByTable(t *testing.T) {
 	// Four tables have missing columns (sessions: termination_status,
 	// LLM enrichment columns, and other late-added session columns;
 	// messages: source_parent_uuid, is_sidechain, is_compact_boundary,
-	// thinking_text; skills: prompt, prompt_tokens; memory: source).
+	// thinking_text; skills: prompt, prompt_tokens; memory: source and memory facets).
 	// Per-table batching means one ALTER each.
 	assert.Equal(t, 4, state.alterTableExecCount(), "ALTER TABLE execs")
 }

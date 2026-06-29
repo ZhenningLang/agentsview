@@ -5,6 +5,7 @@
     fetchMemory,
     fetchMemoryRaw,
     putMemory,
+    setMemoryFeedback,
     fetchMemoryHistory,
     fetchMemoryAtCommit,
     revertMemory,
@@ -17,6 +18,10 @@
   import MemoryQualityPanel from "./MemoryQualityPanel.svelte";
 
   type SortKey = "title" | "date" | "problem_type";
+  type FeedbackVote = "up" | "down" | "";
+  type FeedbackStatus = "pending" | "handled" | "";
+  type TierFilter = "" | "atomic" | "topic";
+  type FeedbackFilter = "" | "up" | "down" | "commented";
 
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -36,6 +41,9 @@
   // empty-string "General" bucket needs no API sentinel.
   const GENERAL = "__general__";
   let projectFilter = $state("");
+  let tierFilter = $state<TierFilter>("");
+  let feedbackFilter = $state<FeedbackFilter>("");
+  let feedbackStatusFilter = $state<FeedbackStatus>("");
   let groupByProject = $state(false);
 
   // Human-readable label for a note's project ("" = General bucket).
@@ -48,6 +56,26 @@
     if (s === "cc-native") return "CC 原生";
     if (s === "cross-agent") return "跨 agent";
     return s || "—";
+  }
+
+  function tierOf(m: Memory): "topic" | "atomic" {
+    return m.origin_session?.startsWith("compact-memory:") ? "topic" : "atomic";
+  }
+
+  function tierLabel(m: Memory): string {
+    return tierOf(m) === "topic" ? "主题" : "原子";
+  }
+
+  function feedbackVoteLabel(v: string): string {
+    if (v === "up") return "赞";
+    if (v === "down") return "踩";
+    return "无";
+  }
+
+  function feedbackStatusLabel(s: string): string {
+    if (s === "pending") return "待处理";
+    if (s === "handled") return "已处理";
+    return "未标记";
   }
 
   // The body is only fetched on demand for the listing's facet options, but
@@ -151,7 +179,15 @@
     sortedMemories.filter((m) => {
       if (projectFilter === "") return true;
       if (projectFilter === GENERAL) return !m.origin_project;
-      return m.origin_project === projectFilter;
+      if (m.origin_project !== projectFilter) return false;
+      return true;
+    }).filter((m) => {
+      if (tierFilter && tierOf(m) !== tierFilter) return false;
+      if (feedbackFilter === "up" && m.feedback_vote !== "up") return false;
+      if (feedbackFilter === "down" && m.feedback_vote !== "down") return false;
+      if (feedbackFilter === "commented" && !m.feedback_comment) return false;
+      if (feedbackStatusFilter && m.feedback_status !== feedbackStatusFilter) return false;
+      return true;
     }),
   );
 
@@ -181,17 +217,35 @@
     type = "";
     status = "";
     projectFilter = "";
+    tierFilter = "";
+    feedbackFilter = "";
+    feedbackStatusFilter = "";
     load();
   }
 
   const hasFilters = $derived(
-    !!(query.trim() || source || problemType || type || status || projectFilter),
+    !!(
+      query.trim() ||
+      source ||
+      problemType ||
+      type ||
+      status ||
+      projectFilter ||
+      tierFilter ||
+      feedbackFilter ||
+      feedbackStatusFilter
+    ),
   );
 
   // Detail modal: fetch the full note (body included) by rel_path.
   let detail = $state<Memory | null>(null);
   let detailLoading = $state(false);
   let detailError = $state<string | null>(null);
+  let feedbackVote = $state<FeedbackVote>("");
+  let feedbackComment = $state("");
+  let feedbackStatus = $state<FeedbackStatus>("");
+  let feedbackSaving = $state(false);
+  let feedbackError = $state<string | null>(null);
 
   // CC-native notes live in scattered ~/.claude/projects dirs with no git repo,
   // so history/revert do not apply: the UI hides the history entry and shows a
@@ -210,8 +264,11 @@
     detail = null;
     resetEdit();
     resetHistory();
+    resetFeedbackForm();
     try {
-      detail = await fetchMemory(relPath);
+      const loaded = await fetchMemory(relPath);
+      detail = loaded;
+      syncFeedbackForm(loaded);
     } catch (e) {
       detailError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -226,6 +283,58 @@
     activePath = null;
     resetEdit();
     resetHistory();
+    resetFeedbackForm();
+  }
+
+  function resetFeedbackForm() {
+    feedbackVote = "";
+    feedbackComment = "";
+    feedbackStatus = "";
+    feedbackSaving = false;
+    feedbackError = null;
+  }
+
+  function syncFeedbackForm(m: Memory) {
+    feedbackVote = m.feedback_vote === "up" || m.feedback_vote === "down" ? m.feedback_vote : "";
+    feedbackComment = m.feedback_comment || "";
+    feedbackStatus =
+      m.feedback_status === "pending" || m.feedback_status === "handled"
+        ? m.feedback_status
+        : "";
+    feedbackError = null;
+  }
+
+  function toggleFeedbackVote(v: "up" | "down") {
+    feedbackVote = feedbackVote === v ? "" : v;
+  }
+
+  async function saveFeedback() {
+    if (!activePath) return;
+    feedbackSaving = true;
+    feedbackError = null;
+    try {
+      const raw = await fetchMemoryRaw(activePath);
+      await setMemoryFeedback(activePath, {
+        vote: feedbackVote,
+        comment: feedbackComment,
+        status: feedbackStatus,
+        base_sha: raw.sha,
+      });
+      const path = activePath;
+      const loaded = await fetchMemory(path);
+      detail = loaded;
+      syncFeedbackForm(loaded);
+      await load();
+      await loadCatalog();
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        feedbackError = "已被磁盘上的改动修改，请重载后再保存反馈。";
+      } else {
+        feedbackError = e instanceof Error ? e.message : String(e);
+      }
+    } finally {
+      feedbackSaving = false;
+    }
   }
 
   // ── Edit mode ─────────────────────────────────────────────────────────
@@ -457,6 +566,9 @@
       ["status", m.status],
       ["origin_project", m.origin_project || "通用"],
       ["origin_session", m.origin_session],
+      ["feedback_vote", m.feedback_vote],
+      ["feedback_comment", m.feedback_comment],
+      ["feedback_status", m.feedback_status],
       ["body_tokens", String(m.body_tokens)],
       ["synced_at", m.synced_at],
     ];
@@ -519,6 +631,22 @@
           <option value={opt}>{opt}</option>
         {/each}
       </select>
+      <select bind:value={tierFilter} aria-label="层级过滤">
+        <option value="">层级: 全部</option>
+        <option value="atomic">原子</option>
+        <option value="topic">主题</option>
+      </select>
+      <select bind:value={feedbackFilter} aria-label="反馈过滤">
+        <option value="">反馈: 全部</option>
+        <option value="up">赞</option>
+        <option value="down">踩</option>
+        <option value="commented">有评论</option>
+      </select>
+      <select bind:value={feedbackStatusFilter} aria-label="反馈处理状态过滤">
+        <option value="">处理: 全部</option>
+        <option value="pending">待处理</option>
+        <option value="handled">已处理</option>
+      </select>
       <label class="group-toggle" title="按项目分组显示">
         <input type="checkbox" bind:checked={groupByProject} />
         按项目分组
@@ -575,6 +703,8 @@
         >
         <th>来源</th>
         <th>项目</th>
+        <th>层级</th>
+        <th>反馈</th>
         <th class="sortable-th" onclick={() => toggleSort("problem_type")}
           >problem_type{sortIndicator("problem_type")}</th
         >
@@ -601,6 +731,27 @@
             <span class="badge project" class:general={!m.origin_project}
               >{projectLabel(m.origin_project)}</span
             >
+          </td>
+          <td>
+            <span class="badge tier" class:topic={tierOf(m) === "topic"}>{tierLabel(m)}</span>
+          </td>
+          <td class="feedback-cell">
+            {#if m.feedback_vote === "up"}
+              <span class="feedback-icon" title="赞">👍</span>
+            {:else if m.feedback_vote === "down"}
+              <span class="feedback-icon" title="踩">👎</span>
+            {/if}
+            {#if m.feedback_comment}
+              <span class="feedback-icon" title="有评论">💬</span>
+            {/if}
+            {#if m.feedback_status}
+              <span
+                class="status-dot {m.feedback_status}"
+                title={feedbackStatusLabel(m.feedback_status)}
+              ></span>
+            {:else if !m.feedback_vote && !m.feedback_comment}
+              —
+            {/if}
           </td>
           <td>
             {#if m.problem_type}
@@ -721,6 +872,43 @@
             ></textarea>
           {/if}
         {:else}
+          <h4>反馈</h4>
+          <div class="feedback-panel">
+            <div class="feedback-row">
+              <button
+                class="action-btn"
+                class:active={feedbackVote === "up"}
+                onclick={() => toggleFeedbackVote("up")}
+                disabled={feedbackSaving}
+              >👍 {feedbackVoteLabel("up")}</button>
+              <button
+                class="action-btn"
+                class:active={feedbackVote === "down"}
+                onclick={() => toggleFeedbackVote("down")}
+                disabled={feedbackSaving}
+              >👎 {feedbackVoteLabel("down")}</button>
+              <select bind:value={feedbackStatus} disabled={feedbackSaving} aria-label="反馈处理状态">
+                <option value="">处理状态: 未标记</option>
+                <option value="pending">待处理</option>
+                <option value="handled">已处理</option>
+              </select>
+              <button
+                class="action-btn primary"
+                onclick={saveFeedback}
+                disabled={feedbackSaving}
+              >{feedbackSaving ? "保存中…" : "保存反馈"}</button>
+            </div>
+            <textarea
+              class="feedback-comment"
+              bind:value={feedbackComment}
+              disabled={feedbackSaving}
+              placeholder="评论，可写原因: 过度合并"
+              aria-label="反馈评论"
+            ></textarea>
+            {#if feedbackError}
+              <div class="state error feedback-error">{feedbackError}</div>
+            {/if}
+          </div>
           <h4>Frontmatter</h4>
           <table class="fm-grid">
             <tbody>

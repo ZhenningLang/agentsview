@@ -46,13 +46,16 @@ const indexBasename = "INDEX.md"
 // dimension table tracks are decoded; the rest of the schema (trust,
 // keywords, related, ...) is ignored by this MVP.
 type frontmatter struct {
-	Title         string `yaml:"title"`
-	Date          string `yaml:"date"`
-	ProblemType   string `yaml:"problem_type"`
-	Type          string `yaml:"type"`
-	Status        string `yaml:"status"`
-	OriginSession string `yaml:"origin_session"`
-	OriginProject string `yaml:"origin_project"`
+	Title           string `yaml:"title"`
+	Date            string `yaml:"date"`
+	ProblemType     string `yaml:"problem_type"`
+	Type            string `yaml:"type"`
+	Status          string `yaml:"status"`
+	OriginSession   string `yaml:"origin_session"`
+	OriginProject   string `yaml:"origin_project"`
+	FeedbackVote    string `yaml:"feedback_vote"`
+	FeedbackComment string `yaml:"feedback_comment"`
+	FeedbackStatus  string `yaml:"feedback_status"`
 }
 
 // Syncer reads a memory directory and persists the parsed notes.
@@ -195,18 +198,21 @@ func (s *Syncer) parseFile(
 	}
 	body := extractBody(raw)
 	return db.Memory{
-		RelPath:       relPath,
-		Source:        db.SourceCrossAgent,
-		Title:         fm.Title,
-		Date:          fm.Date,
-		ProblemType:   fm.ProblemType,
-		Type:          fm.Type,
-		Status:        fm.Status,
-		OriginSession: fm.OriginSession,
-		OriginProject: fm.OriginProject,
-		Body:          body,
-		BodyTokens:    s.tokenizer.Count(body),
-		SourceMtime:   mtime,
+		RelPath:         relPath,
+		Source:          db.SourceCrossAgent,
+		Title:           fm.Title,
+		Date:            fm.Date,
+		ProblemType:     fm.ProblemType,
+		Type:            fm.Type,
+		Status:          fm.Status,
+		OriginSession:   fm.OriginSession,
+		OriginProject:   fm.OriginProject,
+		FeedbackVote:    fm.FeedbackVote,
+		FeedbackComment: fm.FeedbackComment,
+		FeedbackStatus:  fm.FeedbackStatus,
+		Body:            body,
+		BodyTokens:      s.tokenizer.Count(body),
+		SourceMtime:     mtime,
 	}, nil
 }
 

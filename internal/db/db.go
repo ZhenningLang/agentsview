@@ -784,6 +784,21 @@ func (db *DB) migrateColumns() error {
 			"ALTER TABLE memory ADD COLUMN origin_project TEXT NOT NULL " +
 				"DEFAULT ''",
 		},
+		{
+			"memory", "feedback_vote",
+			"ALTER TABLE memory ADD COLUMN feedback_vote TEXT NOT NULL " +
+				"DEFAULT ''",
+		},
+		{
+			"memory", "feedback_comment",
+			"ALTER TABLE memory ADD COLUMN feedback_comment TEXT NOT NULL " +
+				"DEFAULT ''",
+		},
+		{
+			"memory", "feedback_status",
+			"ALTER TABLE memory ADD COLUMN feedback_status TEXT NOT NULL " +
+				"DEFAULT ''",
+		},
 	}
 
 	for _, m := range migrations {
@@ -841,6 +856,16 @@ func (db *DB) migrateColumns() error {
 		`CREATE INDEX IF NOT EXISTS idx_memory_origin_project ON memory(origin_project)`,
 	); err != nil {
 		return fmt.Errorf("creating idx_memory_origin_project: %w", err)
+	}
+	if _, err := w.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_memory_feedback_vote ON memory(feedback_vote)`,
+	); err != nil {
+		return fmt.Errorf("creating idx_memory_feedback_vote: %w", err)
+	}
+	if _, err := w.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_memory_feedback_status ON memory(feedback_status)`,
+	); err != nil {
+		return fmt.Errorf("creating idx_memory_feedback_status: %w", err)
 	}
 
 	if _, err := w.Exec(`

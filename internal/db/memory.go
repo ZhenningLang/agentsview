@@ -26,17 +26,20 @@ const (
 // never by the session sync path. The store is read-only for callers other
 // than the syncer; PG/DuckDB receive rows via the SQLite mirror.
 type Memory struct {
-	RelPath         string    `json:"rel_path"`
-	Source          string    `json:"source"`
-	Title           string    `json:"title"`
-	Date            string    `json:"date"`
-	ProblemType     string    `json:"problem_type"`
-	Type            string    `json:"type"`
-	Status          string    `json:"status"`
-	OriginSession   string    `json:"origin_session"`
+	RelPath       string `json:"rel_path"`
+	Source        string `json:"source"`
+	Title         string `json:"title"`
+	Date          string `json:"date"`
+	ProblemType   string `json:"problem_type"`
+	Type          string `json:"type"`
+	Status        string `json:"status"`
+	OriginSession string `json:"origin_session"`
 	// OriginProject is the project a note belongs to ("" = the General bucket:
 	// user-global or cross-project notes). It drives the /memories project facet.
 	OriginProject   string    `json:"origin_project"`
+	FeedbackVote    string    `json:"feedback_vote"`
+	FeedbackComment string    `json:"feedback_comment"`
+	FeedbackStatus  string    `json:"feedback_status"`
 	Body            string    `json:"body,omitempty"`
 	BodyTokens      int       `json:"body_tokens"`
 	SourceMtime     int64     `json:"source_mtime"`
@@ -50,19 +53,22 @@ type Memory struct {
 // specific elsewhere). Source filters by data source (cross-agent vs
 // cc-native).
 type MemoryFilter struct {
-	Source        string
-	ProblemType   string
-	Type          string
-	Status        string
-	OriginSession string
-	OriginProject string
-	Q             string
+	Source         string
+	ProblemType    string
+	Type           string
+	Status         string
+	OriginSession  string
+	OriginProject  string
+	FeedbackVote   string
+	FeedbackStatus string
+	Q              string
 }
 
 // memoryCols lists the memory columns in the canonical order shared by
 // every backend's scan helper.
 const memoryCols = `rel_path, source, title, date, problem_type, type, status,
-	origin_session, origin_project, body, body_tokens, source_mtime, synced_at`
+	origin_session, origin_project, feedback_vote, feedback_comment,
+	feedback_status, body, body_tokens, source_mtime, synced_at`
 
 const memoryEmbeddingCols = `llm_embedding, llm_embedding_dim`
 
@@ -70,7 +76,8 @@ func scanMemory(rows *sql.Rows) (Memory, error) {
 	var m Memory
 	if err := rows.Scan(
 		&m.RelPath, &m.Source, &m.Title, &m.Date, &m.ProblemType, &m.Type,
-		&m.Status, &m.OriginSession, &m.OriginProject, &m.Body, &m.BodyTokens,
+		&m.Status, &m.OriginSession, &m.OriginProject, &m.FeedbackVote,
+		&m.FeedbackComment, &m.FeedbackStatus, &m.Body, &m.BodyTokens,
 		&m.SourceMtime, &m.SyncedAt,
 	); err != nil {
 		return Memory{}, err
@@ -90,7 +97,8 @@ func scanMemoryWithEmbedding(rows interface {
 		var dim int
 		if err := rows.Scan(
 			&m.RelPath, &m.Source, &m.Title, &m.Date, &m.ProblemType, &m.Type,
-			&m.Status, &m.OriginSession, &m.OriginProject, &m.Body, &m.BodyTokens,
+			&m.Status, &m.OriginSession, &m.OriginProject, &m.FeedbackVote,
+			&m.FeedbackComment, &m.FeedbackStatus, &m.Body, &m.BodyTokens,
 			&m.SourceMtime, &m.SyncedAt, &data, &dim,
 		); err != nil {
 			return nil, err
@@ -140,6 +148,14 @@ func (db *DB) ListMemories(
 	if f.OriginProject != "" {
 		preds = append(preds, "m.origin_project = ?")
 		args = append(args, f.OriginProject)
+	}
+	if f.FeedbackVote != "" {
+		preds = append(preds, "m.feedback_vote = ?")
+		args = append(args, f.FeedbackVote)
+	}
+	if f.FeedbackStatus != "" {
+		preds = append(preds, "m.feedback_status = ?")
+		args = append(args, f.FeedbackStatus)
 	}
 	from := "memory m"
 	if f.Q != "" {
@@ -222,6 +238,14 @@ func (db *DB) MemoryEmbeddings(
 		preds = append(preds, "m.origin_project = ?")
 		args = append(args, f.OriginProject)
 	}
+	if f.FeedbackVote != "" {
+		preds = append(preds, "m.feedback_vote = ?")
+		args = append(args, f.FeedbackVote)
+	}
+	if f.FeedbackStatus != "" {
+		preds = append(preds, "m.feedback_status = ?")
+		args = append(args, f.FeedbackStatus)
+	}
 	from := "memory m"
 	if f.Q != "" {
 		from = "memory m JOIN memory_fts ON memory_fts.rel_path = m.rel_path"
@@ -273,7 +297,7 @@ func replaceMemoriesTx(
 	}
 	cols := strings.ReplaceAll(memoryCols+", "+memoryEmbeddingCols, "\n\t", " ")
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO memory (`+cols+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return fmt.Errorf("prepare memory insert: %w", err)
 	}
@@ -291,7 +315,8 @@ func replaceMemoriesTx(
 		}
 		if _, err := stmt.ExecContext(ctx,
 			m.RelPath, m.Source, m.Title, m.Date, m.ProblemType, m.Type,
-			m.Status, m.OriginSession, m.OriginProject, m.Body, m.BodyTokens,
+			m.Status, m.OriginSession, m.OriginProject, m.FeedbackVote,
+			m.FeedbackComment, m.FeedbackStatus, m.Body, m.BodyTokens,
 			m.SourceMtime, m.SyncedAt, encoded, dim,
 		); err != nil {
 			return fmt.Errorf("insert memory %q: %w", m.RelPath, err)
