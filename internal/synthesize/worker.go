@@ -16,6 +16,13 @@ import (
 
 const (
 	defaultMinSimilarity = 0.55
+	// defaultMergeSimilarity gates MERGE routing (atomic cluster -> existing
+	// topic, or topic <-> topic). It is deliberately much higher than
+	// defaultMinSimilarity: folding raw atomics into a fresh topic is cheap and
+	// reversible, but pulling an existing topic into a merge supersedes it, so it
+	// must require near-duplicate similarity to avoid collapsing distinct-but-
+	// related topics into one. Distinct themes (cosine below this) stay separate.
+	defaultMergeSimilarity = 0.82
 	// defaultMaxClusters caps clusters folded per cycle. With the ~4h interval
 	// this comfortably keeps up with new atomics and self-clears a burst backlog
 	// over a few cycles (verified: resync between cycles excludes folded sources,
@@ -46,9 +53,10 @@ type Resyncer interface {
 // Worker runs one synthesis cycle: read atomic notes -> cluster -> per cluster
 // LLM distill -> compact_memory.py write -> commit -> resync -> audit.
 type Worker struct {
-	Root          string // dotfiles root (compact_memory --root)
-	MinSimilarity float64
-	MaxClusters   int
+	Root            string // dotfiles root (compact_memory --root)
+	MinSimilarity   float64
+	MergeSimilarity float64
+	MaxClusters     int
 
 	Store  NoteStore
 	LLM    LLMClient
@@ -74,6 +82,13 @@ func (w *Worker) minSim() float64 {
 	return defaultMinSimilarity
 }
 
+func (w *Worker) mergeSim() float64 {
+	if w.MergeSimilarity > 0 {
+		return w.MergeSimilarity
+	}
+	return defaultMergeSimilarity
+}
+
 func (w *Worker) maxClusters() int {
 	if w.MaxClusters > 0 {
 		return w.MaxClusters
@@ -95,7 +110,7 @@ func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
 	notes := SourceNotesFromMemories(mems)
 	rec.NoteCount = len(notes)
 
-	clusters := ClusterNotes(notes, w.minSim())
+	clusters := BuildClusters(notes, w.minSim(), w.mergeSim())
 	if cap := w.maxClusters(); len(clusters) > cap {
 		clusters = clusters[:cap]
 	}
@@ -142,8 +157,13 @@ func (w *Worker) synthesizeCluster(ctx context.Context, cluster []SourceNote) To
 	for _, n := range cluster {
 		sourceIDs = append(sourceIDs, n.ID)
 	}
+	isMerge := clusterHasTopic(cluster)
 
-	raw, err := w.LLM.ChatJSON(ctx, systemPrompt, BuildUserPrompt(cluster))
+	system, user := systemPrompt, BuildUserPrompt(cluster)
+	if isMerge {
+		system, user = mergeSystemPrompt, BuildMergeUserPrompt(cluster)
+	}
+	raw, err := w.LLM.ChatJSON(ctx, system, user)
 	if err != nil {
 		return TopicRecord{SourceIDs: sourceIDs, Skipped: true, Error: fmt.Sprintf("llm: %v", err)}
 	}
@@ -155,13 +175,19 @@ func (w *Worker) synthesizeCluster(ctx context.Context, cluster []SourceNote) To
 		return TopicRecord{Title: d.Title, SourceIDs: sourceIDs, Skipped: true, Result: "skip llm_skip"}
 	}
 
-	// Fold the source atomics: mark each stale so it leaves active recall and the
-	// INDEX (dual-track — the file stays for audit until the 90d archived-note GC,
-	// and is git-recoverable). This is what shrinks the fragmented pool into the
-	// coherent topic layer.
-	stale := make(map[string]string, len(sourceIDs))
-	for _, id := range sourceIDs {
-		stale[id] = "folded into topic: " + d.Title
+	// Stale every source so it leaves active recall and the INDEX (dual-track —
+	// the file stays for audit until the 90d archived-note GC, and is git-
+	// recoverable). For a MERGE, the topic sources carry a "merged" reason and
+	// compact_memory tier-retires them (topic->topic supersede via superseded_by);
+	// atomics are "folded". This shrinks the fragmented pool into the coherent
+	// topic layer and prevents duplicate topics for the same theme.
+	stale := make(map[string]string, len(cluster))
+	for _, n := range cluster {
+		if n.IsTopic {
+			stale[n.ID] = "merged into topic: " + d.Title
+		} else {
+			stale[n.ID] = "folded into topic: " + d.Title
+		}
 	}
 	project, scope := clusterProject(cluster)
 	decision := Decision{

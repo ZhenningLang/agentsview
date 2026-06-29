@@ -18,27 +18,33 @@ import (
 // excluded from clustering so synthesis never feeds on its own output.
 const synthesizedOriginPrefix = "compact-memory:"
 
-// SourceNote is an atomic note eligible to be folded into a topic note. ID is
-// the note's filename stem (what compact_memory cites via "(because of <id>)").
+// SourceNote is a note eligible to take part in a topic synthesis cluster — an
+// atomic note to fold, or (IsTopic) an existing topic note to merge/supersede.
+// ID is the note's filename stem (what compact_memory cites via "(because of
+// <id>)").
 type SourceNote struct {
 	ID        string
 	Title     string
 	Body      string
-	Project   string // origin_project of the source atomic ("" = general)
+	Project   string // origin_project of the source note ("" = general)
 	Embedding []float32
+	// IsTopic marks a note already produced by compact_memory (origin_session
+	// starts with the synthesizedOriginPrefix). Such notes are NOT clustered as
+	// raw input; they are only merge targets/sources so the worker can fold a
+	// growing theme back into the existing topic instead of spawning a duplicate.
+	IsTopic bool
 }
 
-// SourceNotesFromMemories converts active cross-agent atomic notes into source
-// notes, dropping INDEX, already-synthesized notes, and notes without an
-// embedding (clustering needs the vector).
+// SourceNotesFromMemories converts active cross-agent notes into source notes.
+// It now INCLUDES already-synthesized topic notes (flagged IsTopic) so the
+// worker can merge into / dedup existing topics instead of always adding a new
+// one. It still drops INDEX and notes without an embedding (clustering needs the
+// vector).
 func SourceNotesFromMemories(memories []db.Memory) []SourceNote {
 	out := make([]SourceNote, 0, len(memories))
 	for _, m := range memories {
 		// status is filtered to active at the DB query; here we only drop notes
 		// that are unsuitable as synthesis input regardless of status.
-		if strings.HasPrefix(m.OriginSession, synthesizedOriginPrefix) {
-			continue
-		}
 		if len(m.LLMEmbedding) == 0 {
 			continue
 		}
@@ -46,7 +52,8 @@ func SourceNotesFromMemories(memories []db.Memory) []SourceNote {
 		if id == "" || strings.EqualFold(id, "INDEX") {
 			continue
 		}
-		out = append(out, SourceNote{ID: id, Title: m.Title, Body: m.Body, Project: m.OriginProject, Embedding: m.LLMEmbedding})
+		isTopic := strings.HasPrefix(m.OriginSession, synthesizedOriginPrefix)
+		out = append(out, SourceNote{ID: id, Title: m.Title, Body: m.Body, Project: m.OriginProject, Embedding: m.LLMEmbedding, IsTopic: isTopic})
 	}
 	return out
 }
@@ -82,6 +89,102 @@ func ClusterNotes(notes []SourceNote, minSim float64) [][]SourceNote {
 		}
 	}
 	return clusters
+}
+
+// bestTopicMatch returns the index of the active topic in topics whose embedding
+// is closest (cosine) to any member of cluster, and that best similarity. It
+// returns (-1, 0) when there are no topics or none has a usable embedding.
+func bestTopicMatch(cluster []SourceNote, topics []SourceNote) (idx int, best float64) {
+	idx = -1
+	for ti, t := range topics {
+		for _, m := range cluster {
+			if sim, ok := semantic.Cosine(m.Embedding, t.Embedding); ok && (idx == -1 || sim > best) {
+				idx = ti
+				best = sim
+			}
+		}
+	}
+	return idx, best
+}
+
+// BuildClusters routes the active notes into the clusters to synthesize this
+// cycle, deterministically and conservatively:
+//
+//  1. Cluster ATOMIC-only notes at minSim (existing fold behavior).
+//  2. For each atomic cluster, find the closest active topic. If that cosine is
+//     >= mergeMinSim the cluster becomes a MERGE into that topic (the topic is
+//     added as a source); otherwise it stays an ADD of a brand-new topic.
+//  3. Dedup remaining (unassigned) active topics: greedily group topics whose
+//     pairwise cosine is >= mergeMinSim; any group of >= 2 becomes a MERGE
+//     cluster (all those topics are sources).
+//
+// A note is emitted in at most one cluster per cycle. mergeMinSim is held high
+// (near-duplicate) so distinct-but-related topics are never merged.
+func BuildClusters(notes []SourceNote, minSim, mergeMinSim float64) [][]SourceNote {
+	var atomics, topics []SourceNote
+	for _, n := range notes {
+		if n.IsTopic {
+			topics = append(topics, n)
+		} else {
+			atomics = append(atomics, n)
+		}
+	}
+	sort.Slice(topics, func(i, j int) bool { return topics[i].ID < topics[j].ID })
+
+	assignedTopic := make([]bool, len(topics))
+	var out [][]SourceNote
+
+	// 1 + 2: atomic clusters, optionally merged into a near-duplicate topic.
+	for _, cluster := range ClusterNotes(atomics, minSim) {
+		// Only consider topics not already consumed by an earlier cluster, to keep
+		// each note in at most one emitted cluster.
+		free := make([]SourceNote, 0, len(topics))
+		freeIdx := make([]int, 0, len(topics))
+		for ti := range topics {
+			if !assignedTopic[ti] {
+				free = append(free, topics[ti])
+				freeIdx = append(freeIdx, ti)
+			}
+		}
+		if ti, best := bestTopicMatch(cluster, free); ti >= 0 && best >= mergeMinSim {
+			cluster = append(cluster, free[ti])
+			assignedTopic[freeIdx[ti]] = true
+		}
+		out = append(out, cluster)
+	}
+
+	// 3: dedup the still-free topics among themselves.
+	for i := range topics {
+		if assignedTopic[i] {
+			continue
+		}
+		group := []SourceNote{topics[i]}
+		assignedTopic[i] = true
+		for j := i + 1; j < len(topics); j++ {
+			if assignedTopic[j] {
+				continue
+			}
+			if sim, ok := semantic.Cosine(topics[i].Embedding, topics[j].Embedding); ok && sim >= mergeMinSim {
+				group = append(group, topics[j])
+				assignedTopic[j] = true
+			}
+		}
+		if len(group) >= 2 {
+			out = append(out, group)
+		}
+	}
+	return out
+}
+
+// clusterHasTopic reports whether any member of a cluster is an existing topic
+// note, i.e. the cluster is a MERGE rather than a fresh ADD.
+func clusterHasTopic(cluster []SourceNote) bool {
+	for _, n := range cluster {
+		if n.IsTopic {
+			return true
+		}
+	}
+	return false
 }
 
 // Decision is the JSON written to compact_memory.py's --decision-file. It must
