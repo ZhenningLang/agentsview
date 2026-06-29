@@ -292,6 +292,12 @@ func (w *FileWriter) rebuildIndexGo() error {
 		if status == "" {
 			status = "active"
 		}
+		// Parity with the python builder: the INDEX is the active-recall index;
+		// stale/archived notes are excluded (recall skips them and the DB reads
+		// the files directly), so listing them only bloats the index.
+		if status != "active" {
+			continue
+		}
 		rows = append(rows, row{
 			file:        name,
 			title:       fm["title"],
