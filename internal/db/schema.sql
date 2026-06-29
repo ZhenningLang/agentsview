@@ -456,6 +456,9 @@ CREATE TABLE IF NOT EXISTS memory (
     status         TEXT NOT NULL DEFAULT '',
     origin_session TEXT NOT NULL DEFAULT '',
     origin_project TEXT NOT NULL DEFAULT '',
+    feedback_vote TEXT NOT NULL DEFAULT '',
+    feedback_comment TEXT NOT NULL DEFAULT '',
+    feedback_status TEXT NOT NULL DEFAULT '',
     body           TEXT NOT NULL DEFAULT '',
     body_tokens    INTEGER NOT NULL DEFAULT 0,
     source_mtime   INTEGER NOT NULL DEFAULT 0,
@@ -474,6 +477,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_status ON memory(status);
 -- aborts startup. The index is created in migrateColumns() right after the
 -- ALTER TABLE ... ADD COLUMN source migration, which covers both fresh and
 -- migrated databases.
+-- The same compatibility rule applies to origin_project and feedback_* indexes.
 
 -- Vault dimension tables: read-only mirror of dev workflow run records
 -- discovered by scanning configured roots for .long-loop/<slug>/

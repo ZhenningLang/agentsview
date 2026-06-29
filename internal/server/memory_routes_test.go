@@ -139,6 +139,31 @@ func (te *testEnv) putMemory(
 	return w
 }
 
+func (te *testEnv) postMemoryFeedback(
+	t *testing.T, relPath, vote, comment, status string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	return te.postMemoryFeedbackWithBaseSHA(t, relPath, vote, comment, status, "")
+}
+
+func (te *testEnv) postMemoryFeedbackWithBaseSHA(
+	t *testing.T, relPath, vote, comment, status, baseSHA string,
+) *httptest.ResponseRecorder {
+	t.Helper()
+	body := `{"vote":` + jsonString(vote) +
+		`,"comment":` + jsonString(comment) +
+		`,"status":` + jsonString(status) +
+		`,"base_sha":` + jsonString(baseSHA) + `}`
+	req := httptest.NewRequest(http.MethodPost,
+		"/api/v1/memories/"+encodeMemPath(relPath)+"/feedback",
+		strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:0")
+	w := httptest.NewRecorder()
+	te.handler.ServeHTTP(w, req)
+	return w
+}
+
 // jsonString returns a minimal JSON-quoted string. Test inputs avoid control
 // chars, so quoting backslash and double-quote is sufficient.
 func jsonString(s string) string {
@@ -205,6 +230,51 @@ func TestMemoryPut_CrossAgentLandsInSSOTRoot(t *testing.T) {
 	require.NoError(t, gerr, "git log: %s", out)
 	assert.Contains(t, string(out), fx.crossRelPath,
 		"cross-agent write must commit the local git repo")
+}
+
+func TestMemoryFeedbackWritesQuotedFrontmatterAndResyncs(t *testing.T) {
+	fx := setupMemoryFixture(t)
+
+	w := fx.te.postMemoryFeedback(t, fx.crossRelPath, "down", "原因: 过度合并", "pending")
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	got := decode[struct {
+		SHA string `json:"sha"`
+	}](t, w)
+	require.NotEmpty(t, got.SHA)
+
+	onDisk, err := os.ReadFile(filepath.Join(fx.ssotDir, fx.crossRelPath))
+	require.NoError(t, err)
+	assert.Contains(t, string(onDisk), "feedback_vote: down")
+	assert.Contains(t, string(onDisk), `feedback_comment: "原因: 过度合并"`)
+	assert.Contains(t, string(onDisk), "feedback_status: pending")
+
+	wGet := fx.te.get(t, "/api/v1/memories/"+encodeMemPath(fx.crossRelPath))
+	require.Equal(t, http.StatusOK, wGet.Code, "body: %s", wGet.Body.String())
+	mem := decode[db.Memory](t, wGet)
+	assert.Equal(t, "down", mem.FeedbackVote)
+	assert.Equal(t, "原因: 过度合并", mem.FeedbackComment)
+	assert.Equal(t, "pending", mem.FeedbackStatus)
+}
+
+func TestMemoryFeedbackRejectsInvalidVoteAndStatus(t *testing.T) {
+	fx := setupMemoryFixture(t)
+
+	wVote := fx.te.postMemoryFeedback(t, fx.crossRelPath, "meh", "", "pending")
+	assert.Equal(t, http.StatusBadRequest, wVote.Code, "body: %s", wVote.Body.String())
+
+	wStatus := fx.te.postMemoryFeedback(t, fx.crossRelPath, "up", "", "open")
+	assert.Equal(t, http.StatusBadRequest, wStatus.Code, "body: %s", wStatus.Body.String())
+}
+
+func TestMemoryFeedbackReportsConflictWhenDiskChangedAfterDBSnapshot(t *testing.T) {
+	fx := setupMemoryFixture(t)
+	rel := fx.crossRelPath
+	path := filepath.Join(fx.ssotDir, rel)
+	changed := strings.Replace(fx.crossContent, "Cross body.", "external edit.", 1)
+	require.NoError(t, os.WriteFile(path, []byte(changed), 0o644))
+
+	w := fx.te.postMemoryFeedbackWithBaseSHA(t, rel, "up", "", "pending", memSHA(fx.crossContent))
+	assert.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
 }
 
 // TestMemoryRaw_RoutesBySource covers the raw-GET behavior change: the raw read

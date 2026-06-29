@@ -18,6 +18,7 @@ func (s *Server) registerMemoryRoutes() {
 	get(s, group, "/{path}/raw",
 		"Get one memory note's raw on-disk content and sha", s.humaGetMemoryRaw)
 	put(s, group, "/{path}", "Write back one memory note", s.humaPutMemory)
+	post(s, group, "/{path}/feedback", "Set feedback on a memory note", s.humaMemoryFeedback)
 	get(s, group, "/{path}/history",
 		"List git history for one memory note", s.humaMemoryHistory)
 	get(s, group, "/{path}/history/{commit}",
@@ -27,13 +28,15 @@ func (s *Server) registerMemoryRoutes() {
 }
 
 type memoriesListInput struct {
-	Source        string `query:"source" doc:"Filter by data source (cross-agent | cc-native)"`
-	ProblemType   string `query:"problem_type" doc:"Filter by frontmatter problem_type"`
-	Type          string `query:"type" doc:"Filter by frontmatter type"`
-	Status        string `query:"status" doc:"Filter by frontmatter status"`
-	OriginSession string `query:"origin_session" doc:"Filter by originating session id"`
-	OriginProject string `query:"origin_project" doc:"Filter by originating project ('' = General)"`
-	Q             string `query:"q" doc:"Full-text query over the note body"`
+	Source         string `query:"source" doc:"Filter by data source (cross-agent | cc-native)"`
+	ProblemType    string `query:"problem_type" doc:"Filter by frontmatter problem_type"`
+	Type           string `query:"type" doc:"Filter by frontmatter type"`
+	Status         string `query:"status" doc:"Filter by frontmatter status"`
+	OriginSession  string `query:"origin_session" doc:"Filter by originating session id"`
+	OriginProject  string `query:"origin_project" doc:"Filter by originating project ('' = General)"`
+	FeedbackVote   string `query:"feedback_vote" doc:"Filter by feedback vote (up | down)"`
+	FeedbackStatus string `query:"feedback_status" doc:"Filter by feedback status (pending | handled)"`
+	Q              string `query:"q" doc:"Full-text query over the note body"`
 }
 
 type memoriesListOutput struct {
@@ -44,13 +47,15 @@ func (s *Server) humaListMemories(
 	ctx context.Context, in *memoriesListInput,
 ) (*jsonOutput[memoriesListOutput], error) {
 	memories, err := s.db.ListMemories(ctx, db.MemoryFilter{
-		Source:        in.Source,
-		ProblemType:   in.ProblemType,
-		Type:          in.Type,
-		Status:        in.Status,
-		OriginSession: in.OriginSession,
-		OriginProject: in.OriginProject,
-		Q:             in.Q,
+		Source:         in.Source,
+		ProblemType:    in.ProblemType,
+		Type:           in.Type,
+		Status:         in.Status,
+		OriginSession:  in.OriginSession,
+		OriginProject:  in.OriginProject,
+		FeedbackVote:   in.FeedbackVote,
+		FeedbackStatus: in.FeedbackStatus,
+		Q:              in.Q,
 	})
 	if err != nil {
 		return nil, apiError(http.StatusInternalServerError, err.Error())
@@ -267,6 +272,69 @@ func (s *Server) humaPutMemory(
 	}
 	s.resyncMemory(ctx, source)
 	return &jsonOutput[memoryWriteOutput]{Body: memoryWriteOutput{SHA: sha}}, nil
+}
+
+type memoryFeedbackInput struct {
+	Path string `path:"path" doc:"URL-safe base64 of the memory rel_path"`
+	Body struct {
+		Vote    string `json:"vote" doc:"Feedback vote: up, down, or empty"`
+		Comment string `json:"comment" doc:"Free-text feedback comment"`
+		Status  string `json:"status" doc:"Feedback status: pending, handled, or empty"`
+		BaseSHA string `json:"base_sha,omitempty" doc:"Optional optimistic-concurrency sha"`
+	}
+}
+
+func validFeedbackVote(v string) bool {
+	return v == "" || v == "up" || v == "down"
+}
+
+func validFeedbackStatus(v string) bool {
+	return v == "" || v == "pending" || v == "handled"
+}
+
+func (s *Server) humaMemoryFeedback(
+	ctx context.Context, in *memoryFeedbackInput,
+) (*jsonOutput[memoryWriteOutput], error) {
+	relPath, err := decodeMemoryPath(in.Path)
+	if err != nil {
+		return nil, err
+	}
+	if !validFeedbackVote(in.Body.Vote) {
+		return nil, apiError(http.StatusBadRequest, "invalid feedback vote")
+	}
+	if !validFeedbackStatus(in.Body.Status) {
+		return nil, apiError(http.StatusBadRequest, "invalid feedback status")
+	}
+	w, source, err := s.writerForRelPath(ctx, relPath)
+	if err != nil {
+		return nil, err
+	}
+	content, sha, err := w.Read(ctx, relPath)
+	if err != nil {
+		if errors.Is(err, memory.ErrPathTraversal) {
+			return nil, apiError(http.StatusBadRequest, err.Error())
+		}
+		return nil, apiError(http.StatusNotFound, "memory not found")
+	}
+	baseSHA := sha
+	if in.Body.BaseSHA != "" {
+		baseSHA = in.Body.BaseSHA
+	}
+	newContent := memory.SetFrontmatterFields(content, map[string]string{
+		"feedback_vote":    in.Body.Vote,
+		"feedback_comment": memory.YAMLQuote(in.Body.Comment),
+		"feedback_status":  in.Body.Status,
+	})
+	newSHA, err := w.Write(ctx, memory.WriteRequest{
+		RelPath: relPath,
+		Content: newContent,
+		BaseSHA: baseSHA,
+	})
+	if err != nil {
+		return nil, memoryWriteError(err)
+	}
+	s.resyncMemory(ctx, source)
+	return &jsonOutput[memoryWriteOutput]{Body: memoryWriteOutput{SHA: newSHA}}, nil
 }
 
 type memoryHistoryOutput struct {

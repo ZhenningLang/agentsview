@@ -68,7 +68,8 @@ func TestCCSyncTolerantParse(t *testing.T) {
 		"just a plain cc-native note, no frontmatter at all")
 	// A note WITH frontmatter is still parsed (tolerant, not rejected).
 	writeCCNote(t, root, "p", "fm.md",
-		"---\ntitle: Has FM\ndate: 2026-06-20\n---\n\nbody text here")
+		"---\ntitle: Has FM\ndate: 2026-06-20\nfeedback_vote: up\n"+
+			"feedback_comment: \"useful: yes\"\nfeedback_status: handled\n---\n\nbody text here")
 
 	w := &fakeWriter{}
 	s := NewCCSyncer(root, w, nil)
@@ -86,6 +87,9 @@ func TestCCSyncTolerantParse(t *testing.T) {
 	fm := by[filepath.Join("p", "memory", "fm.md")]
 	assert.Equal(t, "Has FM", fm.Title)
 	assert.Equal(t, "2026-06-20", fm.Date)
+	assert.Equal(t, "up", fm.FeedbackVote)
+	assert.Equal(t, "useful: yes", fm.FeedbackComment)
+	assert.Equal(t, "handled", fm.FeedbackStatus)
 	assert.NotContains(t, fm.Body, "title:")
 }
 

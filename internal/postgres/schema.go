@@ -314,6 +314,10 @@ CREATE TABLE IF NOT EXISTS memory (
     type           TEXT NOT NULL DEFAULT '',
     status         TEXT NOT NULL DEFAULT '',
     origin_session TEXT NOT NULL DEFAULT '',
+    origin_project TEXT NOT NULL DEFAULT '',
+    feedback_vote TEXT NOT NULL DEFAULT '',
+    feedback_comment TEXT NOT NULL DEFAULT '',
+    feedback_status TEXT NOT NULL DEFAULT '',
     body           TEXT NOT NULL DEFAULT '',
     body_tokens    INTEGER NOT NULL DEFAULT 0,
     source_mtime   BIGINT NOT NULL DEFAULT 0,
@@ -729,6 +733,26 @@ func EnsureSchema(
 			`llm_embedding_dim INT NOT NULL DEFAULT 0`,
 			"adding memory.llm_embedding_dim",
 		},
+		{
+			"memory", "origin_project",
+			`origin_project TEXT NOT NULL DEFAULT ''`,
+			"adding memory.origin_project",
+		},
+		{
+			"memory", "feedback_vote",
+			`feedback_vote TEXT NOT NULL DEFAULT ''`,
+			"adding memory.feedback_vote",
+		},
+		{
+			"memory", "feedback_comment",
+			`feedback_comment TEXT NOT NULL DEFAULT ''`,
+			"adding memory.feedback_comment",
+		},
+		{
+			"memory", "feedback_status",
+			`feedback_status TEXT NOT NULL DEFAULT ''`,
+			"adding memory.feedback_status",
+		},
 	}
 	step = time.Now()
 	existingColumns, err := loadExistingColumns(ctx, db, alters)
@@ -766,6 +790,9 @@ func EnsureSchema(
 		return fmt.Errorf(
 			"creating idx_sessions_termination_status: %w", err,
 		)
+	}
+	if err := createMemoryFacetIndexesPG(ctx, db); err != nil {
+		return err
 	}
 	if err := backfillIsAutomatedPG(ctx, db); err != nil {
 		return err
@@ -832,6 +859,23 @@ func EnsureSchema(
 		"pg schema: EnsureSchema completed in %s",
 		time.Since(start).Round(time.Millisecond),
 	)
+	return nil
+}
+
+func createMemoryFacetIndexesPG(ctx context.Context, db *sql.DB) error {
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_memory_origin_project
+		 ON memory(origin_project)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_feedback_vote
+		 ON memory(feedback_vote)`,
+		`CREATE INDEX IF NOT EXISTS idx_memory_feedback_status
+		 ON memory(feedback_status)`,
+	}
+	for _, ddl := range indexes {
+		if _, err := db.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("creating PG memory facet index: %w", err)
+		}
+	}
 	return nil
 }
 
