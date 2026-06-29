@@ -101,6 +101,32 @@ func TestWriteHappyPath(t *testing.T) {
 	assert.Empty(t, strings.TrimSpace(remotes))
 }
 
+func TestRebuildIndexGoExcludesInactive(t *testing.T) {
+	// Parity with the python builder: the Go fallback INDEX must also list only
+	// active notes. stale/archived are excluded from recall and the DB reads the
+	// files directly, so listing them only bloats the index.
+	dir := t.TempDir()
+	write := func(name, status, title string) {
+		c := "---\ntitle: " + title + "\ndate: 2026-06-20\n" +
+			"problem_type: knowledge\nstatus: " + status + "\n" +
+			"origin_session: sess\n---\n\nbody\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(c), 0o644))
+	}
+	write("active.md", "active", "An active note")
+	write("stale.md", "stale", "A stale note")
+	write("archived.md", "archived", "An archived note")
+
+	w := NewWriter(dir)
+	require.NoError(t, w.rebuildIndexGo())
+
+	index := readFile(t, dir, indexBasename)
+	assert.Contains(t, index, "An active note")
+	assert.NotContains(t, index, "A stale note")
+	assert.NotContains(t, index, "An archived note")
+	assert.NotContains(t, index, "stale.md")
+	assert.NotContains(t, index, "archived.md")
+}
+
 func TestWriteRejectsPathTraversal(t *testing.T) {
 	dir, _ := fixtureRepo(t)
 	w := NewWriter(dir)
