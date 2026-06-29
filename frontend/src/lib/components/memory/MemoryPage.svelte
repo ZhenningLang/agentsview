@@ -875,35 +875,48 @@
           <h4>反馈</h4>
           <div class="feedback-panel">
             <div class="feedback-row">
-              <button
-                class="action-btn"
-                class:active={feedbackVote === "up"}
-                onclick={() => toggleFeedbackVote("up")}
+              <div class="vote-group" role="group" aria-label="反馈评价">
+                <button
+                  type="button"
+                  class="vote-btn up"
+                  class:on={feedbackVote === "up"}
+                  aria-pressed={feedbackVote === "up"}
+                  onclick={() => toggleFeedbackVote("up")}
+                  disabled={feedbackSaving}
+                >👍 {feedbackVoteLabel("up")}</button>
+                <button
+                  type="button"
+                  class="vote-btn down"
+                  class:on={feedbackVote === "down"}
+                  aria-pressed={feedbackVote === "down"}
+                  onclick={() => toggleFeedbackVote("down")}
+                  disabled={feedbackSaving}
+                >👎 {feedbackVoteLabel("down")}</button>
+              </div>
+              <select
+                class="fb-select"
+                bind:value={feedbackStatus}
                 disabled={feedbackSaving}
-              >👍 {feedbackVoteLabel("up")}</button>
-              <button
-                class="action-btn"
-                class:active={feedbackVote === "down"}
-                onclick={() => toggleFeedbackVote("down")}
-                disabled={feedbackSaving}
-              >👎 {feedbackVoteLabel("down")}</button>
-              <select bind:value={feedbackStatus} disabled={feedbackSaving} aria-label="反馈处理状态">
-                <option value="">处理状态: 未标记</option>
+                aria-label="反馈处理状态"
+              >
+                <option value="">未标记</option>
                 <option value="pending">待处理</option>
                 <option value="handled">已处理</option>
               </select>
               <button
-                class="action-btn primary"
+                type="button"
+                class="fb-save"
                 onclick={saveFeedback}
                 disabled={feedbackSaving}
               >{feedbackSaving ? "保存中…" : "保存反馈"}</button>
             </div>
             <textarea
-              class="feedback-comment"
+              class="fb-comment"
               bind:value={feedbackComment}
               disabled={feedbackSaving}
-              placeholder="评论，可写原因: 过度合并"
+              placeholder="补充原因（可选），例如：过度合并了不相干的点"
               aria-label="反馈评论"
+              rows="3"
             ></textarea>
             {#if feedbackError}
               <div class="state error feedback-error">{feedbackError}</div>
@@ -1282,6 +1295,114 @@
   .action-btn.primary:hover:not(:disabled) {
     background: color-mix(in srgb, var(--accent-blue) 82%, black);
     color: #fff;
+  }
+
+  /* Feedback panel */
+  .feedback-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    margin: 0.3rem 0 0.4rem;
+  }
+  .feedback-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  /* Segmented vote control: two joined buttons, semantic tint when on. */
+  .vote-group {
+    display: inline-flex;
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .vote-btn {
+    background: none;
+    border: none;
+    border-right: 1px solid var(--border-default);
+    padding: 0.3rem 0.7rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary, #666);
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+  .vote-btn:last-child {
+    border-right: none;
+  }
+  .vote-btn:hover:not(:disabled):not(.on) {
+    background: var(--bg-surface-hover);
+    color: var(--text-primary, #1a1a1a);
+  }
+  .vote-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .vote-btn.up.on {
+    background: color-mix(in srgb, var(--accent-green) 15%, transparent);
+    color: var(--accent-green);
+  }
+  .vote-btn.down.on {
+    background: color-mix(in srgb, var(--accent-red) 14%, transparent);
+    color: var(--accent-red);
+  }
+  .fb-select {
+    padding: 0.32rem 0.5rem;
+    font-size: 0.8rem;
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    color: var(--text-primary, #1a1a1a);
+    cursor: pointer;
+  }
+  .fb-select:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .fb-save {
+    margin-left: auto;
+    background: var(--accent-blue);
+    border: 1px solid var(--accent-blue);
+    border-radius: 6px;
+    color: #fff;
+    padding: 0.32rem 0.85rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  .fb-save:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent-blue) 82%, black);
+  }
+  .fb-save:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+  .fb-comment {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 4rem;
+    padding: 0.5rem 0.65rem;
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    color: var(--text-primary, #1a1a1a);
+    font: inherit;
+    font-size: 0.82rem;
+    line-height: 1.5;
+    resize: vertical;
+  }
+  .fb-comment::placeholder {
+    color: var(--text-secondary, #999);
+  }
+  .fb-comment:focus {
+    outline: none;
+    border-color: color-mix(in srgb, var(--accent-blue) 55%, transparent);
+  }
+  .fb-comment:disabled {
+    opacity: 0.6;
+  }
+  .feedback-error {
+    margin-top: 0;
   }
   .edit-bar {
     display: flex;
