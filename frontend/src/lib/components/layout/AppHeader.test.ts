@@ -144,8 +144,10 @@ describe("AppHeader export actions", () => {
 
     expect(normal).not.toBeNull();
     expect(focused).not.toBeNull();
-    expect(normal?.querySelector(".pill-label")?.getAttribute("data-short-label")).toBe("N");
-    expect(focused?.querySelector(".pill-label")?.getAttribute("data-short-label")).toBe("F");
+    expect(normal?.textContent?.trim()).toBe("N");
+    expect(focused?.textContent?.trim()).toBe("F");
+    expect(normal?.textContent).not.toContain("Normal");
+    expect(focused?.textContent).not.toContain("Focused");
     expect(normal?.title).toContain("show all messages");
     expect(focused?.title).toContain("user prompts and final answers");
   });

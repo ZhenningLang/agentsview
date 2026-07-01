@@ -532,7 +532,7 @@
           title="Normal transcript — show all messages"
           aria-label="Normal transcript mode"
         >
-          <span class="pill-label" data-short-label="N">Normal</span>
+          <span class="pill-label">N</span>
         </button>
         <button
           class="pill"
@@ -541,7 +541,7 @@
           title="Focused transcript — user prompts and final answers only"
           aria-label="Focused transcript mode"
         >
-          <span class="pill-label" data-short-label="F">Focused</span>
+          <span class="pill-label">F</span>
         </button>
 
         <span class="strip-divider"></span>
@@ -1134,15 +1134,6 @@
 
   .pill.filter-active {
     color: var(--accent-purple);
-  }
-
-  .pill-label {
-    font-size: 0;
-  }
-
-  .pill-label::after {
-    content: attr(data-short-label);
-    font-size: 11px;
   }
 
   .strip-divider {
