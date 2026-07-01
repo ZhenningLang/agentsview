@@ -532,7 +532,7 @@
           title="Normal transcript — show all messages"
           aria-label="Normal transcript mode"
         >
-          <span class="pill-label">Normal</span>
+          <span class="pill-label" data-short-label="N">Normal</span>
         </button>
         <button
           class="pill"
@@ -541,7 +541,7 @@
           title="Focused transcript — user prompts and final answers only"
           aria-label="Focused transcript mode"
         >
-          <span class="pill-label">Focused</span>
+          <span class="pill-label" data-short-label="F">Focused</span>
         </button>
 
         <span class="strip-divider"></span>
@@ -1136,6 +1136,15 @@
     color: var(--accent-purple);
   }
 
+  .pill-label {
+    font-size: 0;
+  }
+
+  .pill-label::after {
+    content: attr(data-short-label);
+    font-size: 11px;
+  }
+
   .strip-divider {
     width: 1px;
     height: 14px;
@@ -1456,21 +1465,6 @@
 
     .overflow-wrap {
       display: block;
-    }
-
-    .pill-label {
-      font-size: 0;
-    }
-
-    /* Show first letter only via data attrs */
-    .pill:nth-child(1) .pill-label::after {
-      content: "N";
-      font-size: 11px;
-    }
-
-    .pill:nth-child(2) .pill-label::after {
-      content: "F";
-      font-size: 11px;
     }
 
     .pill {

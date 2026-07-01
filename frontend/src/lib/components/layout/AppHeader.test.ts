@@ -131,6 +131,25 @@ describe("AppHeader export actions", () => {
     expect(followButton!.classList.contains("active")).toBe(false);
   });
 
+  it("keeps transcript mode controls visually compact", async () => {
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+
+    const normal = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Normal transcript mode"]',
+    );
+    const focused = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Focused transcript mode"]',
+    );
+
+    expect(normal).not.toBeNull();
+    expect(focused).not.toBeNull();
+    expect(normal?.querySelector(".pill-label")?.getAttribute("data-short-label")).toBe("N");
+    expect(focused?.querySelector(".pill-label")?.getAttribute("data-short-label")).toBe("F");
+    expect(normal?.title).toContain("show all messages");
+    expect(focused?.title).toContain("user prompts and final answers");
+  });
+
   it("labels compact title-bar actions with hover hints", async () => {
     component = mount(AppHeader, { target: document.body });
     await tick();

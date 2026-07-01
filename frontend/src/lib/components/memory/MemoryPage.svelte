@@ -12,6 +12,7 @@
     type Memory,
     type MemoryHistoryEntry,
   } from "../../api/memory";
+  import { fetchStagingPool } from "../../api/staging";
   import { ApiError } from "../../api/runtime";
   import ConsolidateAuditPanel from "./ConsolidateAuditPanel.svelte";
   import StagingPoolPanel from "./StagingPoolPanel.svelte";
@@ -21,11 +22,14 @@
   type FeedbackVote = "up" | "down" | "";
   type FeedbackStatus = "pending" | "handled" | "";
   type TierFilter = "" | "atomic" | "topic";
+  type LifecycleFilter = "" | "folded";
   type FeedbackFilter = "" | "up" | "down" | "commented";
 
   let loading = $state(true);
   let error = $state<string | null>(null);
   let memories = $state<Memory[]>([]);
+  let inboxTotal = $state<number | null>(null);
+  let inboxAvailable = $state(false);
 
   // Full-text query (server-side FTS over the body). Empty = list all.
   let query = $state("");
@@ -42,6 +46,7 @@
   const GENERAL = "__general__";
   let projectFilter = $state("");
   let tierFilter = $state<TierFilter>("");
+  let lifecycleFilter = $state<LifecycleFilter>("");
   let feedbackFilter = $state<FeedbackFilter>("");
   let feedbackStatusFilter = $state<FeedbackStatus>("");
   let groupByProject = $state(false);
@@ -64,6 +69,14 @@
 
   function tierLabel(m: Memory): string {
     return tierOf(m) === "topic" ? "主题" : "原子";
+  }
+
+  function isActive(m: Memory): boolean {
+    return (m.status || "active") === "active";
+  }
+
+  function isFolded(m: Memory): boolean {
+    return m.status === "stale" || m.status === "archived";
   }
 
   function feedbackVoteLabel(v: string): string {
@@ -94,6 +107,17 @@
     }
   }
 
+  async function loadInboxSummary() {
+    try {
+      const pool = await fetchStagingPool("", 0);
+      inboxAvailable = pool.available;
+      inboxTotal = pool.total;
+    } catch {
+      inboxAvailable = false;
+      inboxTotal = null;
+    }
+  }
+
   async function load() {
     const seq = ++reqSeq;
     loading = true;
@@ -117,7 +141,7 @@
   }
 
   onMount(async () => {
-    await loadCatalog();
+    await Promise.all([loadCatalog(), loadInboxSummary()]);
     await load();
   });
 
@@ -145,6 +169,13 @@
   // separately when any note has an empty origin_project.
   const projectOptions = $derived(uniqueValues("origin_project"));
   const hasGeneral = $derived(allMemories.some((m) => !m.origin_project));
+  const activeTopics = $derived(
+    allMemories.filter((m) => isActive(m) && tierOf(m) === "topic").length,
+  );
+  const activeAtomics = $derived(
+    allMemories.filter((m) => isActive(m) && tierOf(m) === "atomic").length,
+  );
+  const foldedMemories = $derived(allMemories.filter(isFolded).length);
 
   // Client-side sort over the server-filtered rows.
   let sortKey = $state<SortKey>("date");
@@ -183,6 +214,7 @@
       return true;
     }).filter((m) => {
       if (tierFilter && tierOf(m) !== tierFilter) return false;
+      if (lifecycleFilter === "folded" && !isFolded(m)) return false;
       if (feedbackFilter === "up" && m.feedback_vote !== "up") return false;
       if (feedbackFilter === "down" && m.feedback_vote !== "down") return false;
       if (feedbackFilter === "commented" && !m.feedback_comment) return false;
@@ -218,8 +250,30 @@
     status = "";
     projectFilter = "";
     tierFilter = "";
+    lifecycleFilter = "";
     feedbackFilter = "";
     feedbackStatusFilter = "";
+    load();
+  }
+
+  function showActiveTopics() {
+    status = "active";
+    tierFilter = "topic";
+    lifecycleFilter = "";
+    load();
+  }
+
+  function showActiveAtomics() {
+    status = "active";
+    tierFilter = "atomic";
+    lifecycleFilter = "";
+    load();
+  }
+
+  function showFoldedEvidence() {
+    status = "";
+    tierFilter = "";
+    lifecycleFilter = "folded";
     load();
   }
 
@@ -232,6 +286,7 @@
       status ||
       projectFilter ||
       tierFilter ||
+      lifecycleFilter ||
       feedbackFilter ||
       feedbackStatusFilter
     ),
@@ -591,6 +646,40 @@
     <StagingPoolPanel />
     <ConsolidateAuditPanel />
     <MemoryQualityPanel />
+    <section class="pipeline-card" aria-label="Memory 三层架构概览">
+      <div class="pipeline-head">
+        <div>
+          <div class="eyebrow">Memory Architecture</div>
+          <h2>Inbox → Evidence → Knowledge</h2>
+        </div>
+        <div class="pipeline-note">raw 候选先入池，稳定证据再合成可召回知识</div>
+      </div>
+      <div class="pipeline-steps">
+        <article>
+          <span class="step-label">Inbox</span>
+          <strong>{inboxAvailable ? (inboxTotal ?? "—") : "—"}</strong>
+          <p>候选入口</p>
+        </article>
+        <article>
+          <span class="step-label">Evidence</span>
+          <strong>{activeAtomics}</strong>
+          <p>{activeAtomics} active atomics</p>
+          <button type="button" onclick={showActiveAtomics}>看 active atomics</button>
+        </article>
+        <article class="knowledge-step">
+          <span class="step-label">Knowledge</span>
+          <strong>{activeTopics}</strong>
+          <p>{activeTopics} active topics</p>
+          <button type="button" onclick={showActiveTopics}>看 active topics</button>
+        </article>
+        <article>
+          <span class="step-label">Folded</span>
+          <strong>{foldedMemories}</strong>
+          <p>{foldedMemories} folded / archived</p>
+          <button type="button" onclick={showFoldedEvidence}>看 folded sources</button>
+        </article>
+      </div>
+    </section>
     <div class="controls">
       <input
         class="search"
@@ -675,6 +764,9 @@
     </div>
   {:else}
     <div class="count">{visibleMemories.length} 条</div>
+    {#if lifecycleFilter === "folded"}
+      <div class="active-filter-note">当前显示 stale 或 archived 的已折叠来源。</div>
+    {/if}
     {#if groupByProject}
       {#each groupedMemories as g (g.project)}
         <div class="project-group">
@@ -682,11 +774,15 @@
             <span class="badge project" class:general={!g.project}>{g.label}</span>
             <span class="project-count">{g.rows.length} 条</span>
           </h3>
-          {@render memTable(g.rows)}
+          <div class="table-scroll">
+            {@render memTable(g.rows)}
+          </div>
         </div>
       {/each}
     {:else}
-      {@render memTable(visibleMemories)}
+      <div class="table-scroll">
+        {@render memTable(visibleMemories)}
+      </div>
     {/if}
   {/if}
 </div>
@@ -1019,6 +1115,98 @@
     align-items: center;
     margin-bottom: 1rem;
   }
+  .pipeline-card {
+    margin: 0.75rem 0 1rem;
+    padding: 0.9rem;
+    border: 1px solid var(--border-default);
+    border-radius: 10px;
+    background: linear-gradient(
+      135deg,
+      color-mix(in srgb, var(--accent-blue) 8%, var(--bg-surface)),
+      var(--bg-surface) 42%
+    );
+  }
+  .pipeline-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: flex-start;
+    margin-bottom: 0.75rem;
+  }
+  .eyebrow {
+    margin-bottom: 0.15rem;
+    color: var(--accent-blue);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .pipeline-head h2 {
+    margin: 0;
+    font-size: 1.05rem;
+  }
+  .pipeline-note {
+    max-width: 18rem;
+    color: var(--text-secondary, #666);
+    font-size: 0.78rem;
+    line-height: 1.45;
+    text-align: right;
+  }
+  .pipeline-steps {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.55rem;
+  }
+  .pipeline-steps article {
+    min-width: 0;
+    padding: 0.7rem;
+    border: 1px solid var(--border-default);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-surface) 92%, transparent);
+  }
+  .pipeline-steps .knowledge-step {
+    border-color: color-mix(in srgb, var(--accent-blue) 35%, var(--border-default));
+    background: color-mix(in srgb, var(--accent-blue) 9%, var(--bg-surface));
+  }
+  .step-label {
+    display: block;
+    color: var(--text-secondary, #666);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .pipeline-steps strong {
+    display: block;
+    margin-top: 0.15rem;
+    color: var(--text-primary, #1a1a1a);
+    font-size: 1.55rem;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  .pipeline-steps p {
+    margin: 0.35rem 0 0;
+    color: var(--text-secondary, #666);
+    font-size: 0.76rem;
+    line-height: 1.35;
+  }
+  .pipeline-steps button {
+    margin-top: 0.55rem;
+    padding: 0.25rem 0.45rem;
+    border: 1px solid var(--border-default);
+    border-radius: 6px;
+    background: var(--bg-surface);
+    color: var(--text-secondary, #555);
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.74rem;
+  }
+  .pipeline-steps button:hover,
+  .pipeline-steps button:focus-visible {
+    border-color: color-mix(in srgb, var(--accent-blue) 45%, var(--border-default));
+    color: var(--text-primary, #1a1a1a);
+    outline: none;
+  }
   .controls .search {
     flex: 1 1 14rem;
     min-width: 10rem;
@@ -1055,6 +1243,11 @@
     color: var(--text-secondary, #666);
     margin-bottom: 0.4rem;
   }
+  .active-filter-note {
+    margin: -0.1rem 0 0.5rem;
+    color: var(--text-secondary, #666);
+    font-size: 0.78rem;
+  }
   .state {
     padding: 2rem;
     text-align: center;
@@ -1067,6 +1260,13 @@
     width: 100%;
     border-collapse: collapse;
     font-size: 0.82rem;
+  }
+  .table-scroll {
+    width: 100%;
+    overflow-x: auto;
+  }
+  .table-scroll table.grid {
+    min-width: 760px;
   }
   table.grid th,
   table.grid td {
@@ -1538,5 +1738,47 @@
   .diff-line.del {
     background: color-mix(in srgb, var(--accent-red) 16%, transparent);
     color: var(--accent-red);
+  }
+
+  @media (max-width: 700px) {
+    .memory-page {
+      padding: 1rem 1.25rem;
+    }
+    .pipeline-head {
+      display: block;
+    }
+    .pipeline-note {
+      max-width: none;
+      margin-top: 0.35rem;
+      text-align: left;
+    }
+    .pipeline-steps {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .pipeline-steps article {
+      padding: 0.65rem;
+    }
+    .pipeline-steps button {
+      width: 100%;
+      min-height: 2rem;
+    }
+  }
+
+  @media (max-width: 420px) {
+    .memory-page {
+      padding: 1rem;
+    }
+    .pipeline-card {
+      padding: 0.75rem;
+    }
+    .pipeline-head h2 {
+      font-size: 0.98rem;
+    }
+    .pipeline-steps {
+      gap: 0.45rem;
+    }
+    .pipeline-steps strong {
+      font-size: 1.35rem;
+    }
   }
 </style>
