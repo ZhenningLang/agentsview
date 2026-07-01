@@ -14,7 +14,7 @@ import (
 func (s *Server) registerConsolidateRoutes() {
 	group := newRouteGroup(s.api, "/api/v1/consolidate", "Consolidate")
 	get(s, group, "/audit", "List consolidation audit history", s.humaConsolidateAudit)
-	put(s, group, "/enable", "Enable or disable background consolidation", s.humaConsolidateEnable)
+	put(s, group, "/enable", "Automatic consolidation is removed", s.humaConsolidateEnable)
 }
 
 type consolidateAuditInput struct {
@@ -95,27 +95,5 @@ func (s *Server) humaConsolidateAudit(
 func (s *Server) humaConsolidateEnable(
 	ctx context.Context, in *consolidateEnableInput,
 ) (*jsonOutput[consolidateEnableOutput], error) {
-	if s.consolidateCtl == nil {
-		return nil, apiError(http.StatusNotImplemented,
-			"background consolidation is not available in this mode "+
-				"(no writable memory dir); set AGENTSVIEW_CONSOLIDATE_ENABLED via config")
-	}
-	if s.db.ReadOnly() {
-		return nil, apiError(http.StatusNotImplemented,
-			"settings cannot be modified in read-only mode")
-	}
-	s.mu.Lock()
-	err := s.cfg.SaveSettings(map[string]any{"consolidate_enabled": in.Body.Enabled})
-	s.mu.Unlock()
-	if err != nil {
-		return nil, internalError("save consolidate setting", err)
-	}
-	// Flip the live worker. Enabling fires an immediate first cycle.
-	s.consolidateCtl.SetEnabled(in.Body.Enabled)
-	return &jsonOutput[consolidateEnableOutput]{
-		Body: consolidateEnableOutput{
-			Enabled:   s.consolidateCtl.Enabled(),
-			Available: true,
-		},
-	}, nil
+	return nil, apiError(http.StatusGone, "automatic memory consolidation has been removed")
 }

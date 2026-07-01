@@ -57,8 +57,10 @@
   const canTest = $derived(!remote && !readOnly);
 
   const keySentinel = "********";
-  // The five usages, rendered in this order in the assignment table.
-  const USAGES = ["enrich", "embed", "extract", "consolidate", "recall_rerank"] as const;
+  // Usage bindings rendered in this order. Memory extraction was removed from
+  // the product surface; keep consolidate for manual/synthesis code paths that
+  // still use its LLM resolver.
+  const USAGES = ["enrich", "embed", "consolidate", "recall_rerank"] as const;
   type UsageKey = (typeof USAGES)[number];
 
   // Known OpenAI-compatible vendors. The vendor determines the base URL; only
@@ -120,7 +122,6 @@
   let bindings = $state<Record<UsageKey, Binding>>({
     enrich: { providerUid: null, model: "" },
     embed: { providerUid: null, model: "" },
-    extract: { providerUid: null, model: "" },
     consolidate: { providerUid: null, model: "" },
     recall_rerank: { providerUid: null, model: "" },
   });
@@ -227,7 +228,6 @@
     const next: Record<UsageKey, Binding> = {
       enrich: { providerUid: null, model: "" },
       embed: { providerUid: null, model: "" },
-      extract: { providerUid: null, model: "" },
       consolidate: { providerUid: null, model: "" },
       recall_rerank: { providerUid: null, model: "" },
     };

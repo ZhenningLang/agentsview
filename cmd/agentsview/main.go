@@ -237,23 +237,6 @@ func runServe(cfg config.Config) {
 	// fail-open in the same way as memory.
 	startVaultSync(ctx, cfg, database)
 
-	// Consolidation worker: background timer that auto-promotes staging
-	// candidates into memory/user (LLM decision + dotfiles safety script +
-	// local commit + immediate resync). The loop always starts when its
-	// prerequisites exist; ConsolidateEnabled (default OFF) only sets the
-	// initial armed state. The returned controller is handed to the server so
-	// the UI can arm it at runtime (immediate first cycle) without a restart.
-	// Fail-open like the syncs above: a nil controller simply leaves the
-	// enable endpoint reporting "not available".
-	consolidateController := startConsolidate(ctx, cfg, database)
-
-	// Extraction worker: background timer that reads sessions/messages,
-	// asks the extract LLM usage for raw candidates, and writes only
-	// memory/.staging/raw_memories. It is default-OFF and fail-open like the
-	// other side-effecting workers; a nil controller means prerequisites were
-	// missing and the enable endpoint reports unavailable.
-	extractController := startExtract(ctx, cfg, database)
-
 	// Backup-push worker: background timer (bound to this process — no system
 	// cron) that snapshots memory/user + CC-native into an isolated git
 	// workspace and pushes to the Phase 04 private repo. Always started when a
@@ -294,8 +277,6 @@ func runServe(cfg config.Config) {
 		server.WithDataDir(cfg.DataDir),
 		server.WithBaseContext(ctx),
 		server.WithBroadcaster(broadcaster),
-		server.WithConsolidateController(consolidateController),
-		server.WithExtractController(extractController),
 		server.WithSynthesizeController(synthesizeController),
 		server.WithBackupController(backupController),
 	)
