@@ -58,6 +58,10 @@
     return s || "—";
   }
 
+  function shouldShowProblemType(m: Memory): boolean {
+    return !!m.problem_type && !(m.source === "assist-mem" && m.problem_type === "explicit");
+  }
+
   function tierOf(m: Memory): "topic" | "atomic" {
     return m.origin_session?.startsWith("compact-memory:") ? "topic" : "atomic";
   }
@@ -671,13 +675,13 @@
         <option value="cc-native">CC 原生</option>
       </select>
       <select bind:value={problemType} onchange={load} aria-label="problem_type 过滤">
-        <option value="">problem_type: 全部</option>
+        <option value="">来源类型: 全部</option>
         {#each problemTypeOptions as opt (opt)}
           <option value={opt}>{opt}</option>
         {/each}
       </select>
       <select bind:value={type} onchange={load} aria-label="type 过滤">
-        <option value="">type: 全部</option>
+        <option value="">记忆类型: 全部</option>
         {#each typeOptions as opt (opt)}
           <option value={opt}>{opt}</option>
         {/each}
@@ -779,9 +783,9 @@
         <th>层级</th>
         <th>反馈</th>
         <th class="sortable-th" onclick={() => toggleSort("problem_type")}
-          >problem_type{sortIndicator("problem_type")}</th
+          >来源类型{sortIndicator("problem_type")}</th
         >
-        <th>type</th>
+        <th>记忆类型</th>
         <th>status</th>
       </tr>
     </thead>
@@ -827,7 +831,7 @@
             {/if}
           </td>
           <td>
-            {#if m.problem_type}
+            {#if shouldShowProblemType(m)}
               <span class="badge facet">{m.problem_type}</span>
             {:else}—{/if}
           </td>
