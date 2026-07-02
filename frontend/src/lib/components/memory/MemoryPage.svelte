@@ -12,11 +12,7 @@
     type Memory,
     type MemoryHistoryEntry,
   } from "../../api/memory";
-  import { fetchStagingPool } from "../../api/staging";
   import { ApiError } from "../../api/runtime";
-  import ConsolidateAuditPanel from "./ConsolidateAuditPanel.svelte";
-  import StagingPoolPanel from "./StagingPoolPanel.svelte";
-  import MemoryQualityPanel from "./MemoryQualityPanel.svelte";
 
   type SortKey = "title" | "date" | "problem_type";
   type FeedbackVote = "up" | "down" | "";
@@ -28,8 +24,6 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let memories = $state<Memory[]>([]);
-  let inboxTotal = $state<number | null>(null);
-  let inboxAvailable = $state(false);
 
   // Full-text query (server-side FTS over the body). Empty = list all.
   let query = $state("");
@@ -107,17 +101,6 @@
     }
   }
 
-  async function loadInboxSummary() {
-    try {
-      const pool = await fetchStagingPool("", 0);
-      inboxAvailable = pool.available;
-      inboxTotal = pool.total;
-    } catch {
-      inboxAvailable = false;
-      inboxTotal = null;
-    }
-  }
-
   async function load() {
     const seq = ++reqSeq;
     loading = true;
@@ -141,7 +124,7 @@
   }
 
   onMount(async () => {
-    await Promise.all([loadCatalog(), loadInboxSummary()]);
+    await loadCatalog();
     await load();
   });
 
@@ -643,9 +626,6 @@
     <p class="subtitle">
       跨 agent user-memory 笔记（只读视图）：全文检索、按 frontmatter facet 过滤、查看正文与元数据。
     </p>
-    <StagingPoolPanel />
-    <ConsolidateAuditPanel />
-    <MemoryQualityPanel />
     <section class="pipeline-card" aria-label="Memory 三层架构概览">
       <div class="pipeline-head">
         <div>
@@ -655,11 +635,6 @@
         <div class="pipeline-note">raw 候选先入池，稳定证据再合成可召回知识</div>
       </div>
       <div class="pipeline-steps">
-        <article>
-          <span class="step-label">Inbox</span>
-          <strong>{inboxAvailable ? (inboxTotal ?? "—") : "—"}</strong>
-          <p>候选入口</p>
-        </article>
         <article>
           <span class="step-label">Evidence</span>
           <strong>{activeAtomics}</strong>
