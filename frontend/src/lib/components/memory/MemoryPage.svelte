@@ -52,6 +52,7 @@
 
   // Human-readable label for a memory's data source.
   function sourceLabel(s: string): string {
+    if (s === "assist-mem") return "Assist Mem";
     if (s === "cc-native") return "CC 原生";
     if (s === "cross-agent") return "跨 agent";
     return s || "—";
@@ -665,6 +666,7 @@
       />
       <select bind:value={source} onchange={load} aria-label="source 过滤">
         <option value="">来源: 全部</option>
+        <option value="assist-mem">Assist Mem</option>
         <option value="cross-agent">跨 agent</option>
         <option value="cc-native">CC 原生</option>
       </select>

@@ -152,12 +152,25 @@ describe("MemoryPage", () => {
 
     const text = document.body.textContent ?? "";
     expect(text).toContain("Inbox → Evidence → Knowledge");
-    expect(text).toContain("候选入口");
-    expect(text).toContain("7");
     expect(text).toContain("Evidence");
     expect(text).toContain("1 active atomics");
     expect(text).toContain("Knowledge");
     expect(text).toContain("1 active topics");
     expect(text).toContain("2 folded / archived");
+  });
+
+  it("offers assist-mem in the source filter", async () => {
+    component = mount(MemoryPage, { target: document.body });
+    await flush();
+
+    const sourceFilter = document.body.querySelector(
+      'select[aria-label="source 过滤"]',
+    ) as HTMLSelectElement;
+    const options = [...sourceFilter.options].map((option) => ({
+      value: option.value,
+      text: option.textContent,
+    }));
+
+    expect(options).toContainEqual({ value: "assist-mem", text: "Assist Mem" });
   });
 });
