@@ -28,7 +28,7 @@ func (s *Server) registerMemoryRoutes() {
 }
 
 type memoriesListInput struct {
-	Source         string `query:"source" doc:"Filter by data source (cross-agent | cc-native)"`
+	Source         string `query:"source" doc:"Filter by data source (assist-mem | cross-agent | cc-native)"`
 	ProblemType    string `query:"problem_type" doc:"Filter by frontmatter problem_type"`
 	Type           string `query:"type" doc:"Filter by frontmatter type"`
 	Status         string `query:"status" doc:"Filter by frontmatter status"`
@@ -166,6 +166,8 @@ func (s *Server) writerForRelPath(
 		return nil, "", apiError(http.StatusNotFound, "memory not found")
 	}
 	switch m.Source {
+	case db.SourceAssistMem:
+		return nil, "", apiError(http.StatusBadRequest, "assist-mem ledger entries are read-only")
 	case db.SourceCCNative:
 		root := s.cfg.ResolveCCMemoryDir()
 		if root == "" {
@@ -182,10 +184,10 @@ func (s *Server) writerForRelPath(
 	}
 }
 
-// isCCNative reports whether a note is CC-native, used to gate the git-history
-// routes (which are "not applicable" for the no-git CC-native root). A missing
-// note yields a 404.
-func (s *Server) isCCNative(ctx context.Context, relPath string) (bool, error) {
+// isHistoryUnsupportedMemory reports whether a note has no per-note git history.
+// CC-native uses a no-git root; assist-mem rows are synthetic ledger views. A
+// missing note yields a 404.
+func (s *Server) isHistoryUnsupportedMemory(ctx context.Context, relPath string) (bool, error) {
 	m, err := s.db.GetMemory(ctx, relPath)
 	if err != nil {
 		return false, apiError(http.StatusInternalServerError, err.Error())
@@ -193,7 +195,7 @@ func (s *Server) isCCNative(ctx context.Context, relPath string) (bool, error) {
 	if m == nil {
 		return false, apiError(http.StatusNotFound, "memory not found")
 	}
-	return m.Source == db.SourceCCNative, nil
+	return m.Source == db.SourceCCNative || m.Source == db.SourceAssistMem, nil
 }
 
 // resyncMemory best-effort refreshes the DB cache from disk after a write.
@@ -348,13 +350,11 @@ func (s *Server) humaMemoryHistory(
 	if err != nil {
 		return nil, err
 	}
-	// CC-native has no git repo: history is "not applicable", reported as an
-	// empty list (the UI shows a "CC 原生不支持历史" notice rather than rows).
-	ccNative, err := s.isCCNative(ctx, relPath)
+	unsupported, err := s.isHistoryUnsupportedMemory(ctx, relPath)
 	if err != nil {
 		return nil, err
 	}
-	if ccNative {
+	if unsupported {
 		return &jsonOutput[memoryHistoryOutput]{
 			Body: memoryHistoryOutput{History: []memory.HistoryEntry{}},
 		}, nil
@@ -373,10 +373,10 @@ func (s *Server) humaMemoryHistory(
 	return &jsonOutput[memoryHistoryOutput]{Body: memoryHistoryOutput{History: hist}}, nil
 }
 
-// errCCNativeNoHistory is the 400 returned when a history/revert route is hit
-// for a CC-native note, which has no git repo and thus no history to act on.
-func errCCNativeNoHistory() error {
-	return apiError(http.StatusBadRequest, "cc-native memory has no git history")
+// errMemoryNoHistory is the 400 returned when a history/revert route is hit for
+// a source that has no git-backed note history.
+func errMemoryNoHistory() error {
+	return apiError(http.StatusBadRequest, "memory source has no git history")
 }
 
 type memoryCommitInput struct {
@@ -395,12 +395,12 @@ func (s *Server) humaMemoryAtCommit(
 	if err != nil {
 		return nil, err
 	}
-	ccNative, err := s.isCCNative(ctx, relPath)
+	unsupported, err := s.isHistoryUnsupportedMemory(ctx, relPath)
 	if err != nil {
 		return nil, err
 	}
-	if ccNative {
-		return nil, errCCNativeNoHistory()
+	if unsupported {
+		return nil, errMemoryNoHistory()
 	}
 	w, err := s.memoryWriter()
 	if err != nil {
@@ -431,12 +431,12 @@ func (s *Server) humaRevertMemory(
 	if err != nil {
 		return nil, err
 	}
-	ccNative, err := s.isCCNative(ctx, relPath)
+	unsupported, err := s.isHistoryUnsupportedMemory(ctx, relPath)
 	if err != nil {
 		return nil, err
 	}
-	if ccNative {
-		return nil, errCCNativeNoHistory()
+	if unsupported {
+		return nil, errMemoryNoHistory()
 	}
 	w, err := s.memoryWriter()
 	if err != nil {

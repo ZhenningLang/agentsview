@@ -227,6 +227,10 @@ func runServe(cfg config.Config) {
 	// same way as skills.
 	startMemorySync(ctx, cfg, database)
 
+	// Explicit assist-mem ledger: sync entries written by /assist-mem into the
+	// same read-only memory table, tagged source=assist-mem.
+	startAssistMemSync(ctx, cfg, database)
+
 	// CC-native memory: sync the second memory data source (CC auto-memory
 	// across project dirs) into the same read-only memory dimension table,
 	// tagged source=cc-native. Fail-open like the cross-agent memory sync.
@@ -680,17 +684,8 @@ func startPeriodicSync(
 func startSkillSync(
 	ctx context.Context, cfg config.Config, database db.Store,
 ) {
-	dir := cfg.ResolveSkillsCatalogDir()
-	if dir == "" {
+	if !syncSkillsOnce(ctx, cfg, database) {
 		return
-	}
-	writer, ok := database.(skills.Writer)
-	if !ok {
-		return
-	}
-	syncer := skills.NewSyncer(dir, writer, nil)
-	if err := syncer.Sync(ctx); err != nil {
-		log.Printf("skill sync: %v", err)
 	}
 	go func() {
 		ticker := time.NewTicker(periodicSyncInterval)
@@ -700,12 +695,26 @@ func startSkillSync(
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := syncer.Sync(ctx); err != nil {
-					log.Printf("skill sync: %v", err)
-				}
+				syncSkillsOnce(ctx, cfg, database)
 			}
 		}
 	}()
+}
+
+func syncSkillsOnce(ctx context.Context, cfg config.Config, database db.Store) bool {
+	dir := cfg.ResolveSkillsCatalogDir()
+	if dir == "" {
+		return false
+	}
+	writer, ok := database.(skills.Writer)
+	if !ok {
+		return false
+	}
+	syncer := skills.NewSyncer(dir, writer, nil)
+	if err := syncer.Sync(ctx); err != nil {
+		log.Printf("skill sync: %v", err)
+	}
+	return true
 }
 
 // startMemorySync runs the user-memory SSOT sync once at startup and
@@ -715,18 +724,8 @@ func startSkillSync(
 func startMemorySync(
 	ctx context.Context, cfg config.Config, database db.Store,
 ) {
-	dir := cfg.ResolveMemoryDir()
-	if dir == "" {
+	if !syncMemoryOnce(ctx, cfg, database) {
 		return
-	}
-	writer, ok := database.(memory.Writer)
-	if !ok {
-		return
-	}
-	embedder := llm.New(cfg.ResolveUsageLLM("embed"))
-	syncer := memory.NewSyncerWithEmbedder(dir, writer, nil, embedder)
-	if err := syncer.Sync(ctx); err != nil {
-		log.Printf("memory sync: %v", err)
 	}
 	go func() {
 		ticker := time.NewTicker(periodicSyncInterval)
@@ -736,12 +735,63 @@ func startMemorySync(
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := syncer.Sync(ctx); err != nil {
-					log.Printf("memory sync: %v", err)
-				}
+				syncMemoryOnce(ctx, cfg, database)
 			}
 		}
 	}()
+}
+
+func syncMemoryOnce(ctx context.Context, cfg config.Config, database db.Store) bool {
+	dir := cfg.ResolveMemoryDir()
+	if dir == "" {
+		return false
+	}
+	writer, ok := database.(memory.Writer)
+	if !ok {
+		return false
+	}
+	embedder := llm.New(cfg.ResolveUsageLLM("embed"))
+	syncer := memory.NewSyncerWithEmbedder(dir, writer, nil, embedder)
+	if err := syncer.Sync(ctx); err != nil {
+		log.Printf("memory sync: %v", err)
+	}
+	return true
+}
+
+func startAssistMemSync(
+	ctx context.Context, cfg config.Config, database db.Store,
+) {
+	if !syncAssistMemOnce(ctx, cfg, database) {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(periodicSyncInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				syncAssistMemOnce(ctx, cfg, database)
+			}
+		}
+	}()
+}
+
+func syncAssistMemOnce(ctx context.Context, cfg config.Config, database db.Store) bool {
+	path := cfg.ResolveAssistMemLedger()
+	if path == "" {
+		return false
+	}
+	writer, ok := database.(memory.Writer)
+	if !ok {
+		return false
+	}
+	syncer := memory.NewLedgerSyncer(path, writer, nil)
+	if err := syncer.Sync(ctx); err != nil {
+		log.Printf("assist-mem sync: %v", err)
+	}
+	return true
 }
 
 // startCCMemorySync runs the CC-native memory sync once at startup and then on
@@ -754,18 +804,8 @@ func startMemorySync(
 func startCCMemorySync(
 	ctx context.Context, cfg config.Config, database db.Store,
 ) {
-	root := cfg.ResolveCCMemoryDir()
-	if root == "" {
+	if !syncCCMemoryOnce(ctx, cfg, database) {
 		return
-	}
-	writer, ok := database.(memory.Writer)
-	if !ok {
-		return
-	}
-	embedder := llm.New(cfg.ResolveUsageLLM("embed"))
-	syncer := memory.NewCCSyncerWithEmbedder(root, writer, nil, embedder)
-	if err := syncer.Sync(ctx); err != nil {
-		log.Printf("cc memory sync: %v", err)
 	}
 	go func() {
 		ticker := time.NewTicker(periodicSyncInterval)
@@ -775,12 +815,27 @@ func startCCMemorySync(
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := syncer.Sync(ctx); err != nil {
-					log.Printf("cc memory sync: %v", err)
-				}
+				syncCCMemoryOnce(ctx, cfg, database)
 			}
 		}
 	}()
+}
+
+func syncCCMemoryOnce(ctx context.Context, cfg config.Config, database db.Store) bool {
+	root := cfg.ResolveCCMemoryDir()
+	if root == "" {
+		return false
+	}
+	writer, ok := database.(memory.Writer)
+	if !ok {
+		return false
+	}
+	embedder := llm.New(cfg.ResolveUsageLLM("embed"))
+	syncer := memory.NewCCSyncerWithEmbedder(root, writer, nil, embedder)
+	if err := syncer.Sync(ctx); err != nil {
+		log.Printf("cc memory sync: %v", err)
+	}
+	return true
 }
 
 // startVaultSync runs the dev-workflow vault sync once at startup and then
@@ -790,17 +845,8 @@ func startCCMemorySync(
 func startVaultSync(
 	ctx context.Context, cfg config.Config, database db.Store,
 ) {
-	roots := cfg.ResolveVaultRoots()
-	if len(roots) == 0 {
+	if !syncVaultOnce(ctx, cfg, database) {
 		return
-	}
-	writer, ok := database.(vault.Writer)
-	if !ok {
-		return
-	}
-	syncer := vault.NewSyncer(roots, writer)
-	if err := syncer.Sync(ctx); err != nil {
-		log.Printf("vault sync: %v", err)
 	}
 	go func() {
 		ticker := time.NewTicker(periodicSyncInterval)
@@ -810,12 +856,26 @@ func startVaultSync(
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := syncer.Sync(ctx); err != nil {
-					log.Printf("vault sync: %v", err)
-				}
+				syncVaultOnce(ctx, cfg, database)
 			}
 		}
 	}()
+}
+
+func syncVaultOnce(ctx context.Context, cfg config.Config, database db.Store) bool {
+	roots := cfg.ResolveVaultRoots()
+	if len(roots) == 0 {
+		return false
+	}
+	writer, ok := database.(vault.Writer)
+	if !ok {
+		return false
+	}
+	syncer := vault.NewSyncer(roots, writer)
+	if err := syncer.Sync(ctx); err != nil {
+		log.Printf("vault sync: %v", err)
+	}
+	return true
 }
 
 // startMemoryGC starts the memory data-lifecycle GC loop (raw candidates,

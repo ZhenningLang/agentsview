@@ -62,7 +62,7 @@ func setupMemoryFixture(t *testing.T) *memoryFixture {
 	// Cross-agent note: lives directly under the SSOT root and the root is a
 	// local-only git repo (so the git-backed writer can commit/read history).
 	crossRelPath := "cross.md"
-	crossContent := "---\ntitle: Cross\ndate: 2026-06-20\n---\n\nCross body.\n"
+	crossContent := "---\ntitle: Cross\ndate: 2026-06-20\nstatus: active\n---\n\nCross body.\n"
 	require.NoError(t, os.WriteFile(
 		filepath.Join(ssotDir, crossRelPath), []byte(crossContent), 0o644))
 	gitInitCommit(t, ssotDir)
@@ -85,6 +85,7 @@ func setupMemoryFixture(t *testing.T) *memoryFixture {
 			Source:  db.SourceCrossAgent,
 			Title:   "Cross",
 			Date:    "2026-06-20",
+			Status:  "active",
 		}}))
 	require.NoError(t, te.db.ReplaceMemoriesBySource(
 		ctx, db.SourceCCNative, []db.Memory{{
@@ -92,6 +93,14 @@ func setupMemoryFixture(t *testing.T) *memoryFixture {
 			Source:  db.SourceCCNative,
 			Title:   "CC Note",
 			Date:    "2026-06-21",
+		}}))
+	require.NoError(t, te.db.ReplaceMemoriesBySource(
+		ctx, db.SourceAssistMem, []db.Memory{{
+			RelPath: "assist-mem/abd80440ea5d8479.jsonl",
+			Source:  db.SourceAssistMem,
+			Title:   "Assist Mem",
+			Date:    "2026-07-01",
+			Status:  "active",
 		}}))
 
 	return &memoryFixture{
@@ -264,6 +273,38 @@ func TestMemoryFeedbackRejectsInvalidVoteAndStatus(t *testing.T) {
 
 	wStatus := fx.te.postMemoryFeedback(t, fx.crossRelPath, "up", "", "open")
 	assert.Equal(t, http.StatusBadRequest, wStatus.Code, "body: %s", wStatus.Body.String())
+}
+
+func TestAssistMemIsReadOnlyAndHasNoHistory(t *testing.T) {
+	fx := setupMemoryFixture(t)
+	relPath := "assist-mem/abd80440ea5d8479.jsonl"
+
+	wRaw := fx.te.get(t, "/api/v1/memories/"+encodeMemPath(relPath)+"/raw")
+	assert.Equal(t, http.StatusBadRequest, wRaw.Code)
+
+	wPut := fx.te.putMemory(t, relPath, "edited", "")
+	assert.Equal(t, http.StatusBadRequest, wPut.Code)
+
+	wHistory := fx.te.get(t, "/api/v1/memories/"+encodeMemPath(relPath)+"/history")
+	require.Equal(t, http.StatusOK, wHistory.Code, "body: %s", wHistory.Body.String())
+	got := decode[struct {
+		History []any `json:"history"`
+	}](t, wHistory)
+	assert.Empty(t, got.History)
+}
+
+func TestMemoryListFiltersAssistMemSource(t *testing.T) {
+	fx := setupMemoryFixture(t)
+
+	w := fx.te.get(t, "/api/v1/memories?source=assist-mem")
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	got := decode[struct {
+		Memories []db.Memory `json:"memories"`
+	}](t, w)
+
+	require.Len(t, got.Memories, 1)
+	assert.Equal(t, db.SourceAssistMem, got.Memories[0].Source)
+	assert.Equal(t, "assist-mem/abd80440ea5d8479.jsonl", got.Memories[0].RelPath)
 }
 
 func TestMemoryFeedbackReportsConflictWhenDiskChangedAfterDBSnapshot(t *testing.T) {

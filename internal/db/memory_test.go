@@ -187,6 +187,25 @@ func TestListMemoriesFullTextSearch(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+func TestListMemoriesFullTextSearchEscapesDashQuery(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	memories := []Memory{{
+		RelPath: "assist-mem/abd80440ea5d8479.jsonl",
+		Source:  SourceAssistMem,
+		Title:   "lzn-preview deploy entry",
+		Date:    "2026-07-01",
+		Status:  "active",
+		Body:    "lzn-preview and lzn-test scripts live in ~/Projects/ordo_ai",
+	}}
+	require.NoError(t, d.ReplaceMemories(ctx, memories))
+
+	got, err := d.ListMemories(ctx, MemoryFilter{Source: SourceAssistMem, Q: "lzn-preview"})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "assist-mem/abd80440ea5d8479.jsonl", got[0].RelPath)
+}
+
 func TestReplaceMemoriesBySourceCoexist(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()
@@ -223,6 +242,34 @@ func TestReplaceMemoriesBySourceCoexist(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, remaining, 1)
 	assert.Equal(t, SourceCrossAgent, remaining[0].Source)
+}
+
+func TestReplaceMemoriesBySourceWorksWhenMemoryFTSMirrorIsUnavailable(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	w := d.getWriter()
+
+	_, err := w.Exec(`DROP TRIGGER IF EXISTS memory_ai`)
+	require.NoError(t, err)
+	_, err = w.Exec(`DROP TRIGGER IF EXISTS memory_ad`)
+	require.NoError(t, err)
+	_, err = w.Exec(`DROP TRIGGER IF EXISTS memory_au`)
+	require.NoError(t, err)
+	_, err = w.Exec(`DROP TABLE IF EXISTS memory_fts`)
+	require.NoError(t, err)
+	_, err = w.Exec(`CREATE TRIGGER memory_ad AFTER DELETE ON memory BEGIN
+		DELETE FROM memory_fts WHERE rel_path = old.rel_path;
+	END;`)
+	require.NoError(t, err)
+
+	memories := sampleMemories()[:1]
+	memories[0].Source = SourceCrossAgent
+	require.NoError(t, d.ReplaceMemoriesBySource(ctx, SourceCrossAgent, memories))
+
+	got, err := d.ListMemories(ctx, MemoryFilter{Source: SourceCrossAgent})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "alpha.md", got[0].RelPath)
 }
 
 func TestGetMemory(t *testing.T) {

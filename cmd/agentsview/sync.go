@@ -83,13 +83,32 @@ func doSync(cfg SyncConfig) (hadRemoteFailures bool) {
 
 	failures := syncLocalAndRemotes(
 		appCfg.RemoteHosts, cfg.Full,
-		func() bool { return runLocalSync(appCfg, database, cfg.Full) },
+		func() bool {
+			return syncLocalAndReferences(
+				func() bool { return runLocalSync(appCfg, database, cfg.Full) },
+				func() { syncReferences(context.Background(), appCfg, database) },
+			)
+		},
 		func(rh config.RemoteHost, full bool) error {
 			return runRemoteSyncOnce(appCfg, database, rh, full)
 		},
 	)
 	reportRemoteFailures(failures)
 	return len(failures) > 0
+}
+
+func syncLocalAndReferences(localSync func() bool, referenceSync func()) bool {
+	didResync := localSync()
+	referenceSync()
+	return didResync
+}
+
+func syncReferences(ctx context.Context, appCfg config.Config, database db.Store) {
+	syncSkillsOnce(ctx, appCfg, database)
+	syncMemoryOnce(ctx, appCfg, database)
+	syncAssistMemOnce(ctx, appCfg, database)
+	syncCCMemoryOnce(ctx, appCfg, database)
+	syncVaultOnce(ctx, appCfg, database)
 }
 
 // syncLocalAndRemotes runs the local sync, then the configured
