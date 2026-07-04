@@ -10,7 +10,7 @@ import (
 func (s *Server) registerExtractRoutes() {
 	group := newRouteGroup(s.api, "/api/v1/extract", "Extract")
 	get(s, group, "/audit", "List extraction audit history", s.humaExtractAudit)
-	put(s, group, "/enable", "Enable or disable background extraction", s.humaExtractEnable)
+	put(s, group, "/enable", "Automatic extraction is removed", s.humaExtractEnable)
 }
 
 type extractAuditInput struct {
@@ -64,21 +64,5 @@ func (s *Server) humaExtractAudit(
 func (s *Server) humaExtractEnable(
 	ctx context.Context, in *extractEnableInput,
 ) (*jsonOutput[extractEnableOutput], error) {
-	if s.extractCtl == nil {
-		return nil, apiError(http.StatusNotImplemented,
-			"background extraction is not available in this mode "+
-				"(no writable memory staging dir); set AGENTSVIEW_EXTRACT_ENABLED via config")
-	}
-	if s.db.ReadOnly() {
-		return nil, apiError(http.StatusNotImplemented,
-			"settings cannot be modified in read-only mode")
-	}
-	s.mu.Lock()
-	err := s.cfg.SaveSettings(map[string]any{"extract_enabled": in.Body.Enabled})
-	s.mu.Unlock()
-	if err != nil {
-		return nil, internalError("save extract setting", err)
-	}
-	s.extractCtl.SetEnabled(in.Body.Enabled)
-	return &jsonOutput[extractEnableOutput]{Body: extractEnableOutput{Enabled: s.extractCtl.Enabled(), Available: true}}, nil
+	return nil, apiError(http.StatusGone, "automatic memory extraction has been removed")
 }

@@ -123,10 +123,10 @@ describe("LLMEnrichmentSettings (provider+model)", () => {
     // [llm] -> deepseek-1, [llm.embed] -> openrouter-1
     expect(byTestId("provider-deepseek-1")).toBeTruthy();
     expect(byTestId("provider-openrouter-1")).toBeTruthy();
-    // five usage rows
-    for (const u of ["enrich", "embed", "extract", "consolidate", "recall_rerank"]) {
+    for (const u of ["enrich", "embed", "consolidate", "recall_rerank"]) {
       expect(byTestId(`usage-${u}`)).toBeTruthy();
     }
+    expect(byTestId("usage-extract")).toBeFalsy();
     // models live on the usage rows
     expect((byTestId("usage-model-enrich") as HTMLInputElement).value).toBe("deepseek-chat");
     expect((byTestId("usage-model-embed") as HTMLInputElement).value).toBe("openai/text-embedding-3-large");
@@ -268,10 +268,10 @@ describe("LLMEnrichmentSettings (provider+model)", () => {
   it("tests a chat usage via its row (usage + channel chat + current model)", async () => {
     component = mount(LLMEnrichmentSettings, { target: document.body });
     await flush();
-    (byTestId("test-usage:extract") as HTMLButtonElement).click();
+    (byTestId("test-usage:consolidate") as HTMLButtonElement).click();
     await flush();
     expect(mocks.testLLMConnection).toHaveBeenCalledWith(
-      expect.objectContaining({ usage: "extract", channel: "chat", model: "deepseek-chat" }),
+      expect.objectContaining({ usage: "consolidate", channel: "chat", model: "deepseek-chat" }),
     );
   });
 
@@ -309,7 +309,7 @@ describe("LLMEnrichmentSettings (provider+model)", () => {
     component = mount(LLMEnrichmentSettings, { target: document.body });
     await flush();
     expect(buttonWithText("Run enrichment")?.disabled).toBe(true);
-    expect((byTestId("test-usage:extract") as HTMLButtonElement).disabled).toBe(true);
+    expect((byTestId("test-usage:consolidate") as HTMLButtonElement).disabled).toBe(true);
     expect(document.body.textContent).toContain("read-only backend");
   });
 });

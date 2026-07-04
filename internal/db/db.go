@@ -1545,6 +1545,13 @@ func (db *DB) HasFTS() bool {
 	return err == nil
 }
 
+func (db *DB) hasMemoryFTS() bool {
+	_, err := db.getReader().Exec(
+		"SELECT 1 FROM memory_fts LIMIT 1",
+	)
+	return err == nil
+}
+
 // setDataVersion stamps the current dataVersion into
 // user_version, but never downgrades a higher version left
 // by a newer build. Called by Open() only when data is

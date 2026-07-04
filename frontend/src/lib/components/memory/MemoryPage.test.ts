@@ -55,19 +55,19 @@ describe("MemoryPage", () => {
   beforeEach(() => {
     mocks.fetchMemories.mockReset().mockResolvedValue([
       {
-        rel_path: "diff-ssot.md",
-        source: "cross-agent",
-        title: "Diff SSOT",
+        rel_path: "assist-mem/e979b3764a5954c4.jsonl",
+        source: "assist-mem",
+        title: "Use assist-mem for long-term memory",
         date: "2026-07-01",
-        problem_type: "knowledge",
-        type: "semantic",
+        problem_type: "explicit",
+        type: "preference",
         status: "active",
-        origin_session: "compact-memory:topic-preview",
+        origin_session: "assist-mem:e979b3764a5954c4",
         origin_project: "",
         feedback_vote: "",
         feedback_comment: "",
         feedback_status: "",
-        body: "Use the requested diff as the review SSOT.",
+        body: "Use /assist-mem for long-term memory.",
         body_tokens: 12,
         source_mtime: 1,
         synced_at: "2026-07-01T00:00:00.000Z",
@@ -127,13 +127,7 @@ describe("MemoryPage", () => {
         synced_at: "2026-07-01T00:00:00.000Z",
       },
     ]);
-    mocks.fetchStagingPool.mockReset().mockResolvedValue({
-      available: true,
-      total: 7,
-      by_scope: { user: 5, project: 2 },
-      projects: {},
-      candidates: [],
-    });
+    mocks.fetchStagingPool.mockReset();
     mocks.fetchMemoryQuality.mockReset().mockResolvedValue(null);
     mocks.fetchConsolidateAudit.mockReset().mockResolvedValue({ available: false, entries: [] });
   });
@@ -146,18 +140,16 @@ describe("MemoryPage", () => {
     document.body.innerHTML = "";
   });
 
-  it("summarizes the inbox evidence knowledge pipeline", async () => {
+  it("defaults to explicit assist-mem ledger memories", async () => {
     component = mount(MemoryPage, { target: document.body });
     await flush();
 
     const text = document.body.textContent ?? "";
-    expect(text).toContain("Inbox → Evidence → Knowledge");
-    expect(text).toContain("候选入口");
-    expect(text).toContain("7");
-    expect(text).toContain("Evidence");
-    expect(text).toContain("1 active atomics");
-    expect(text).toContain("Knowledge");
-    expect(text).toContain("1 active topics");
-    expect(text).toContain("2 folded / archived");
+    expect(mocks.fetchMemories).toHaveBeenCalledWith({ source: "assist-mem" });
+    expect(text).toContain("Explicit Ledger Only");
+    expect(text).toContain("active assist-mem entries");
+    expect(text).toContain("旧来源仅用于迁移/排查");
+    expect(text).not.toContain("Inbox → Evidence → Knowledge");
+    expect(text).not.toContain("候选入口");
   });
 });

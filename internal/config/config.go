@@ -220,6 +220,10 @@ type Config struct {
 	// memory feature stays empty and fail-open.
 	MemoryDir string `json:"memory_dir,omitempty" toml:"memory_dir"`
 
+	// AssistMemLedger is the explicit assist-mem JSONL ledger. When empty,
+	// ResolveAssistMemLedger probes ~/.dotfiles/memory/ledger/entries.jsonl.
+	AssistMemLedger string `json:"assist_mem_ledger,omitempty" toml:"assist_mem_ledger"`
+
 	// CCMemoryDir is the root of CC-native auto-memory: a directory whose
 	// immediate children are project dirs each holding a memory/ subdir
 	// (<project>/memory/*.md). When empty, ResolveCCMemoryDir probes the
@@ -860,6 +864,7 @@ func (c *Config) loadFile() error {
 		RemoteHosts                    []RemoteHost               `toml:"remote_hosts"`
 		SkillsCatalogDir               string                     `toml:"skills_catalog_dir"`
 		MemoryDir                      string                     `toml:"memory_dir"`
+		AssistMemLedger                string                     `toml:"assist_mem_ledger"`
 		CCMemoryDir                    string                     `toml:"cc_memory_dir"`
 		VaultRoots                     []string                   `toml:"vault_roots"`
 		MemoryBackupRepo               string                     `toml:"memory_backup_repo"`
@@ -920,6 +925,9 @@ func (c *Config) loadFile() error {
 	// config file only fills the value when env left it unset.
 	if file.MemoryDir != "" && c.MemoryDir == "" {
 		c.MemoryDir = file.MemoryDir
+	}
+	if file.AssistMemLedger != "" && c.AssistMemLedger == "" {
+		c.AssistMemLedger = file.AssistMemLedger
 	}
 	// env (loadEnv, AGENTSVIEW_CC_MEMORY_DIR) runs first and wins; the
 	// config file only fills the value when env left it unset.
@@ -1215,6 +1223,9 @@ func (c *Config) loadEnv() {
 	if v := os.Getenv("AGENTSVIEW_MEMORY_DIR"); v != "" {
 		c.MemoryDir = v
 	}
+	if v := os.Getenv("AGENTSVIEW_ASSIST_MEM_LEDGER"); v != "" {
+		c.AssistMemLedger = v
+	}
 	if v := os.Getenv("AGENTSVIEW_CC_MEMORY_DIR"); v != "" {
 		c.CCMemoryDir = v
 	}
@@ -1419,6 +1430,27 @@ func (c *Config) ResolveMemoryDir() string {
 	return ""
 }
 
+// ResolveAssistMemLedger returns the effective explicit assist-mem ledger path.
+// It prefers an explicit config/env value, then probes the default
+// ~/.dotfiles/memory/ledger/entries.jsonl. It returns "" when no candidate file
+// exists so the feature fails open.
+func (c *Config) ResolveAssistMemLedger() string {
+	candidates := make([]string, 0, 2)
+	if c.AssistMemLedger != "" {
+		candidates = append(candidates, c.AssistMemLedger)
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".dotfiles", "memory", "ledger", "entries.jsonl"))
+	}
+	for _, path := range candidates {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path
+		}
+	}
+	return ""
+}
+
 // ResolveCCMemoryDir returns the effective root for CC-native auto-memory
 // (the directory whose children are project dirs each holding a memory/
 // subdir). It prefers an explicit config/env value, then probes the default
@@ -1537,6 +1569,10 @@ func RegisterServeFlags(fs *flag.FlagSet) {
 		"no-sync", false,
 		"Skip initial sync and disable background sync/file watching",
 	)
+	fs.String(
+		"assist-mem-ledger", "",
+		"Explicit assist-mem JSONL ledger path (default: ~/.dotfiles/memory/ledger/entries.jsonl)",
+	)
 	fs.Bool(
 		"no-update-check", false,
 		"Disable the update check API endpoint",
@@ -1601,6 +1637,10 @@ func RegisterServePFlags(fs *pflag.FlagSet) {
 		"no-sync", false,
 		"Skip initial sync and disable background sync/file watching",
 	)
+	fs.String(
+		"assist-mem-ledger", "",
+		"Explicit assist-mem JSONL ledger path (default: ~/.dotfiles/memory/ledger/entries.jsonl)",
+	)
 	fs.Bool(
 		"no-update-check", false,
 		"Disable the update check API endpoint",
@@ -1664,6 +1704,8 @@ func applyFlagValue(cfg *Config, name, value string) {
 		cfg.NoBrowser = value == "true"
 	case "no-sync":
 		cfg.NoSync = value == "true"
+	case "assist-mem-ledger":
+		cfg.AssistMemLedger = value
 	case "no-update-check":
 		cfg.DisableUpdateCheck = value == "true"
 	case "require-auth":

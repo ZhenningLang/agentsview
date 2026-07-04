@@ -472,7 +472,7 @@ func TestConsolidateConfigPatchRejectsInvalidInterval(t *testing.T) {
 	}
 }
 
-func TestConsolidateEnableThenAuditUsesRealServerRoutes(t *testing.T) {
+func TestConsolidateAuditRemainsReadOnlyAndEnableRouteReturnsGone(t *testing.T) {
 	memoryDir := t.TempDir()
 	audit := consolidate.NewAuditLog(consolidate.AuditPath(memoryDir))
 	rec := consolidate.RunRecord{
@@ -486,20 +486,16 @@ func TestConsolidateEnableThenAuditUsesRealServerRoutes(t *testing.T) {
 		Committed: true,
 	}
 	require.NoError(t, audit.Append(rec))
-	ctl := consolidate.NewController(nil, false)
-	te := setupWithServerOpts(t, []server.Option{server.WithConsolidateController(ctl)}, withMemoryDir(memoryDir))
+	te := setup(t, withMemoryDir(memoryDir))
 
 	enable := requestJSON(te, http.MethodPut, "/api/v1/consolidate/enable", `{"enabled":true}`)
-	assertStatus(t, enable, http.StatusOK)
-	enableResp := decode[map[string]any](t, enable)
-	assert.Equal(t, true, enableResp["enabled"])
-	assert.Equal(t, true, enableResp["available"])
+	assertStatus(t, enable, http.StatusGone)
 
 	auditResp := te.get(t, "/api/v1/consolidate/audit?limit=1")
 	assertStatus(t, auditResp, http.StatusOK)
 	body := decode[map[string]any](t, auditResp)
-	assert.Equal(t, true, body["enabled"])
-	assert.Equal(t, true, body["available"])
+	assert.Equal(t, false, body["enabled"])
+	assert.Equal(t, false, body["available"])
 	records := body["records"].([]any)
 	require.Len(t, records, 1)
 	first := records[0].(map[string]any)

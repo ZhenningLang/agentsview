@@ -69,34 +69,12 @@ export const en: Record<string, string> = {
   // usages (business)
   "usage.enrich": "Session enrichment",
   "usage.enrich.desc": "Generates title / summary / keywords for sessions.",
-  "usage.extract": "Memory extraction",
-  "usage.extract.desc": "LLM-extracts candidate memories from sessions.",
   "usage.consolidate": "Memory consolidation",
   "usage.consolidate.desc": "Decision model that promotes staged candidates into long-term memory.",
   "usage.embed": "Embedding",
   "usage.embed.desc": "Generates vectors for semantic search / recall (usually a dedicated embedding provider).",
   "usage.recall_rerank": "Recall rerank",
   "usage.recall_rerank.desc": "Reranks recalled memories by relevance (optional; empty = no rerank).",
-
-  // extract card (sessions → candidates)
-  "extract.title": "Memory Extraction",
-  "extract.desc": "Background worker that periodically scans agent sessions and uses an LLM to distill candidate memories into the staging pool. Off by default; runs on the interval once enabled (interval via config/env).",
-  "extract.modelHint": "Which model? Set the extract binding in “LLM Configuration” above.",
-  "extract.stateSaved": "Extract worker state saved",
-  "extract.toggleFailed": "Failed to toggle extract worker",
-  "extract.loadFailed": "Failed to load extract state",
-  "extract.unavailable": "Enable recorded, but this process has no extract worker loaded (missing prerequisites); takes effect after restart.",
-
-  // consolidate card (slimmed)
-  "consolidate.title": "Memory Consolidation",
-  "consolidate.desc": "Background worker that periodically consolidates staged candidates into long-term memory. Off by default; runs on the interval once enabled.",
-  "consolidate.interval": "Interval",
-  "consolidate.intervalInvalid": "Enter a valid duration (e.g. 1h, 30m, 24h), greater than 0.",
-  "consolidate.modelHint": "Which model? Set the consolidate binding in “LLM Configuration” above.",
-  "consolidate.stateSaved": "Consolidate worker state saved",
-  "consolidate.intervalSaved": "Consolidate interval saved",
-  "consolidate.toggleFailed": "Failed to toggle consolidate worker",
-  "consolidate.saveFailed": "Failed to save consolidate settings",
 
   // memory quality panel
   "quality.title": "Memory Pipeline Health",

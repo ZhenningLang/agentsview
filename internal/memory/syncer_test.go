@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -93,7 +94,7 @@ func TestSyncParsesFrontmatterAndBody(t *testing.T) {
 	s := NewSyncer(dir, w, nil)
 	require.NoError(t, s.Sync(context.Background()))
 
-	require.Len(t, w.memories, 2)
+	require.Len(t, w.memories, 1)
 	by := byRelPath(w.memories)
 
 	alpha := by["alpha.md"]
@@ -112,11 +113,33 @@ func TestSyncParsesFrontmatterAndBody(t *testing.T) {
 	assert.Positive(t, alpha.BodyTokens)
 	assert.NotEmpty(t, alpha.SyncedAt)
 
-	beta := by["beta.md"]
-	assert.Equal(t, "episodic", beta.Type)
-	// Frontmatter must not leak into the body.
-	assert.NotContains(t, beta.Body, "title:")
-	assert.NotContains(t, beta.Body, "---")
+	_, betaOK := by["beta.md"]
+	assert.False(t, betaOK, "archived cross-agent notes should not enter the UI cache")
+}
+
+func TestSyncOnlyMirrorsActiveCrossAgentNotes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	writeNote(t, dir, "active.md",
+		"title: Active\ndate: 2026-06-20\nproblem_type: knowledge\n"+
+			"type: semantic\nstatus: active\norigin_session: s-active",
+		"active body")
+	writeNote(t, dir, "archived.md",
+		"title: Archived\ndate: 2026-06-20\nproblem_type: knowledge\n"+
+			"type: semantic\nstatus: archived\norigin_session: s-archived",
+		"archived body")
+	writeNote(t, dir, "stale.md",
+		"title: Stale\ndate: 2026-06-20\nproblem_type: knowledge\n"+
+			"type: semantic\nstatus: stale\norigin_session: s-stale",
+		"stale body")
+
+	w := &fakeWriter{}
+	s := NewSyncer(dir, w, nil)
+	require.NoError(t, s.Sync(context.Background()))
+
+	require.Len(t, w.memories, 1)
+	assert.Equal(t, db.SourceCrossAgent, w.source)
+	assert.Equal(t, "active.md", w.memories[0].RelPath)
+	assert.Equal(t, "active", w.memories[0].Status)
 }
 
 func TestSyncIgnoresIndexAndNonMarkdown(t *testing.T) {
@@ -205,7 +228,7 @@ func TestSyncParsesQuotedSpecialCharTitle(t *testing.T) {
 	assert.Equal(t, `decision: # Scope Alignment: add or "refactor"`, w.memories[0].Title)
 }
 
-func TestSyncNoFrontmatterTreatsAllAsBody(t *testing.T) {
+func TestSyncNoFrontmatterDoesNotEnterCrossAgentCache(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "memory")
 	require.NoError(t, os.MkdirAll(dir, 0o755))
 	require.NoError(t, os.WriteFile(
@@ -216,16 +239,13 @@ func TestSyncNoFrontmatterTreatsAllAsBody(t *testing.T) {
 	s := NewSyncer(dir, w, nil)
 	require.NoError(t, s.Sync(context.Background()))
 
-	require.Len(t, w.memories, 1)
-	assert.Equal(t, "just a plain note, no frontmatter",
-		w.memories[0].Body)
-	assert.Empty(t, w.memories[0].Title)
+	assert.Empty(t, w.memories)
 }
 
 func TestSyncWithEmbedderPopulatesMemoryEmbedding(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "memory")
 	writeNote(t, dir, "embedded.md",
-		"title: Embedded\ndate: 2026-06-20\nproblem_type: knowledge",
+		"title: Embedded\ndate: 2026-06-20\nproblem_type: knowledge\nstatus: active",
 		"body to embed")
 	w := &fakeWriter{}
 	embedder := &fakeEmbedder{vector: []float32{1, 0}}
@@ -241,7 +261,7 @@ func TestSyncWithEmbedderPopulatesMemoryEmbedding(t *testing.T) {
 func TestSyncWithEmbedderReturnsErrorOnEmbeddingFailure(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "memory")
 	writeNote(t, dir, "broken.md",
-		"title: Broken\ndate: 2026-06-20\nproblem_type: knowledge",
+		"title: Broken\ndate: 2026-06-20\nproblem_type: knowledge\nstatus: active",
 		"body to embed")
 	w := &fakeWriter{}
 	s := NewSyncerWithEmbedder(dir, w, nil, &fakeEmbedder{err: errors.New("embed failed")})
@@ -255,7 +275,7 @@ func TestSyncWithEmbedderReturnsErrorOnEmbeddingFailure(t *testing.T) {
 func TestSyncWithEmbedderReusesUnchangedEmbedding(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "memory")
 	writeNote(t, dir, "stable.md",
-		"title: Stable\ndate: 2026-06-20\nproblem_type: knowledge",
+		"title: Stable\ndate: 2026-06-20\nproblem_type: knowledge\nstatus: active",
 		"stable body")
 	info, err := os.Stat(filepath.Join(dir, "stable.md"))
 	require.NoError(t, err)
@@ -276,4 +296,35 @@ func TestSyncMissingDirReturnsError(t *testing.T) {
 	w := &fakeWriter{}
 	s := NewSyncer(filepath.Join(t.TempDir(), "does-not-exist"), w, nil)
 	require.Error(t, s.Sync(context.Background()))
+}
+
+func TestLedgerSyncerMirrorsActiveAssistMemEntries(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "entries.jsonl")
+	content := strings.Join([]string{
+		`{"created_at":"2026-07-01T13:36:35Z","evidence":"user explicit remember","id":"abd80440ea5d8479","project":"ordo_ai","scope":"project","source":"explicit","status":"Active","text":"lzn-preview and lzn-test deploy scripts live in ~/Projects/ordo_ai.","triggers":["lzn-preview","lzn-test",".env.lzn"],"type":"entrypoint"}`,
+		`{"created_at":"2026-07-01T13:40:00Z","id":"inactive","project":"ordo_ai","scope":"project","status":"archived","text":"old note","type":"entrypoint"}`,
+		``,
+	}, "\n")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	w := &fakeWriter{}
+	s := NewLedgerSyncer(path, w, nil)
+	require.NoError(t, s.Sync(context.Background()))
+
+	require.Len(t, w.memories, 1)
+	got := w.memories[0]
+	assert.Equal(t, db.SourceAssistMem, w.source)
+	assert.Equal(t, "assist-mem/abd80440ea5d8479.jsonl", got.RelPath)
+	assert.Equal(t, db.SourceAssistMem, got.Source)
+	assert.Equal(t, "active", got.Status)
+	assert.Equal(t, "explicit", got.ProblemType)
+	assert.Equal(t, "entrypoint", got.Type)
+	assert.Equal(t, "ordo_ai", got.OriginProject)
+	assert.Equal(t, "assist-mem:abd80440ea5d8479", got.OriginSession)
+	assert.Contains(t, got.Title, "lzn-preview and lzn-test")
+	assert.Contains(t, got.Body, "~/Projects/ordo_ai")
+	assert.Contains(t, got.Body, "user explicit remember")
+	assert.Contains(t, got.Body, "lzn-test")
+	assert.NotEmpty(t, got.SyncedAt)
 }

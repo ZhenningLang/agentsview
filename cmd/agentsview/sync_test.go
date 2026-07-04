@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 func TestRunRemoteHosts_AttemptsAllAndCollectsFailures(t *testing.T) {
@@ -75,4 +79,36 @@ func TestSyncLocalAndRemotes_ResyncForcesRemoteFull(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSyncLocalAndReferences_RunsReferenceSyncAfterLocalSync(t *testing.T) {
+	var calls []string
+	didResync := syncLocalAndReferences(
+		func() bool { calls = append(calls, "local"); return true },
+		func() { calls = append(calls, "references") },
+	)
+
+	assert.True(t, didResync)
+	assert.Equal(t, []string{"local", "references"}, calls)
+}
+
+func TestSyncAssistMemOnceMirrorsLedgerIntoMemoryTable(t *testing.T) {
+	dataDir := t.TempDir()
+	ledgerPath := filepath.Join(dataDir, "entries.jsonl")
+	content := `{"created_at":"2026-07-03T15:26:16Z","evidence":"user explicitly asked to remember this git workflow rule","id":"213307d78f007581","project":"Beacon","scope":"project","source":"explicit","status":"active","text":"For the Beacon project, direct push to main is allowed.","triggers":["push main","git push"],"type":"preference"}` + "\n"
+	require.NoError(t, os.WriteFile(ledgerPath, []byte(content), 0o644))
+
+	database, err := db.Open(filepath.Join(dataDir, "agentsview.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+
+	ok := syncAssistMemOnce(context.Background(), config.Config{AssistMemLedger: ledgerPath}, database)
+	require.True(t, ok)
+
+	got, err := database.ListMemories(context.Background(), db.MemoryFilter{Source: db.SourceAssistMem})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "assist-mem/213307d78f007581.jsonl", got[0].RelPath)
+	assert.Equal(t, "Beacon", got[0].OriginProject)
+	assert.Contains(t, got[0].Body, "direct push to main")
 }

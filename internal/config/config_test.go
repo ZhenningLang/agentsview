@@ -173,6 +173,19 @@ func TestLoad_AppliesExplicitFlags(t *testing.T) {
 	assert.Equal(t, 9090, cfg.Port)
 }
 
+func TestLoad_AssistMemLedgerFlagOverridesConfigFile(t *testing.T) {
+	tmp := setupTestEnv(t)
+	writeConfig(t, tmp, map[string]any{
+		"assist_mem_ledger": filepath.Join(tmp, "old", "entries.jsonl"),
+	})
+	want := filepath.Join(tmp, "ledger", "entries.jsonl")
+
+	cfg, err := loadConfigFromFlags(t, "-assist-mem-ledger", want)
+	require.NoError(t, err)
+
+	assert.Equal(t, want, cfg.AssistMemLedger)
+}
+
 func TestLoad_DefaultsWithoutFlags(t *testing.T) {
 	cfg, err := loadConfigFromFlags(t)
 	require.NoError(t, err)
@@ -188,6 +201,16 @@ func TestLoadPFlags_AppliesExplicitFlags(t *testing.T) {
 
 	assert.Equal(t, "0.0.0.0", cfg.Host)
 	assert.Equal(t, 9090, cfg.Port)
+}
+
+func TestLoadPFlags_AppliesAssistMemLedgerFlag(t *testing.T) {
+	tmp := setupTestEnv(t)
+	want := filepath.Join(tmp, "ledger", "entries.jsonl")
+
+	cfg, err := loadConfigFromPFlags(t, "--assist-mem-ledger", want)
+	require.NoError(t, err)
+
+	assert.Equal(t, want, cfg.AssistMemLedger)
 }
 
 func TestLoad_NilFlagSet(t *testing.T) {

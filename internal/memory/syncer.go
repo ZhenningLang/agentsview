@@ -131,6 +131,9 @@ func (s *Syncer) Sync(ctx context.Context) error {
 			log.Printf("memory sync: skipping %q: malformed frontmatter: %v", name, parseErr)
 			continue
 		}
+		if m.Status != "active" {
+			continue
+		}
 		m.SyncedAt = syncedAt
 		if err := populateMemoryEmbedding(ctx, s.embedder, &m, previous); err != nil {
 			return err

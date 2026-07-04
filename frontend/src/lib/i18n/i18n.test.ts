@@ -43,7 +43,7 @@ describe("i18n", () => {
   });
 
   it("covers every usage label + description in both locales", () => {
-    const usages = ["enrich", "extract", "consolidate", "embed", "recall_rerank"];
+    const usages = ["enrich", "consolidate", "embed", "recall_rerank"];
     for (const loc of LOCALES) {
       setLocale(loc);
       for (const u of usages) {

@@ -12,11 +12,7 @@
     type Memory,
     type MemoryHistoryEntry,
   } from "../../api/memory";
-  import { fetchStagingPool } from "../../api/staging";
   import { ApiError } from "../../api/runtime";
-  import ConsolidateAuditPanel from "./ConsolidateAuditPanel.svelte";
-  import StagingPoolPanel from "./StagingPoolPanel.svelte";
-  import MemoryQualityPanel from "./MemoryQualityPanel.svelte";
 
   type SortKey = "title" | "date" | "problem_type";
   type FeedbackVote = "up" | "down" | "";
@@ -28,13 +24,12 @@
   let loading = $state(true);
   let error = $state<string | null>(null);
   let memories = $state<Memory[]>([]);
-  let inboxTotal = $state<number | null>(null);
-  let inboxAvailable = $state(false);
 
   // Full-text query (server-side FTS over the body). Empty = list all.
   let query = $state("");
-  // Data-source filter: "" = all, "cross-agent" / "cc-native".
-  let source = $state("");
+  // New long-term memories live in the explicit assist-mem ledger. Legacy
+  // sources remain queryable from the dropdown for migration/debug only.
+  let source = $state("assist-mem");
   // Facet filters over frontmatter fields. "" = no filter.
   let problemType = $state("");
   let type = $state("");
@@ -58,6 +53,7 @@
 
   // Human-readable label for a memory's data source.
   function sourceLabel(s: string): string {
+    if (s === "assist-mem") return "Assist Mem";
     if (s === "cc-native") return "CC 原生";
     if (s === "cross-agent") return "跨 agent";
     return s || "—";
@@ -107,17 +103,6 @@
     }
   }
 
-  async function loadInboxSummary() {
-    try {
-      const pool = await fetchStagingPool("", 0);
-      inboxAvailable = pool.available;
-      inboxTotal = pool.total;
-    } catch {
-      inboxAvailable = false;
-      inboxTotal = null;
-    }
-  }
-
   async function load() {
     const seq = ++reqSeq;
     loading = true;
@@ -141,7 +126,7 @@
   }
 
   onMount(async () => {
-    await Promise.all([loadCatalog(), loadInboxSummary()]);
+    await loadCatalog();
     await load();
   });
 
@@ -169,13 +154,12 @@
   // separately when any note has an empty origin_project.
   const projectOptions = $derived(uniqueValues("origin_project"));
   const hasGeneral = $derived(allMemories.some((m) => !m.origin_project));
-  const activeTopics = $derived(
-    allMemories.filter((m) => isActive(m) && tierOf(m) === "topic").length,
+  const assistMemCount = $derived(
+    allMemories.filter((m) => m.source === "assist-mem" && isActive(m)).length,
   );
-  const activeAtomics = $derived(
-    allMemories.filter((m) => isActive(m) && tierOf(m) === "atomic").length,
+  const legacyMemoryCount = $derived(
+    allMemories.filter((m) => m.source !== "assist-mem").length,
   );
-  const foldedMemories = $derived(allMemories.filter(isFolded).length);
 
   // Client-side sort over the server-filtered rows.
   let sortKey = $state<SortKey>("date");
@@ -244,7 +228,7 @@
 
   function clearFilters() {
     query = "";
-    source = "";
+    source = "assist-mem";
     problemType = "";
     type = "";
     status = "";
@@ -256,24 +240,19 @@
     load();
   }
 
-  function showActiveTopics() {
+  function showAssistMem() {
+    source = "assist-mem";
     status = "active";
-    tierFilter = "topic";
-    lifecycleFilter = "";
-    load();
-  }
-
-  function showActiveAtomics() {
-    status = "active";
-    tierFilter = "atomic";
-    lifecycleFilter = "";
-    load();
-  }
-
-  function showFoldedEvidence() {
-    status = "";
     tierFilter = "";
-    lifecycleFilter = "folded";
+    lifecycleFilter = "";
+    load();
+  }
+
+  function showLegacySources() {
+    status = "";
+    source = "";
+    tierFilter = "";
+    lifecycleFilter = "";
     load();
   }
 
@@ -303,10 +282,11 @@
   let feedbackError = $state<string | null>(null);
 
   // CC-native notes live in scattered ~/.claude/projects dirs with no git repo,
-  // so history/revert do not apply: the UI hides the history entry and shows a
-  // "CC 原生不支持历史" notice. Editing is still supported (write-back is
-  // content-only, no commit).
+  // and assist-mem rows are synthetic views over a JSONL ledger entry. History
+  // does not apply to either source.
   let detailIsCCNative = $derived(detail?.source === "cc-native");
+  let detailIsAssistMem = $derived(detail?.source === "assist-mem");
+  let detailHistoryUnsupported = $derived(detailIsCCNative || detailIsAssistMem);
 
   // The rel_path whose detail modal is open, kept separately so edit/history
   // actions have the key even while detail is being refetched.
@@ -641,42 +621,28 @@
   <header class="memory-header">
     <h1>Memory</h1>
     <p class="subtitle">
-      跨 agent user-memory 笔记（只读视图）：全文检索、按 frontmatter facet 过滤、查看正文与元数据。
+      显式长期记忆 ledger：默认只展示通过 /assist-mem 写入的 memory。
     </p>
-    <StagingPoolPanel />
-    <ConsolidateAuditPanel />
-    <MemoryQualityPanel />
-    <section class="pipeline-card" aria-label="Memory 三层架构概览">
+    <section class="pipeline-card" aria-label="Assist Mem 概览">
       <div class="pipeline-head">
         <div>
-          <div class="eyebrow">Memory Architecture</div>
-          <h2>Inbox → Evidence → Knowledge</h2>
+          <div class="eyebrow">Assist Mem</div>
+          <h2>Explicit Ledger Only</h2>
         </div>
-        <div class="pipeline-note">raw 候选先入池，稳定证据再合成可召回知识</div>
+        <div class="pipeline-note">以后新增 memory 只走 /assist-mem，不再走自动候选、Evidence 或 Knowledge 合成。</div>
       </div>
       <div class="pipeline-steps">
-        <article>
-          <span class="step-label">Inbox</span>
-          <strong>{inboxAvailable ? (inboxTotal ?? "—") : "—"}</strong>
-          <p>候选入口</p>
-        </article>
-        <article>
-          <span class="step-label">Evidence</span>
-          <strong>{activeAtomics}</strong>
-          <p>{activeAtomics} active atomics</p>
-          <button type="button" onclick={showActiveAtomics}>看 active atomics</button>
-        </article>
         <article class="knowledge-step">
-          <span class="step-label">Knowledge</span>
-          <strong>{activeTopics}</strong>
-          <p>{activeTopics} active topics</p>
-          <button type="button" onclick={showActiveTopics}>看 active topics</button>
+          <span class="step-label">Ledger</span>
+          <strong>{assistMemCount}</strong>
+          <p>{assistMemCount} active assist-mem entries</p>
+          <button type="button" onclick={showAssistMem}>看 assist-mem</button>
         </article>
-        <article>
-          <span class="step-label">Folded</span>
-          <strong>{foldedMemories}</strong>
-          <p>{foldedMemories} folded / archived</p>
-          <button type="button" onclick={showFoldedEvidence}>看 folded sources</button>
+        <article class="legacy-step">
+          <span class="step-label">Legacy</span>
+          <strong>{legacyMemoryCount}</strong>
+          <p>旧来源仅用于迁移/排查</p>
+          <button type="button" onclick={showLegacySources}>看 legacy sources</button>
         </article>
       </div>
     </section>
@@ -690,6 +656,7 @@
       />
       <select bind:value={source} onchange={load} aria-label="source 过滤">
         <option value="">来源: 全部</option>
+        <option value="assist-mem">Assist Mem</option>
         <option value="cross-agent">跨 agent</option>
         <option value="cc-native">CC 原生</option>
       </select>
@@ -904,11 +871,13 @@
           </div>
           <div class="modal-actions">
             {#if !editing}
-              <button class="action-btn" onclick={startEdit}>编辑</button>
+              {#if !detailIsAssistMem}
+                <button class="action-btn" onclick={startEdit}>编辑</button>
+              {/if}
             {/if}
-            {#if detailIsCCNative}
-              <span class="no-history" title="CC 原生 memory 无 git 仓库，不记录历史"
-                >CC 原生不支持历史</span
+            {#if detailHistoryUnsupported}
+              <span class="no-history" title="该来源不支持 git 历史"
+                >{detailIsAssistMem ? "Assist Mem 只读" : "CC 原生不支持历史"}</span
               >
             {:else}
               <button
@@ -1154,7 +1123,7 @@
   }
   .pipeline-steps {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.55rem;
   }
   .pipeline-steps article {
@@ -1167,6 +1136,9 @@
   .pipeline-steps .knowledge-step {
     border-color: color-mix(in srgb, var(--accent-blue) 35%, var(--border-default));
     background: color-mix(in srgb, var(--accent-blue) 9%, var(--bg-surface));
+  }
+  .pipeline-steps .legacy-step {
+    opacity: 0.72;
   }
   .step-label {
     display: block;
@@ -1346,6 +1318,10 @@
   .badge.source.source-cross-agent {
     background: #dcfce7;
     color: #166534;
+  }
+  .badge.source.source-assist-mem {
+    background: #e0e7ff;
+    color: #3730a3;
   }
   .sortable-th {
     cursor: pointer;
@@ -1753,7 +1729,7 @@
       text-align: left;
     }
     .pipeline-steps {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: 1fr;
     }
     .pipeline-steps article {
       padding: 0.65rem;

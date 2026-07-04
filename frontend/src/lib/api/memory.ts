@@ -4,8 +4,8 @@ import { getBase, authHeaders, ApiError, responseErrorMessage } from "./runtime"
 // memory SSOT) with YAML frontmatter fields plus a body and sync metadata.
 export interface Memory {
   rel_path: string;
-  // Data source: "cross-agent" (the user-memory SSOT) or "cc-native"
-  // (CC auto-memory scanned across project dirs).
+  // Data source: "cross-agent" (legacy user-memory SSOT), "assist-mem"
+  // (explicit ledger), or "cc-native" (CC auto-memory scanned across project dirs).
   source: string;
   title: string;
   date: string;

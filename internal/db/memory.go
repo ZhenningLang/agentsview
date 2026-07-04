@@ -4,16 +4,20 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
-// Memory source kinds. A memory note originates either from the cross-agent
-// SSOT (~/.dotfiles/memory/user) or from CC-native auto-memory directories
-// (~/.claude/projects/<project>/memory). The source column lets the single
-// memory table hold both data sources and the UI filter between them.
+// Memory source kinds. A memory note originates from the legacy cross-agent
+// SSOT (~/.dotfiles/memory/user), the explicit assist-mem ledger, or CC-native
+// auto-memory directories (~/.claude/projects/<project>/memory). The source
+// column lets the single memory table hold multiple data sources and the UI
+// filter between them.
 const (
 	// SourceCrossAgent is the existing cross-agent user-memory SSOT.
 	SourceCrossAgent = "cross-agent"
+	// SourceAssistMem is the explicit assist-mem JSONL ledger.
+	SourceAssistMem = "assist-mem"
 	// SourceCCNative is CC-native auto-memory scanned across project dirs.
 	SourceCCNative = "cc-native"
 )
@@ -159,11 +163,16 @@ func (db *DB) ListMemories(
 	}
 	from := "memory m"
 	if f.Q != "" {
-		// FTS5 MATCH join on the standalone memory_fts index, keyed back
-		// to memory by rel_path.
-		from = "memory m JOIN memory_fts ON memory_fts.rel_path = m.rel_path"
-		preds = append(preds, "memory_fts MATCH ?")
-		args = append(args, f.Q)
+		if db.hasMemoryFTS() {
+			// FTS5 MATCH join on the standalone memory_fts index, keyed back
+			// to memory by rel_path.
+			from = "memory m JOIN memory_fts ON memory_fts.rel_path = m.rel_path"
+			preds = append(preds, "memory_fts MATCH ?")
+			args = append(args, memoryFTSQuery(f.Q))
+		} else {
+			preds = append(preds, "m.body LIKE '%' || ? || '%'")
+			args = append(args, f.Q)
+		}
 	}
 	where := ""
 	if len(preds) > 0 {
@@ -248,9 +257,14 @@ func (db *DB) MemoryEmbeddings(
 	}
 	from := "memory m"
 	if f.Q != "" {
-		from = "memory m JOIN memory_fts ON memory_fts.rel_path = m.rel_path"
-		preds = append(preds, "memory_fts MATCH ?")
-		args = append(args, f.Q)
+		if db.hasMemoryFTS() {
+			from = "memory m JOIN memory_fts ON memory_fts.rel_path = m.rel_path"
+			preds = append(preds, "memory_fts MATCH ?")
+			args = append(args, memoryFTSQuery(f.Q))
+		} else {
+			preds = append(preds, "m.body LIKE '%' || ? || '%'")
+			args = append(args, f.Q)
+		}
 	}
 	where := ""
 	if len(preds) > 0 {
@@ -278,6 +292,24 @@ func prefixCols(cols, prefix string) string {
 	return strings.Join(parts, ", ")
 }
 
+var memoryFTSTokenPattern = regexp.MustCompile(`[\p{L}\p{N}_]+`)
+
+func memoryFTSQuery(q string) string {
+	terms := memoryFTSTokenPattern.FindAllString(q, -1)
+	if len(terms) == 0 {
+		return quoteFTSTerm(q)
+	}
+	quoted := make([]string, 0, len(terms))
+	for _, term := range terms {
+		quoted = append(quoted, quoteFTSTerm(term))
+	}
+	return strings.Join(quoted, " AND ")
+}
+
+func quoteFTSTerm(term string) string {
+	return `"` + strings.ReplaceAll(term, `"`, `""`) + `"`
+}
+
 // replaceMemoriesTx full-replaces the memory table inside an open tx. The
 // AFTER INSERT/DELETE triggers keep memory_fts in sync automatically. When
 // source is non-empty only that data source's rows are cleared and replaced,
@@ -286,6 +318,9 @@ func prefixCols(cols, prefix string) string {
 func replaceMemoriesTx(
 	ctx context.Context, tx txExec, source string, memories []Memory,
 ) error {
+	if err := dropMemoryFTSMirrorIfBroken(ctx, tx); err != nil {
+		return err
+	}
 	if source != "" {
 		if _, err := tx.ExecContext(ctx,
 			"DELETE FROM memory WHERE source = ?", source,
@@ -320,6 +355,27 @@ func replaceMemoriesTx(
 			m.SourceMtime, m.SyncedAt, encoded, dim,
 		); err != nil {
 			return fmt.Errorf("insert memory %q: %w", m.RelPath, err)
+		}
+	}
+	return nil
+}
+
+func dropMemoryFTSMirrorIfBroken(ctx context.Context, tx txExec) error {
+	if _, err := tx.ExecContext(ctx, "SELECT 1 FROM memory_fts LIMIT 1"); err == nil {
+		return nil
+	}
+	stmts := []string{
+		"DROP TRIGGER IF EXISTS memory_ai",
+		"DROP TRIGGER IF EXISTS memory_ad",
+		"DROP TRIGGER IF EXISTS memory_au",
+		"DROP TABLE IF EXISTS memory_fts",
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			if strings.HasPrefix(stmt, "DROP TABLE") && strings.Contains(err.Error(), "no such module") {
+				continue
+			}
+			return fmt.Errorf("dropping broken memory fts mirror (%s): %w", stmt, err)
 		}
 	}
 	return nil
