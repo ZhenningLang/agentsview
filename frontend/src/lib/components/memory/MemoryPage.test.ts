@@ -157,6 +157,8 @@ describe("MemoryPage", () => {
     expect(text).toContain("active assist-mem entries");
     expect(text).toContain("2026-07-01 21:36:35");
     expect(text).toContain("旧来源仅用于迁移/排查");
+    expect(text).not.toContain("反馈");
+    expect(text).not.toContain("保存反馈");
     expect(text).not.toContain("Inbox → Evidence → Knowledge");
     expect(text).not.toContain("候选入口");
   });

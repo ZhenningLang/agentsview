@@ -5,7 +5,6 @@
     fetchMemory,
     fetchMemoryRaw,
     putMemory,
-    setMemoryFeedback,
     fetchMemoryHistory,
     fetchMemoryAtCommit,
     revertMemory,
@@ -15,11 +14,8 @@
   import { ApiError } from "../../api/runtime";
 
   type SortKey = "title" | "date" | "problem_type";
-  type FeedbackVote = "up" | "down" | "";
-  type FeedbackStatus = "pending" | "handled" | "";
   type TierFilter = "" | "atomic" | "topic";
   type LifecycleFilter = "" | "folded";
-  type FeedbackFilter = "" | "up" | "down" | "commented";
 
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -42,8 +38,6 @@
   let projectFilter = $state("");
   let tierFilter = $state<TierFilter>("");
   let lifecycleFilter = $state<LifecycleFilter>("");
-  let feedbackFilter = $state<FeedbackFilter>("");
-  let feedbackStatusFilter = $state<FeedbackStatus>("");
   let groupByProject = $state(false);
 
   // Human-readable label for a note's project ("" = General bucket).
@@ -73,18 +67,6 @@
 
   function isFolded(m: Memory): boolean {
     return m.status === "stale" || m.status === "archived";
-  }
-
-  function feedbackVoteLabel(v: string): string {
-    if (v === "up") return "赞";
-    if (v === "down") return "踩";
-    return "无";
-  }
-
-  function feedbackStatusLabel(s: string): string {
-    if (s === "pending") return "待处理";
-    if (s === "handled") return "已处理";
-    return "未标记";
   }
 
   // The body is only fetched on demand for the listing's facet options, but
@@ -199,10 +181,6 @@
     }).filter((m) => {
       if (tierFilter && tierOf(m) !== tierFilter) return false;
       if (lifecycleFilter === "folded" && !isFolded(m)) return false;
-      if (feedbackFilter === "up" && m.feedback_vote !== "up") return false;
-      if (feedbackFilter === "down" && m.feedback_vote !== "down") return false;
-      if (feedbackFilter === "commented" && !m.feedback_comment) return false;
-      if (feedbackStatusFilter && m.feedback_status !== feedbackStatusFilter) return false;
       return true;
     }),
   );
@@ -235,8 +213,6 @@
     projectFilter = "";
     tierFilter = "";
     lifecycleFilter = "";
-    feedbackFilter = "";
-    feedbackStatusFilter = "";
     load();
   }
 
@@ -265,9 +241,7 @@
       status ||
       projectFilter ||
       tierFilter ||
-      lifecycleFilter ||
-      feedbackFilter ||
-      feedbackStatusFilter
+      lifecycleFilter
     ),
   );
 
@@ -275,11 +249,6 @@
   let detail = $state<Memory | null>(null);
   let detailLoading = $state(false);
   let detailError = $state<string | null>(null);
-  let feedbackVote = $state<FeedbackVote>("");
-  let feedbackComment = $state("");
-  let feedbackStatus = $state<FeedbackStatus>("");
-  let feedbackSaving = $state(false);
-  let feedbackError = $state<string | null>(null);
 
   // CC-native notes live in scattered ~/.claude/projects dirs with no git repo,
   // and assist-mem rows are synthetic views over a JSONL ledger entry. History
@@ -299,11 +268,9 @@
     detail = null;
     resetEdit();
     resetHistory();
-    resetFeedbackForm();
     try {
       const loaded = await fetchMemory(relPath);
       detail = loaded;
-      syncFeedbackForm(loaded);
     } catch (e) {
       detailError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -318,58 +285,6 @@
     activePath = null;
     resetEdit();
     resetHistory();
-    resetFeedbackForm();
-  }
-
-  function resetFeedbackForm() {
-    feedbackVote = "";
-    feedbackComment = "";
-    feedbackStatus = "";
-    feedbackSaving = false;
-    feedbackError = null;
-  }
-
-  function syncFeedbackForm(m: Memory) {
-    feedbackVote = m.feedback_vote === "up" || m.feedback_vote === "down" ? m.feedback_vote : "";
-    feedbackComment = m.feedback_comment || "";
-    feedbackStatus =
-      m.feedback_status === "pending" || m.feedback_status === "handled"
-        ? m.feedback_status
-        : "";
-    feedbackError = null;
-  }
-
-  function toggleFeedbackVote(v: "up" | "down") {
-    feedbackVote = feedbackVote === v ? "" : v;
-  }
-
-  async function saveFeedback() {
-    if (!activePath) return;
-    feedbackSaving = true;
-    feedbackError = null;
-    try {
-      const raw = await fetchMemoryRaw(activePath);
-      await setMemoryFeedback(activePath, {
-        vote: feedbackVote,
-        comment: feedbackComment,
-        status: feedbackStatus,
-        base_sha: raw.sha,
-      });
-      const path = activePath;
-      const loaded = await fetchMemory(path);
-      detail = loaded;
-      syncFeedbackForm(loaded);
-      await load();
-      await loadCatalog();
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 409) {
-        feedbackError = "已被磁盘上的改动修改，请重载后再保存反馈。";
-      } else {
-        feedbackError = e instanceof Error ? e.message : String(e);
-      }
-    } finally {
-      feedbackSaving = false;
-    }
   }
 
   // ── Edit mode ─────────────────────────────────────────────────────────
@@ -601,9 +516,6 @@
       ["status", m.status],
       ["origin_project", m.origin_project || "通用"],
       ["origin_session", m.origin_session],
-      ["feedback_vote", m.feedback_vote],
-      ["feedback_comment", m.feedback_comment],
-      ["feedback_status", m.feedback_status],
       ["body_tokens", String(m.body_tokens)],
       ["synced_at", m.synced_at],
     ];
@@ -692,17 +604,6 @@
         <option value="atomic">原子</option>
         <option value="topic">主题</option>
       </select>
-      <select bind:value={feedbackFilter} aria-label="反馈过滤">
-        <option value="">反馈: 全部</option>
-        <option value="up">赞</option>
-        <option value="down">踩</option>
-        <option value="commented">有评论</option>
-      </select>
-      <select bind:value={feedbackStatusFilter} aria-label="反馈处理状态过滤">
-        <option value="">处理: 全部</option>
-        <option value="pending">待处理</option>
-        <option value="handled">已处理</option>
-      </select>
       <label class="group-toggle" title="按项目分组显示">
         <input type="checkbox" bind:checked={groupByProject} />
         按项目分组
@@ -767,7 +668,6 @@
         <th>来源</th>
         <th>项目</th>
         <th>层级</th>
-        <th>反馈</th>
         <th class="sortable-th" onclick={() => toggleSort("problem_type")}
           >problem_type{sortIndicator("problem_type")}</th
         >
@@ -797,24 +697,6 @@
           </td>
           <td>
             <span class="badge tier" class:topic={tierOf(m) === "topic"}>{tierLabel(m)}</span>
-          </td>
-          <td class="feedback-cell">
-            {#if m.feedback_vote === "up"}
-              <span class="feedback-icon" title="赞">👍</span>
-            {:else if m.feedback_vote === "down"}
-              <span class="feedback-icon" title="踩">👎</span>
-            {/if}
-            {#if m.feedback_comment}
-              <span class="feedback-icon" title="有评论">💬</span>
-            {/if}
-            {#if m.feedback_status}
-              <span
-                class="status-dot {m.feedback_status}"
-                title={feedbackStatusLabel(m.feedback_status)}
-              ></span>
-            {:else if !m.feedback_vote && !m.feedback_comment}
-              —
-            {/if}
           </td>
           <td>
             {#if m.problem_type}
@@ -937,56 +819,6 @@
             ></textarea>
           {/if}
         {:else}
-          <h4>反馈</h4>
-          <div class="feedback-panel">
-            <div class="feedback-row">
-              <div class="vote-group" role="group" aria-label="反馈评价">
-                <button
-                  type="button"
-                  class="vote-btn up"
-                  class:on={feedbackVote === "up"}
-                  aria-pressed={feedbackVote === "up"}
-                  onclick={() => toggleFeedbackVote("up")}
-                  disabled={feedbackSaving}
-                >👍 {feedbackVoteLabel("up")}</button>
-                <button
-                  type="button"
-                  class="vote-btn down"
-                  class:on={feedbackVote === "down"}
-                  aria-pressed={feedbackVote === "down"}
-                  onclick={() => toggleFeedbackVote("down")}
-                  disabled={feedbackSaving}
-                >👎 {feedbackVoteLabel("down")}</button>
-              </div>
-              <select
-                class="fb-select"
-                bind:value={feedbackStatus}
-                disabled={feedbackSaving}
-                aria-label="反馈处理状态"
-              >
-                <option value="">未标记</option>
-                <option value="pending">待处理</option>
-                <option value="handled">已处理</option>
-              </select>
-              <button
-                type="button"
-                class="fb-save"
-                onclick={saveFeedback}
-                disabled={feedbackSaving}
-              >{feedbackSaving ? "保存中…" : "保存反馈"}</button>
-            </div>
-            <textarea
-              class="fb-comment"
-              bind:value={feedbackComment}
-              disabled={feedbackSaving}
-              placeholder="补充原因（可选），例如：过度合并了不相干的点"
-              aria-label="反馈评论"
-              rows="3"
-            ></textarea>
-            {#if feedbackError}
-              <div class="state error feedback-error">{feedbackError}</div>
-            {/if}
-          </div>
           <h4>Frontmatter</h4>
           <table class="fm-grid">
             <tbody>
@@ -1473,113 +1305,6 @@
     color: #fff;
   }
 
-  /* Feedback panel */
-  .feedback-panel {
-    display: flex;
-    flex-direction: column;
-    gap: 0.55rem;
-    margin: 0.3rem 0 0.4rem;
-  }
-  .feedback-row {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-  }
-  /* Segmented vote control: two joined buttons, semantic tint when on. */
-  .vote-group {
-    display: inline-flex;
-    border: 1px solid var(--border-default);
-    border-radius: 6px;
-    overflow: hidden;
-  }
-  .vote-btn {
-    background: none;
-    border: none;
-    border-right: 1px solid var(--border-default);
-    padding: 0.3rem 0.7rem;
-    font-size: 0.8rem;
-    color: var(--text-secondary, #666);
-    cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease;
-  }
-  .vote-btn:last-child {
-    border-right: none;
-  }
-  .vote-btn:hover:not(:disabled):not(.on) {
-    background: var(--bg-surface-hover);
-    color: var(--text-primary, #1a1a1a);
-  }
-  .vote-btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .vote-btn.up.on {
-    background: color-mix(in srgb, var(--accent-green) 15%, transparent);
-    color: var(--accent-green);
-  }
-  .vote-btn.down.on {
-    background: color-mix(in srgb, var(--accent-red) 14%, transparent);
-    color: var(--accent-red);
-  }
-  .fb-select {
-    padding: 0.32rem 0.5rem;
-    font-size: 0.8rem;
-    border: 1px solid var(--border-default);
-    border-radius: 6px;
-    background: var(--bg-surface);
-    color: var(--text-primary, #1a1a1a);
-    cursor: pointer;
-  }
-  .fb-select:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .fb-save {
-    margin-left: auto;
-    background: var(--accent-blue);
-    border: 1px solid var(--accent-blue);
-    border-radius: 6px;
-    color: #fff;
-    padding: 0.32rem 0.85rem;
-    font-size: 0.8rem;
-    cursor: pointer;
-    transition: background 0.12s ease;
-  }
-  .fb-save:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--accent-blue) 82%, black);
-  }
-  .fb-save:disabled {
-    opacity: 0.55;
-    cursor: default;
-  }
-  .fb-comment {
-    width: 100%;
-    box-sizing: border-box;
-    min-height: 4rem;
-    padding: 0.5rem 0.65rem;
-    border: 1px solid var(--border-default);
-    border-radius: 6px;
-    background: var(--bg-surface);
-    color: var(--text-primary, #1a1a1a);
-    font: inherit;
-    font-size: 0.82rem;
-    line-height: 1.5;
-    resize: vertical;
-  }
-  .fb-comment::placeholder {
-    color: var(--text-secondary, #999);
-  }
-  .fb-comment:focus {
-    outline: none;
-    border-color: color-mix(in srgb, var(--accent-blue) 55%, transparent);
-  }
-  .fb-comment:disabled {
-    opacity: 0.6;
-  }
-  .feedback-error {
-    margin-top: 0;
-  }
   .edit-bar {
     display: flex;
     justify-content: space-between;
