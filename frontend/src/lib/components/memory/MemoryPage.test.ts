@@ -49,6 +49,13 @@ async function flush() {
   await tick();
 }
 
+async function waitForText(text: string) {
+  for (let i = 0; i < 10; i++) {
+    await flush();
+    if ((document.body.textContent ?? "").includes(text)) return;
+  }
+}
+
 describe("MemoryPage", () => {
   let component: ReturnType<typeof mount> | undefined;
 
@@ -58,7 +65,7 @@ describe("MemoryPage", () => {
         rel_path: "assist-mem/e979b3764a5954c4.jsonl",
         source: "assist-mem",
         title: "Use assist-mem for long-term memory",
-        date: "2026-07-01",
+        date: "2026-07-01 21:36:35",
         problem_type: "explicit",
         type: "preference",
         status: "active",
@@ -142,12 +149,13 @@ describe("MemoryPage", () => {
 
   it("defaults to explicit assist-mem ledger memories", async () => {
     component = mount(MemoryPage, { target: document.body });
-    await flush();
+    await waitForText("Use assist-mem for long-term memory");
 
     const text = document.body.textContent ?? "";
     expect(mocks.fetchMemories).toHaveBeenCalledWith({ source: "assist-mem" });
     expect(text).toContain("Explicit Ledger Only");
     expect(text).toContain("active assist-mem entries");
+    expect(text).toContain("2026-07-01 21:36:35");
     expect(text).toContain("旧来源仅用于迁移/排查");
     expect(text).not.toContain("Inbox → Evidence → Knowledge");
     expect(text).not.toContain("候选入口");

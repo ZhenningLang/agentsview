@@ -113,8 +113,12 @@ func (s *LedgerSyncer) memoryFromEntry(e ledgerEntry, mtime int64, syncedAt stri
 
 func ledgerDate(createdAt string) string {
 	createdAt = strings.TrimSpace(createdAt)
-	if len(createdAt) >= len("2006-01-02") {
-		return createdAt[:len("2006-01-02")]
+	if createdAt == "" {
+		return ""
+	}
+	if t, err := time.Parse(time.RFC3339, createdAt); err == nil {
+		loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+		return t.In(loc).Format("2006-01-02 15:04:05")
 	}
 	return createdAt
 }

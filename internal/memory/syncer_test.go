@@ -319,6 +319,7 @@ func TestLedgerSyncerMirrorsActiveAssistMemEntries(t *testing.T) {
 	assert.Equal(t, db.SourceAssistMem, got.Source)
 	assert.Equal(t, "active", got.Status)
 	assert.Equal(t, "explicit", got.ProblemType)
+	assert.Equal(t, "2026-07-01 21:36:35", got.Date)
 	assert.Equal(t, "entrypoint", got.Type)
 	assert.Equal(t, "ordo_ai", got.OriginProject)
 	assert.Equal(t, "assist-mem:abd80440ea5d8479", got.OriginSession)
