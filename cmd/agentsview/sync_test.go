@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -111,4 +112,27 @@ func TestSyncAssistMemOnceMirrorsLedgerIntoMemoryTable(t *testing.T) {
 	assert.Equal(t, "assist-mem/213307d78f007581.jsonl", got[0].RelPath)
 	assert.Equal(t, "Beacon", got[0].OriginProject)
 	assert.Contains(t, got[0].Body, "direct push to main")
+}
+
+func TestSyncAssistMemOnceMirrorsLatestLedgerTopicIntoMemoryTable(t *testing.T) {
+	dataDir := t.TempDir()
+	ledgerPath := filepath.Join(dataDir, "entries.jsonl")
+	content := strings.Join([]string{
+		`{"created_at":"2026-07-01T13:36:35Z","id":"older","project":"ordo_ai","scope":"project","source":"explicit","status":"active","text":"old lzn deployment entrypoint","topic":"lzn-deploy-entrypoint","type":"entrypoint"}`,
+		`{"created_at":"2026-07-05T11:44:20Z","id":"newer","project":"ordo_ai","scope":"project","source":"explicit","status":"active","text":"new lzn deployment entrypoint","topic":"lzn-deploy-entrypoint","type":"entrypoint"}`,
+	}, "\n")
+	require.NoError(t, os.WriteFile(ledgerPath, []byte(content), 0o644))
+
+	database, err := db.Open(filepath.Join(dataDir, "agentsview.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+
+	ok := syncAssistMemOnce(context.Background(), config.Config{AssistMemLedger: ledgerPath}, database)
+	require.True(t, ok)
+
+	got, err := database.ListMemories(context.Background(), db.MemoryFilter{Source: db.SourceAssistMem})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "assist-mem/newer.jsonl", got[0].RelPath)
+	assert.Contains(t, got[0].Body, "new lzn deployment entrypoint")
 }

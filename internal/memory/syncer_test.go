@@ -329,3 +329,31 @@ func TestLedgerSyncerMirrorsActiveAssistMemEntries(t *testing.T) {
 	assert.Contains(t, got.Body, "lzn-test")
 	assert.NotEmpty(t, got.SyncedAt)
 }
+
+func TestLedgerSyncerKeepsLatestActiveAssistMemEntryPerTopic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "entries.jsonl")
+	content := strings.Join([]string{
+		`{"created_at":"2026-07-01T13:36:35Z","id":"older-topic","project":"ordo_ai","scope":"project","status":"active","text":"old lzn-preview location","topic":"lzn-preview-entrypoint","type":"entrypoint"}`,
+		`{"created_at":"2026-07-01T13:40:00Z","id":"newer-topic","project":"ordo_ai","scope":"project","status":"active","text":"current lzn-preview location","topic":"lzn-preview-entrypoint","type":"entrypoint"}`,
+		`{"created_at":"2026-07-01T13:45:00Z","id":"archived-topic","project":"ordo_ai","scope":"project","status":"archived","text":"archived lzn-preview location","topic":"lzn-preview-entrypoint","type":"entrypoint"}`,
+		`{"created_at":"2026-07-01T13:50:00Z","id":"untopic-a","project":"ordo_ai","scope":"project","status":"active","text":"untopiced first","type":"entrypoint"}`,
+		`{"created_at":"2026-07-01T13:55:00Z","id":"untopic-b","project":"ordo_ai","scope":"project","status":"active","text":"untopiced second","type":"entrypoint"}`,
+	}, "\n")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	w := &fakeWriter{}
+	s := NewLedgerSyncer(path, w, nil)
+	require.NoError(t, s.Sync(context.Background()))
+
+	require.Len(t, w.memories, 3)
+	by := byRelPath(w.memories)
+	_, hasOlder := by["assist-mem/older-topic.jsonl"]
+	_, hasArchived := by["assist-mem/archived-topic.jsonl"]
+	assert.False(t, hasOlder, "older active entries with the same topic should not be mirrored")
+	assert.False(t, hasArchived, "archived entries should remain excluded")
+	assert.Contains(t, by, "assist-mem/newer-topic.jsonl")
+	assert.Contains(t, by, "assist-mem/untopic-a.jsonl")
+	assert.Contains(t, by, "assist-mem/untopic-b.jsonl")
+	assert.Contains(t, by["assist-mem/newer-topic.jsonl"].Body, "current lzn-preview location")
+}

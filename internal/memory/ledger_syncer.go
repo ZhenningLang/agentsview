@@ -34,8 +34,16 @@ type ledgerEntry struct {
 	Source    string   `json:"source"`
 	Status    string   `json:"status"`
 	Text      string   `json:"text"`
+	Topic     string   `json:"topic"`
 	Triggers  []string `json:"triggers"`
 	Type      string   `json:"type"`
+}
+
+type ledgerCandidate struct {
+	entry     ledgerEntry
+	lineNo    int
+	createdAt time.Time
+	hasTime   bool
 }
 
 func NewLedgerSyncer(path string, w Writer, tk skills.Tokenizer) *LedgerSyncer {
@@ -60,7 +68,7 @@ func (s *LedgerSyncer) Sync(ctx context.Context) error {
 	// Ledger entries are small, but allow longer text/evidence fields than the
 	// scanner default so a single explicit memory does not vanish.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	var memories []db.Memory
+	latestByTopic := map[string]ledgerCandidate{}
 	lineNo := 0
 	for scanner.Scan() {
 		lineNo++
@@ -73,15 +81,58 @@ func (s *LedgerSyncer) Sync(ctx context.Context) error {
 			log.Printf("assist-mem sync: skipping line %d: malformed JSON: %v", lineNo, err)
 			continue
 		}
-		m, ok := s.memoryFromEntry(e, info.ModTime().Unix(), syncedAt)
-		if ok {
-			memories = append(memories, m)
+		candidate, ok := ledgerCandidateFromEntry(e, lineNo)
+		if !ok {
+			continue
+		}
+		key := ledgerTopicKey(candidate.entry)
+		if current, exists := latestByTopic[key]; !exists || candidate.isNewerThan(current) {
+			latestByTopic[key] = candidate
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("reading assist-mem ledger: %w", err)
 	}
+	memories := make([]db.Memory, 0, len(latestByTopic))
+	for _, candidate := range latestByTopic {
+		m, ok := s.memoryFromEntry(candidate.entry, info.ModTime().Unix(), syncedAt)
+		if ok {
+			memories = append(memories, m)
+		}
+	}
 	return s.writer.ReplaceMemoriesBySource(ctx, db.SourceAssistMem, memories)
+}
+
+func ledgerCandidateFromEntry(e ledgerEntry, lineNo int) (ledgerCandidate, bool) {
+	status := strings.TrimSpace(e.Status)
+	if status == "" {
+		status = "active"
+	}
+	if !strings.EqualFold(status, "active") || strings.TrimSpace(e.ID) == "" {
+		return ledgerCandidate{}, false
+	}
+	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(e.CreatedAt))
+	return ledgerCandidate{entry: e, lineNo: lineNo, createdAt: createdAt, hasTime: err == nil}, true
+}
+
+func (c ledgerCandidate) isNewerThan(other ledgerCandidate) bool {
+	if c.hasTime && other.hasTime && !c.createdAt.Equal(other.createdAt) {
+		return c.createdAt.After(other.createdAt)
+	}
+	return c.lineNo > other.lineNo
+}
+
+func ledgerTopicKey(e ledgerEntry) string {
+	topic := strings.TrimSpace(e.Topic)
+	if topic == "" {
+		return "id:" + strings.TrimSpace(e.ID)
+	}
+	return strings.Join([]string{
+		"topic",
+		strings.TrimSpace(e.Project),
+		strings.TrimSpace(e.Scope),
+		topic,
+	}, "\x00")
 }
 
 func (s *LedgerSyncer) memoryFromEntry(e ledgerEntry, mtime int64, syncedAt string) (db.Memory, bool) {
