@@ -1,10 +1,13 @@
 package server_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,7 +19,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/server"
 )
 
 // These tests exercise the server-side source-routing wiring introduced in
@@ -53,7 +58,11 @@ type memoryFixture struct {
 	ccContent    string
 }
 
-func setupMemoryFixture(t *testing.T) *memoryFixture {
+func setupMemoryFixture(t *testing.T, opts ...setupOption) *memoryFixture {
+	return setupMemoryFixtureWithServerOpts(t, nil, opts...)
+}
+
+func setupMemoryFixtureWithServerOpts(t *testing.T, srvOpts []server.Option, opts ...setupOption) *memoryFixture {
 	t.Helper()
 
 	ssotDir := t.TempDir()
@@ -75,7 +84,8 @@ func setupMemoryFixture(t *testing.T) *memoryFixture {
 	require.NoError(t, os.MkdirAll(filepath.Dir(ccFull), 0o755))
 	require.NoError(t, os.WriteFile(ccFull, []byte(ccContent), 0o644))
 
-	te := setup(t, withMemoryDir(ssotDir), withCCMemoryDir(ccDir))
+	setupOpts := append([]setupOption{withMemoryDir(ssotDir), withCCMemoryDir(ccDir)}, opts...)
+	te := setupWithServerOpts(t, srvOpts, setupOpts...)
 
 	// Seed the DB rows the route reads to learn each note's source.
 	ctx := context.Background()
@@ -273,6 +283,71 @@ func TestMemoryFeedbackWritesQuotedFrontmatterAndResyncs(t *testing.T) {
 	assert.Equal(t, "down", mem.FeedbackVote)
 	assert.Equal(t, "原因: 过度合并", mem.FeedbackComment)
 	assert.Equal(t, "pending", mem.FeedbackStatus)
+}
+
+func TestMemoryFeedbackResyncPreservesEmbeddingWhenEmbedConfigMissing(t *testing.T) {
+	fx := setupMemoryFixture(t)
+	ctx := context.Background()
+	existingVector := []float32{0.2, 0.8}
+	require.NoError(t, fx.te.db.ReplaceMemoriesBySource(ctx, db.SourceCrossAgent, []db.Memory{{
+		RelPath:         fx.crossRelPath,
+		Source:          db.SourceCrossAgent,
+		Title:           "Cross",
+		Date:            "2026-06-20",
+		Status:          "active",
+		Body:            "Cross body.\n",
+		SourceMtime:     fileMTime(t, filepath.Join(fx.ssotDir, fx.crossRelPath)),
+		LLMEmbedding:    existingVector,
+		LLMEmbeddingDim: len(existingVector),
+	}}))
+
+	w := fx.te.postMemoryFeedback(t, fx.crossRelPath, "down", "", "pending")
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	embeddings, err := fx.te.db.MemoryEmbeddings(ctx, db.MemoryFilter{Source: db.SourceCrossAgent})
+	require.NoError(t, err)
+	require.Len(t, embeddings, 1)
+	assert.Equal(t, existingVector, embeddings[0].LLMEmbedding)
+	assert.Equal(t, len(existingVector), embeddings[0].LLMEmbeddingDim)
+}
+
+func TestMemoryPutResyncFallsBackToLexicalWhenEmbeddingProviderFails(t *testing.T) {
+	called := 0
+	client := llmTestClient(func(req *http.Request) (*http.Response, error) {
+		called++
+		assert.Equal(t, "/v1/embeddings", req.URL.Path)
+		return &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Body:       io.NopCloser(bytes.NewBufferString(`{"error":"down"}`)),
+		}, nil
+	})
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	fx := setupMemoryFixtureWithServerOpts(t, []server.Option{server.WithLLMHTTPClient(client)}, withLLMConfig(func(c *config.LLMConfig) {
+		c.Enabled = true
+		c.Embed.BaseURL = "https://embed.example.test/v1"
+		c.Embed.Model = "text-embedding"
+	}))
+	newContent := "---\ntitle: Cross\ndate: 2026-06-20\nstatus: active\n---\n\nEdited cross body.\n"
+
+	w := fx.te.putMemory(t, fx.crossRelPath, newContent, memSHA(fx.crossContent))
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	assert.Positive(t, called, "configured embedder should be attempted before lexical fallback")
+	assert.Contains(t, logs.String(), "retrying lexical sync")
+
+	wGet := fx.te.get(t, "/api/v1/memories/"+encodeMemPath(fx.crossRelPath))
+	require.Equal(t, http.StatusOK, wGet.Code, "body: %s", wGet.Body.String())
+	mem := decode[db.Memory](t, wGet)
+	assert.Contains(t, mem.Body, "Edited cross body.")
+}
+
+func fileMTime(t *testing.T, path string) int64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	return info.ModTime().Unix()
 }
 
 func TestMemoryFeedbackRejectsInvalidVoteAndStatus(t *testing.T) {

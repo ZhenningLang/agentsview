@@ -72,7 +72,7 @@ func (s *CCSyncer) Sync(ctx context.Context) error {
 		return s.writer.ReplaceMemoriesBySource(ctx, db.SourceCCNative, nil)
 	}
 	syncedAt := s.now().UTC().Format("2006-01-02T15:04:05.000Z")
-	previous := loadPreviousEmbeddings(ctx, s.writer, db.SourceCCNative, s.embedder)
+	previous := loadPreviousEmbeddings(ctx, s.writer, db.SourceCCNative)
 
 	memories := make([]db.Memory, 0, 64)
 	for _, proj := range projects {

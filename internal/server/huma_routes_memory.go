@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"log"
 	"net/http"
 
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/llm"
 	"go.kenn.io/agentsview/internal/memory"
 )
 
@@ -217,14 +219,35 @@ func (s *Server) resyncMemory(ctx context.Context, source string) {
 		if root == "" {
 			return
 		}
-		_ = memory.NewCCSyncer(root, w, nil).Sync(ctx)
+		s.resyncMemorySource(ctx, source, func(embedder memory.Embedder) error {
+			return memory.NewCCSyncerWithEmbedder(root, w, nil, embedder).Sync(ctx)
+		})
 		return
 	}
 	dir := s.cfg.ResolveMemoryDir()
 	if dir == "" {
 		return
 	}
-	_ = memory.NewSyncer(dir, w, nil).Sync(ctx)
+	s.resyncMemorySource(ctx, source, func(embedder memory.Embedder) error {
+		return memory.NewSyncerWithEmbedder(dir, w, nil, embedder).Sync(ctx)
+	})
+}
+
+func (s *Server) resyncMemorySource(ctx context.Context, source string, syncWith func(memory.Embedder) error) {
+	if err := syncWith(s.memorySyncEmbedder()); err != nil {
+		log.Printf("memory resync %s with embeddings failed: %v; retrying lexical sync", source, err)
+		if fallbackErr := syncWith(nil); fallbackErr != nil {
+			log.Printf("memory resync %s lexical fallback failed: %v", source, fallbackErr)
+		}
+	}
+}
+
+func (s *Server) memorySyncEmbedder() memory.Embedder {
+	embedCfg := s.cfg.ResolveUsageLLM("embed")
+	if !embedCfg.EmbeddingAvailable() {
+		return nil
+	}
+	return llm.NewWithHTTPClient(embedCfg, s.llmHTTPClient)
 }
 
 // writeError maps writer-layer errors to HTTP statuses.

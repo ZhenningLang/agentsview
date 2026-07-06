@@ -107,6 +107,12 @@ type LLMConfig struct {
 	llmEnvEnabledSet bool
 }
 
+// EmbeddingAvailable reports whether the embedding provider has enough
+// configuration for callers to attempt embedding requests.
+func (c LLMConfig) EmbeddingAvailable() bool {
+	return c.Enabled && strings.TrimSpace(c.Embed.Model) != "" && strings.TrimSpace(c.Embed.BaseURL) != ""
+}
+
 // AutomatedConfig holds user-supplied additions to the
 // automated-session classifier. Parse-only; all semantic
 // normalization (trim, dedupe, length cap, built-in overlap

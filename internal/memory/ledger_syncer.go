@@ -22,6 +22,7 @@ type LedgerSyncer struct {
 	path      string
 	tokenizer skills.Tokenizer
 	writer    Writer
+	embedder  Embedder
 	now       func() time.Time
 }
 
@@ -51,6 +52,15 @@ func NewLedgerSyncer(path string, w Writer, tk skills.Tokenizer) *LedgerSyncer {
 		tk = skills.NewHeuristicTokenizer()
 	}
 	return &LedgerSyncer{path: path, writer: w, tokenizer: tk, now: time.Now}
+}
+
+// NewLedgerSyncerWithEmbedder mirrors explicit assist-mem ledger rows while
+// optionally persisting embeddings for cross-source synthesis. A nil embedder
+// keeps the lexical-only sync path unchanged.
+func NewLedgerSyncerWithEmbedder(path string, w Writer, tk skills.Tokenizer, e Embedder) *LedgerSyncer {
+	s := NewLedgerSyncer(path, w, tk)
+	s.embedder = e
+	return s
 }
 
 func (s *LedgerSyncer) Sync(ctx context.Context) error {
@@ -94,9 +104,13 @@ func (s *LedgerSyncer) Sync(ctx context.Context) error {
 		return fmt.Errorf("reading assist-mem ledger: %w", err)
 	}
 	memories := make([]db.Memory, 0, len(latestByTopic))
+	previous := loadPreviousEmbeddings(ctx, s.writer, db.SourceAssistMem)
 	for _, candidate := range latestByTopic {
 		m, ok := s.memoryFromEntry(candidate.entry, info.ModTime().Unix(), syncedAt)
 		if ok {
+			if err := populateMemoryEmbedding(ctx, s.embedder, &m, previous); err != nil {
+				return err
+			}
 			memories = append(memories, m)
 		}
 	}

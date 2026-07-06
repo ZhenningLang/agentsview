@@ -742,6 +742,10 @@ func startMemorySync(
 }
 
 func syncMemoryOnce(ctx context.Context, cfg config.Config, database db.Store) bool {
+	return syncMemoryOnceWithHTTPClient(ctx, cfg, database, nil)
+}
+
+func syncMemoryOnceWithHTTPClient(ctx context.Context, cfg config.Config, database db.Store, httpClient *http.Client) bool {
 	dir := cfg.ResolveMemoryDir()
 	if dir == "" {
 		return false
@@ -750,12 +754,25 @@ func syncMemoryOnce(ctx context.Context, cfg config.Config, database db.Store) b
 	if !ok {
 		return false
 	}
-	embedder := llm.New(cfg.ResolveUsageLLM("embed"))
-	syncer := memory.NewSyncerWithEmbedder(dir, writer, nil, embedder)
-	if err := syncer.Sync(ctx); err != nil {
+	if err := newMemoryResyncer(dir, writer, cfg, httpClient).Resync(ctx); err != nil {
 		log.Printf("memory sync: %v", err)
 	}
 	return true
+}
+
+type memoryResyncer struct {
+	dir        string
+	writer     memory.Writer
+	cfg        config.Config
+	httpClient *http.Client
+}
+
+func newMemoryResyncer(dir string, writer memory.Writer, cfg config.Config, httpClient *http.Client) memoryResyncer {
+	return memoryResyncer{dir: dir, writer: writer, cfg: cfg, httpClient: httpClient}
+}
+
+func (r memoryResyncer) Resync(ctx context.Context) error {
+	return memory.NewSyncerWithEmbedder(r.dir, r.writer, nil, memorySyncEmbedder(r.cfg, r.httpClient)).Sync(ctx)
 }
 
 func startAssistMemSync(
@@ -779,6 +796,10 @@ func startAssistMemSync(
 }
 
 func syncAssistMemOnce(ctx context.Context, cfg config.Config, database db.Store) bool {
+	return syncAssistMemOnceWithHTTPClient(ctx, cfg, database, nil)
+}
+
+func syncAssistMemOnceWithHTTPClient(ctx context.Context, cfg config.Config, database db.Store, httpClient *http.Client) bool {
 	path := cfg.ResolveAssistMemLedger()
 	if path == "" {
 		return false
@@ -787,7 +808,8 @@ func syncAssistMemOnce(ctx context.Context, cfg config.Config, database db.Store
 	if !ok {
 		return false
 	}
-	syncer := memory.NewLedgerSyncer(path, writer, nil)
+	embedder := memorySyncEmbedder(cfg, httpClient)
+	syncer := memory.NewLedgerSyncerWithEmbedder(path, writer, nil, embedder)
 	if err := syncer.Sync(ctx); err != nil {
 		log.Printf("assist-mem sync: %v", err)
 	}
@@ -822,6 +844,10 @@ func startCCMemorySync(
 }
 
 func syncCCMemoryOnce(ctx context.Context, cfg config.Config, database db.Store) bool {
+	return syncCCMemoryOnceWithHTTPClient(ctx, cfg, database, nil)
+}
+
+func syncCCMemoryOnceWithHTTPClient(ctx context.Context, cfg config.Config, database db.Store, httpClient *http.Client) bool {
 	root := cfg.ResolveCCMemoryDir()
 	if root == "" {
 		return false
@@ -830,12 +856,20 @@ func syncCCMemoryOnce(ctx context.Context, cfg config.Config, database db.Store)
 	if !ok {
 		return false
 	}
-	embedder := llm.New(cfg.ResolveUsageLLM("embed"))
+	embedder := memorySyncEmbedder(cfg, httpClient)
 	syncer := memory.NewCCSyncerWithEmbedder(root, writer, nil, embedder)
 	if err := syncer.Sync(ctx); err != nil {
 		log.Printf("cc memory sync: %v", err)
 	}
 	return true
+}
+
+func memorySyncEmbedder(cfg config.Config, httpClient *http.Client) memory.Embedder {
+	embedCfg := cfg.ResolveUsageLLM("embed")
+	if !embedCfg.EmbeddingAvailable() {
+		return nil
+	}
+	return llm.NewWithHTTPClient(embedCfg, httpClient)
 }
 
 // startVaultSync runs the dev-workflow vault sync once at startup and then
@@ -926,10 +960,7 @@ func startSynthesize(
 	if !ok {
 		return nil
 	}
-	embedder := llm.New(cfg.ResolveUsageLLM("embed"))
-	resync := consolidate.ResyncFunc(func(c context.Context) error {
-		return memory.NewSyncerWithEmbedder(dir, writer, nil, embedder).Sync(c)
-	})
+	resync := newMemoryResyncer(dir, writer, cfg, nil)
 	// Synthesis is a generation task; reuse the consolidate LLM (reasoning off)
 	// with the same long background timeout so a slow response never fails a cycle.
 	synthHTTP := &http.Client{Timeout: 90 * time.Second}
@@ -965,10 +996,8 @@ func startConsolidate(
 	stagingDir := filepath.Join(root, "memory", ".staging")
 	rawDir := filepath.Join(stagingDir, "raw_memories")
 	embedCfg := cfg.ResolveUsageLLM("embed")
-	embedder := llm.New(embedCfg)
-	resync := consolidate.ResyncFunc(func(c context.Context) error {
-		return memory.NewSyncerWithEmbedder(dir, writer, nil, embedder).Sync(c)
-	})
+	embedder := memorySyncEmbedder(cfg, nil)
+	resync := newMemoryResyncer(dir, writer, cfg, nil)
 	// Background batch consolidation is not interactive; give it a longer HTTP
 	// timeout than the 30s default so a momentarily slow provider response does
 	// not fail the whole cycle (reasoning is already disabled in ConsolidateLLM).

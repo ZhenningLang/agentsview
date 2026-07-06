@@ -357,3 +357,80 @@ func TestLedgerSyncerKeepsLatestActiveAssistMemEntryPerTopic(t *testing.T) {
 	assert.Contains(t, by, "assist-mem/untopic-b.jsonl")
 	assert.Contains(t, by["assist-mem/newer-topic.jsonl"].Body, "current lzn-preview location")
 }
+
+func TestLedgerSyncerWithEmbedderPopulatesMemoryEmbedding(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "entries.jsonl")
+	content := `{"created_at":"2026-07-01T13:36:35Z","id":"embedded","project":"ordo_ai","scope":"project","status":"active","text":"assist mem body to embed","type":"entrypoint"}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	w := &fakeWriter{}
+	embedder := &fakeEmbedder{vector: []float32{0.25, 0.75, 1}}
+	s := NewLedgerSyncerWithEmbedder(path, w, nil, embedder)
+
+	require.NoError(t, s.Sync(context.Background()))
+	require.Len(t, w.memories, 1)
+	assert.Equal(t, db.SourceAssistMem, w.memories[0].Source)
+	assert.Equal(t, []float32{0.25, 0.75, 1}, w.memories[0].LLMEmbedding)
+	assert.Equal(t, 3, w.memories[0].LLMEmbeddingDim)
+	assert.Equal(t, 1, embedder.calls)
+}
+
+func TestLedgerSyncerWithEmbedderReusesUnchangedEmbedding(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "entries.jsonl")
+	content := `{"created_at":"2026-07-01T13:36:35Z","id":"stable","project":"ordo_ai","scope":"project","status":"active","text":"stable assist body","type":"entrypoint"}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+
+	w := &fakeWriter{memories: []db.Memory{{
+		RelPath: "assist-mem/stable.jsonl", Source: db.SourceAssistMem,
+		Body: "stable assist body\n\nScope: project\n", SourceMtime: info.ModTime().Unix(),
+		LLMEmbedding: []float32{0.1, 0.2}, LLMEmbeddingDim: 2,
+	}}}
+	embedder := &fakeEmbedder{vector: []float32{1, 0}}
+	s := NewLedgerSyncerWithEmbedder(path, w, nil, embedder)
+
+	require.NoError(t, s.Sync(context.Background()))
+	require.Len(t, w.memories, 1)
+	assert.Equal(t, []float32{0.1, 0.2}, w.memories[0].LLMEmbedding)
+	assert.Zero(t, embedder.calls)
+}
+
+func TestLedgerSyncerWithEmbedderDoesNotReuseChangedBodyEmbedding(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "entries.jsonl")
+	content := `{"created_at":"2026-07-01T13:36:35Z","id":"changed","project":"ordo_ai","scope":"project","status":"active","text":"changed assist body","type":"entrypoint"}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+
+	w := &fakeWriter{memories: []db.Memory{{
+		RelPath: "assist-mem/changed.jsonl", Source: db.SourceAssistMem,
+		Body: "old assist body\n\nScope: project\n", SourceMtime: info.ModTime().Unix(),
+		LLMEmbedding: []float32{0.1, 0.2}, LLMEmbeddingDim: 2,
+	}}}
+	embedder := &fakeEmbedder{vector: []float32{1, 0, 0}}
+	s := NewLedgerSyncerWithEmbedder(path, w, nil, embedder)
+
+	require.NoError(t, s.Sync(context.Background()))
+	require.Len(t, w.memories, 1)
+	assert.Equal(t, []float32{1, 0, 0}, w.memories[0].LLMEmbedding)
+	assert.Equal(t, 3, w.memories[0].LLMEmbeddingDim)
+	assert.Equal(t, 1, embedder.calls)
+}
+
+func TestLedgerSyncerWithEmbedderReturnsErrorOnEmbeddingFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "entries.jsonl")
+	content := `{"created_at":"2026-07-01T13:36:35Z","id":"broken","project":"ordo_ai","scope":"project","status":"active","text":"assist body","type":"entrypoint"}` + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	w := &fakeWriter{}
+	s := NewLedgerSyncerWithEmbedder(path, w, nil, &fakeEmbedder{err: errors.New("embed failed")})
+
+	err := s.Sync(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "embedding memory")
+	assert.Empty(t, w.memories, "failed embed should not write a silent lexical-only replacement")
+}

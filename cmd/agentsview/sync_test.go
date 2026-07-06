@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -135,4 +138,131 @@ func TestSyncAssistMemOnceMirrorsLatestLedgerTopicIntoMemoryTable(t *testing.T) 
 	require.Len(t, got, 1)
 	assert.Equal(t, "assist-mem/newer.jsonl", got[0].RelPath)
 	assert.Contains(t, got[0].Body, "new lzn deployment entrypoint")
+}
+
+func TestSyncRawMemorySourcesMissingEmbedConfigMirrorLexicalRows(t *testing.T) {
+	assertRawMemorySourcesLexicalFallback(t, config.LLMConfig{
+		Enabled: true,
+		Embed: config.LLMEmbedConfig{
+			BaseURL: "https://embed.example.invalid/v1",
+			// Missing model means embedding sync must be disabled.
+		},
+	})
+}
+
+func TestSyncRawMemorySourcesDisabledEmbedConfigMirrorsLexicalRows(t *testing.T) {
+	assertRawMemorySourcesLexicalFallback(t, config.LLMConfig{
+		Enabled: false,
+		Embed: config.LLMEmbedConfig{
+			BaseURL: "https://embed.example.invalid/v1",
+			Model:   "text-embedding",
+		},
+	})
+}
+
+func assertRawMemorySourcesLexicalFallback(t *testing.T, llmCfg config.LLMConfig) {
+	t.Helper()
+	dataDir := t.TempDir()
+	memoryDir := filepath.Join(dataDir, "memory")
+	ccRoot := filepath.Join(dataDir, "cc-projects")
+	assistPath := filepath.Join(dataDir, "entries.jsonl")
+	require.NoError(t, os.MkdirAll(memoryDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(memoryDir, "entry.md"), []byte("---\ntitle: Entry\nstatus: active\n---\n\ncross body\n"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(ccRoot, "proj", "memory"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(ccRoot, "proj", "memory", "cc.md"), []byte("cc body"), 0o644))
+	require.NoError(t, os.WriteFile(assistPath, []byte(`{"created_at":"2026-07-03T15:26:16Z","id":"assist","project":"Beacon","scope":"project","status":"active","text":"assist body","type":"preference"}`+"\n"), 0o644))
+
+	database, err := db.Open(filepath.Join(dataDir, "agentsview.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+
+	called := false
+	cfg := config.Config{
+		MemoryDir:       memoryDir,
+		CCMemoryDir:     ccRoot,
+		AssistMemLedger: assistPath,
+		LLM:             llmCfg,
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(bytes.NewBufferString(`{}`))}, nil
+	})}
+
+	assert.True(t, syncMemoryOnceWithHTTPClient(context.Background(), cfg, database, client))
+	assert.True(t, syncAssistMemOnceWithHTTPClient(context.Background(), cfg, database, client))
+	assert.True(t, syncCCMemoryOnceWithHTTPClient(context.Background(), cfg, database, client))
+	assert.False(t, called, "missing embed model must not call provider during lexical sync")
+
+	for _, source := range []string{db.SourceCrossAgent, db.SourceAssistMem, db.SourceCCNative} {
+		got, err := database.ListMemories(context.Background(), db.MemoryFilter{Source: source})
+		require.NoError(t, err)
+		require.Len(t, got, 1, "source %s should sync lexical rows", source)
+	}
+}
+
+func TestMemoryResyncerMissingEmbedConfigMirrorsLexicalRows(t *testing.T) {
+	dataDir := t.TempDir()
+	memoryDir := filepath.Join(dataDir, "memory")
+	require.NoError(t, os.MkdirAll(memoryDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(memoryDir, "entry.md"), []byte("---\ntitle: Entry\nstatus: active\n---\n\nresync body\n"), 0o644))
+	database, err := db.Open(filepath.Join(dataDir, "agentsview.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+
+	called := false
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return &http.Response{StatusCode: http.StatusInternalServerError, Body: io.NopCloser(bytes.NewBufferString(`{}`))}, nil
+	})}
+	cfg := config.Config{
+		LLM: config.LLMConfig{
+			Enabled: true,
+			Embed:   config.LLMEmbedConfig{BaseURL: "https://embed.example.invalid/v1"},
+		},
+	}
+
+	require.NoError(t, newMemoryResyncer(memoryDir, database, cfg, client).Resync(context.Background()))
+	assert.False(t, called, "background resync helper must share missing-config embedder gate")
+	got, err := database.ListMemories(context.Background(), db.MemoryFilter{Source: db.SourceCrossAgent})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0].Body, "resync body")
+}
+
+func TestSyncAssistMemOnceConfiguredEmbedderPopulatesEmbedding(t *testing.T) {
+	dataDir := t.TempDir()
+	ledgerPath := filepath.Join(dataDir, "entries.jsonl")
+	content := `{"created_at":"2026-07-03T15:26:16Z","id":"assist-embedded","project":"Beacon","scope":"project","status":"active","text":"assist body","type":"preference"}` + "\n"
+	require.NoError(t, os.WriteFile(ledgerPath, []byte(content), 0o644))
+	database, err := db.Open(filepath.Join(dataDir, "agentsview.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+
+	called := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		called++
+		assert.Equal(t, "/v1/embeddings", req.URL.Path)
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(bytes.NewBufferString(`{"data":[{"embedding":[0.2,0.8]}]}`))}, nil
+	})}
+	cfg := config.Config{
+		AssistMemLedger: ledgerPath,
+		LLM: config.LLMConfig{
+			Enabled: true,
+			Embed:   config.LLMEmbedConfig{BaseURL: "https://embed.example.test/v1", Model: "text-embedding"},
+		},
+	}
+
+	assert.True(t, syncAssistMemOnceWithHTTPClient(context.Background(), cfg, database, client))
+	got, err := database.MemoryEmbeddings(context.Background(), db.MemoryFilter{Source: db.SourceAssistMem})
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, []float32{0.2, 0.8}, got[0].LLMEmbedding)
+	assert.Equal(t, 2, got[0].LLMEmbeddingDim)
+	assert.Equal(t, 1, called)
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }

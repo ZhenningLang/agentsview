@@ -105,7 +105,7 @@ func (s *Syncer) Sync(ctx context.Context) error {
 		return fmt.Errorf("reading memory dir: %w", err)
 	}
 	syncedAt := s.now().UTC().Format("2006-01-02T15:04:05.000Z")
-	previous := loadPreviousEmbeddings(ctx, s.writer, db.SourceCrossAgent, s.embedder)
+	previous := loadPreviousEmbeddings(ctx, s.writer, db.SourceCrossAgent)
 
 	memories := make([]db.Memory, 0, len(entries))
 	for _, e := range entries {
@@ -146,10 +146,10 @@ func (s *Syncer) Sync(ctx context.Context) error {
 }
 
 func loadPreviousEmbeddings(
-	ctx context.Context, writer Writer, source string, embedder Embedder,
+	ctx context.Context, writer Writer, source string,
 ) map[string]db.Memory {
 	reader, ok := writer.(embeddingReader)
-	if !ok || embedder == nil {
+	if !ok {
 		return nil
 	}
 	memories, err := reader.MemoryEmbeddings(ctx, db.MemoryFilter{Source: source})
@@ -166,12 +166,14 @@ func loadPreviousEmbeddings(
 func populateMemoryEmbedding(
 	ctx context.Context, embedder Embedder, m *db.Memory, previous map[string]db.Memory,
 ) error {
-	if embedder == nil {
+	// Embeddings are derived only from Body. Reuse by rel_path/source/body so
+	// frontmatter-only rewrites or lexical fallback resyncs keep safe vectors,
+	// while changed bodies drop/recompute the vector instead of keeping stale
+	// semantic input for later clustering.
+	if reusePreviousEmbedding(m, previous) {
 		return nil
 	}
-	if old, ok := previous[m.RelPath]; ok && old.Source == m.Source && old.SourceMtime == m.SourceMtime && old.Body == m.Body && len(old.LLMEmbedding) > 0 {
-		m.LLMEmbedding = old.LLMEmbedding
-		m.LLMEmbeddingDim = old.LLMEmbeddingDim
+	if embedder == nil {
 		return nil
 	}
 	vector, err := embedder.Embed(ctx, m.Body)
@@ -181,6 +183,16 @@ func populateMemoryEmbedding(
 	m.LLMEmbedding = vector
 	m.LLMEmbeddingDim = len(vector)
 	return nil
+}
+
+func reusePreviousEmbedding(m *db.Memory, previous map[string]db.Memory) bool {
+	old, ok := previous[m.RelPath]
+	if !ok || old.Source != m.Source || old.Body != m.Body || len(old.LLMEmbedding) == 0 {
+		return false
+	}
+	m.LLMEmbedding = old.LLMEmbedding
+	m.LLMEmbeddingDim = old.LLMEmbeddingDim
+	return true
 }
 
 // parseFile reads one memory note, splitting YAML frontmatter from the
