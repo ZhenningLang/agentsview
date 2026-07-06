@@ -5,6 +5,7 @@
     fetchMemory,
     fetchMemoryRaw,
     putMemory,
+    deleteMemory,
     fetchMemoryHistory,
     fetchMemoryAtCommit,
     revertMemory,
@@ -271,6 +272,7 @@
   let detailIsCCNative = $derived(detail?.source === "cc-native");
   let detailIsAssistMem = $derived(detail?.source === "assist-mem");
   let detailIsCanonical = $derived(isCanonical(detail));
+  let detailCanEdit = $derived(!detailIsCanonical);
   let detailHistoryUnsupported = $derived(
     detailIsCCNative || detailIsAssistMem || detailIsCanonical,
   );
@@ -317,6 +319,8 @@
   let editSaving = $state(false);
   let editError = $state<string | null>(null);
   let editConflict = $state(false);
+  let deleteLoading = $state(false);
+  let deleteError = $state<string | null>(null);
 
   function resetEdit() {
     editing = false;
@@ -326,6 +330,8 @@
     editSaving = false;
     editError = null;
     editConflict = false;
+    deleteLoading = false;
+    deleteError = null;
   }
 
   async function startEdit() {
@@ -382,6 +388,26 @@
     if (!activePath) return;
     editConflict = false;
     await startEdit();
+  }
+
+  async function deleteDetail() {
+    if (!activePath || !detail || !detailCanEdit) return;
+    if (!confirm(`确认删除 ${detail.title || activePath}?\nAssist Mem 会归档 ledger entry；文件来源会删除对应文件。`)) {
+      return;
+    }
+    deleteLoading = true;
+    deleteError = null;
+    try {
+      const raw = await fetchMemoryRaw(activePath);
+      await deleteMemory(activePath, raw.sha);
+      closeDetail();
+      await load();
+      await loadCatalog();
+    } catch (e) {
+      deleteError = e instanceof Error ? e.message : String(e);
+    } finally {
+      deleteLoading = false;
+    }
   }
 
   // ── History ───────────────────────────────────────────────────────────
@@ -830,8 +856,14 @@
           </div>
           <div class="modal-actions">
             {#if !editing}
-              {#if !detailIsAssistMem && !detailIsCanonical}
+              {#if detailCanEdit}
                 <button class="action-btn" onclick={startEdit}>编辑</button>
+                <button
+                  class="action-btn danger"
+                  onclick={deleteDetail}
+                  disabled={deleteLoading}
+                  >{deleteLoading ? "删除中…" : "删除"}</button
+                >
               {/if}
             {/if}
             {#if detailHistoryUnsupported}
@@ -889,6 +921,9 @@
           {:else if editError}
             <div class="state error">{editError}</div>
           {/if}
+          {#if deleteError}
+            <div class="state error">{deleteError}</div>
+          {/if}
           {#if editLoading}
             <div class="state">加载文件中…</div>
           {:else}
@@ -900,6 +935,9 @@
             ></textarea>
           {/if}
         {:else}
+          {#if deleteError}
+            <div class="state error">{deleteError}</div>
+          {/if}
           <h4>Frontmatter</h4>
           <table class="fm-grid">
             <tbody>
@@ -1458,6 +1496,14 @@
   .action-btn.primary:hover:not(:disabled) {
     background: color-mix(in srgb, var(--accent-blue) 82%, black);
     color: #fff;
+  }
+  .action-btn.danger {
+    color: #b42318;
+    border-color: color-mix(in srgb, #b42318 35%, var(--border-default));
+  }
+  .action-btn.danger:hover:not(:disabled) {
+    color: #7a271a;
+    background: color-mix(in srgb, #f04438 8%, var(--bg-surface));
   }
 
   .edit-bar {

@@ -52,7 +52,7 @@ async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
 }
 
 async function sendJSON<T>(
-  method: "PUT" | "POST",
+  method: "PUT" | "POST" | "DELETE",
   path: string,
   body: unknown,
   signal?: AbortSignal,
@@ -134,6 +134,22 @@ export function putMemory(
     "PUT",
     `/memories/${encodeMemoryPath(relPath)}`,
     { content, base_sha: baseSHA },
+    signal,
+  );
+}
+
+export function deleteMemory(
+  relPath: string,
+  baseSHA: string,
+  signal?: AbortSignal,
+): Promise<{ sha?: string }> {
+  const params = new URLSearchParams();
+  if (baseSHA) params.set("base_sha", baseSHA);
+  const qs = params.toString();
+  return sendJSON<{ sha?: string }>(
+    "DELETE",
+    `/memories/${encodeMemoryPath(relPath)}${qs ? `?${qs}` : ""}`,
+    {},
     signal,
   );
 }

@@ -20,6 +20,7 @@ func (s *Server) registerMemoryRoutes() {
 	get(s, group, "/{path}/raw",
 		"Get one memory note's raw on-disk content and sha", s.humaGetMemoryRaw)
 	put(s, group, "/{path}", "Write back one memory note", s.humaPutMemory)
+	deleteRoute(s, group, "/{path}", "Delete one memory note", s.humaDeleteMemory)
 	post(s, group, "/{path}/feedback", "Set feedback on a memory note", s.humaMemoryFeedback)
 	get(s, group, "/{path}/history",
 		"List git history for one memory note", s.humaMemoryHistory)
@@ -157,9 +158,15 @@ func (s *Server) memoryWriter() (*memory.FileWriter, error) {
 //
 // It returns 404 when the note is unknown or the relevant root is not
 // configured, so a caller can never write into the wrong source's tree.
+type memoryEditor interface {
+	Read(context.Context, string) (string, string, error)
+	Write(context.Context, memory.WriteRequest) (string, error)
+	Delete(context.Context, string, string) error
+}
+
 func (s *Server) writerForRelPath(
 	ctx context.Context, relPath string,
-) (*memory.FileWriter, string, error) {
+) (memoryEditor, string, error) {
 	m, err := s.db.GetMemory(ctx, relPath)
 	if err != nil {
 		return nil, "", apiError(http.StatusInternalServerError, err.Error())
@@ -169,7 +176,11 @@ func (s *Server) writerForRelPath(
 	}
 	switch m.Source {
 	case db.SourceAssistMem:
-		return nil, "", apiError(http.StatusBadRequest, "assist-mem ledger entries are read-only")
+		path := s.cfg.ResolveAssistMemLedger()
+		if path == "" {
+			return nil, "", apiError(http.StatusNotFound, "assist-mem ledger not configured")
+		}
+		return memory.NewLedgerEditor(path), m.Source, nil
 	case db.SourceCanonical:
 		return nil, "", apiError(http.StatusBadRequest, "canonical memory entries are read-only")
 	case db.SourceCCNative:
@@ -303,6 +314,29 @@ func (s *Server) humaPutMemory(
 	return &jsonOutput[memoryWriteOutput]{Body: memoryWriteOutput{SHA: sha}}, nil
 }
 
+type memoryDeleteInput struct {
+	Path    string `path:"path" doc:"URL-safe base64 of the memory rel_path"`
+	BaseSHA string `query:"base_sha" doc:"sha256 of the content the editor read"`
+}
+
+func (s *Server) humaDeleteMemory(
+	ctx context.Context, in *memoryDeleteInput,
+) (*jsonOutput[memoryWriteOutput], error) {
+	relPath, err := decodeMemoryPath(in.Path)
+	if err != nil {
+		return nil, err
+	}
+	w, source, err := s.writerForRelPath(ctx, relPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := w.Delete(ctx, relPath, in.BaseSHA); err != nil {
+		return nil, memoryWriteError(err)
+	}
+	s.resyncMemory(ctx, source)
+	return &jsonOutput[memoryWriteOutput]{Body: memoryWriteOutput{}}, nil
+}
+
 type memoryFeedbackInput struct {
 	Path string `path:"path" doc:"URL-safe base64 of the memory rel_path"`
 	Body struct {
@@ -337,6 +371,9 @@ func (s *Server) humaMemoryFeedback(
 	w, source, err := s.writerForRelPath(ctx, relPath)
 	if err != nil {
 		return nil, err
+	}
+	if source == db.SourceAssistMem {
+		return nil, apiError(http.StatusBadRequest, "assist-mem feedback is not supported")
 	}
 	content, sha, err := w.Read(ctx, relPath)
 	if err != nil {

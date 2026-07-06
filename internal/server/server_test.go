@@ -88,6 +88,10 @@ func withCCMemoryDir(dir string) setupOption {
 	return func(c *config.Config) { c.CCMemoryDir = dir }
 }
 
+func withAssistMemLedger(path string) setupOption {
+	return func(c *config.Config) { c.AssistMemLedger = path }
+}
+
 func withDotfilesRoot(dir string) setupOption {
 	return func(c *config.Config) { c.DotfilesRoot = dir }
 }

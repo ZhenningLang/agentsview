@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   fetchMemory: vi.fn(),
   fetchMemoryRaw: vi.fn(),
   putMemory: vi.fn(),
+  deleteMemory: vi.fn(),
   setMemoryFeedback: vi.fn(),
   fetchMemoryHistory: vi.fn(),
   fetchMemoryAtCommit: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock("../../api/memory", () => ({
   fetchMemory: mocks.fetchMemory,
   fetchMemoryRaw: mocks.fetchMemoryRaw,
   putMemory: mocks.putMemory,
+  deleteMemory: mocks.deleteMemory,
   setMemoryFeedback: mocks.setMemoryFeedback,
   fetchMemoryHistory: mocks.fetchMemoryHistory,
   fetchMemoryAtCommit: mocks.fetchMemoryAtCommit,
@@ -181,6 +183,8 @@ describe("MemoryPage", () => {
       return Promise.resolve(row ?? memory({ rel_path: relPath }));
     });
     mocks.fetchMemoryRaw.mockReset().mockResolvedValue({ content: "", sha: "sha" });
+    mocks.putMemory.mockReset().mockResolvedValue({ sha: "new-sha" });
+    mocks.deleteMemory.mockReset().mockResolvedValue({});
     mocks.fetchMemoryHistory.mockReset().mockResolvedValue([]);
     mocks.fetchStagingPool.mockReset();
     mocks.fetchMemoryQuality.mockReset().mockResolvedValue(null);
@@ -282,14 +286,17 @@ describe("MemoryPage", () => {
     expect(document.body.textContent ?? "").toContain("Use /assist-mem for long-term memory.");
   });
 
-  it("keeps canonical and assist-mem detail read-only without history actions", async () => {
+  it("allows assist-mem detail edit and delete while keeping canonical generated rows read-only", async () => {
     component = mount(MemoryPage, { target: document.body });
     await waitForText("lzn-preview entrypoint raw");
 
     document.querySelector<HTMLTableRowElement>("tr.clickable")?.click();
-    await waitForText("Assist Mem 只读");
-    expect(document.body.textContent ?? "").not.toContain("编辑");
+    await waitForText("编辑");
+    expect(document.body.textContent ?? "").toContain("删除");
     expect(document.body.textContent ?? "").not.toContain("历史");
+
+    await clickByText("编辑");
+    expect(mocks.fetchMemoryRaw).toHaveBeenCalledWith("assist-mem/lzn-entrypoint.jsonl");
 
     await clickByAriaLabel("关闭");
     await clickByText("看 canonical");
@@ -298,6 +305,21 @@ describe("MemoryPage", () => {
     await waitForText("Canonical generated/read-only");
     const text = document.body.textContent ?? "";
     expect(text).not.toContain("编辑");
+    expect(text).not.toContain("删除");
     expect(text).not.toContain("历史");
+  });
+
+  it("deletes assist-mem through the memory delete API and refreshes the list", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    component = mount(MemoryPage, { target: document.body });
+    await waitForText("lzn-preview entrypoint raw");
+
+    document.querySelector<HTMLTableRowElement>("tr.clickable")?.click();
+    await waitForText("删除");
+    await clickByText("删除");
+
+    expect(mocks.fetchMemoryRaw).toHaveBeenCalledWith("assist-mem/lzn-entrypoint.jsonl");
+    expect(mocks.deleteMemory).toHaveBeenCalledWith("assist-mem/lzn-entrypoint.jsonl", "sha");
+    expect(mocks.fetchMemories).toHaveBeenCalledWith({ source: "assist-mem" });
   });
 });

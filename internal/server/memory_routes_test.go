@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -52,6 +53,7 @@ type memoryFixture struct {
 	te           *testEnv
 	ssotDir      string
 	ccDir        string
+	ledgerPath   string
 	crossRelPath string
 	ccRelPath    string
 	crossContent string
@@ -67,6 +69,7 @@ func setupMemoryFixtureWithServerOpts(t *testing.T, srvOpts []server.Option, opt
 
 	ssotDir := t.TempDir()
 	ccDir := t.TempDir()
+	ledgerPath := filepath.Join(t.TempDir(), "entries.jsonl")
 
 	// Cross-agent note: lives directly under the SSOT root and the root is a
 	// local-only git repo (so the git-backed writer can commit/read history).
@@ -83,8 +86,10 @@ func setupMemoryFixtureWithServerOpts(t *testing.T, srvOpts []server.Option, opt
 	ccFull := filepath.Join(ccDir, filepath.FromSlash(ccRelPath))
 	require.NoError(t, os.MkdirAll(filepath.Dir(ccFull), 0o755))
 	require.NoError(t, os.WriteFile(ccFull, []byte(ccContent), 0o644))
+	ledgerLine := `{"id":"abd80440ea5d8479","created_at":"2026-07-01T13:36:35Z","project":"ordo_ai","scope":"project","source":"explicit","type":"project-fact","status":"active","text":"Assist Mem body.","evidence":"initial evidence","triggers":["lzn"]}` + "\n"
+	require.NoError(t, os.WriteFile(ledgerPath, []byte(ledgerLine), 0o644))
 
-	setupOpts := append([]setupOption{withMemoryDir(ssotDir), withCCMemoryDir(ccDir)}, opts...)
+	setupOpts := append([]setupOption{withMemoryDir(ssotDir), withCCMemoryDir(ccDir), withAssistMemLedger(ledgerPath)}, opts...)
 	te := setupWithServerOpts(t, srvOpts, setupOpts...)
 
 	// Seed the DB rows the route reads to learn each note's source.
@@ -127,6 +132,7 @@ func setupMemoryFixtureWithServerOpts(t *testing.T, srvOpts []server.Option, opt
 		te:           te,
 		ssotDir:      ssotDir,
 		ccDir:        ccDir,
+		ledgerPath:   ledgerPath,
 		crossRelPath: crossRelPath,
 		ccRelPath:    ccRelPath,
 		crossContent: crossContent,
@@ -162,6 +168,17 @@ func (te *testEnv) putMemory(
 		"/api/v1/memories/"+encodeMemPath(relPath),
 		strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:0")
+	w := httptest.NewRecorder()
+	te.handler.ServeHTTP(w, req)
+	return w
+}
+
+func (te *testEnv) deleteMemory(t *testing.T, relPath, baseSHA string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete,
+		"/api/v1/memories/"+encodeMemPath(relPath)+"?base_sha="+baseSHA,
+		nil)
 	req.Header.Set("Origin", "http://127.0.0.1:0")
 	w := httptest.NewRecorder()
 	te.handler.ServeHTTP(w, req)
@@ -259,6 +276,75 @@ func TestMemoryPut_CrossAgentLandsInSSOTRoot(t *testing.T) {
 	require.NoError(t, gerr, "git log: %s", out)
 	assert.Contains(t, string(out), fx.crossRelPath,
 		"cross-agent write must commit the local git repo")
+}
+
+func TestMemoryPut_AssistMemWritesLedgerEntry(t *testing.T) {
+	fx := setupMemoryFixture(t)
+	relPath := "assist-mem/abd80440ea5d8479.jsonl"
+
+	wRaw := fx.te.get(t, "/api/v1/memories/"+encodeMemPath(relPath)+"/raw")
+	require.Equal(t, http.StatusOK, wRaw.Code, "body: %s", wRaw.Body.String())
+	raw := decode[struct {
+		Content string `json:"content"`
+		SHA     string `json:"sha"`
+	}](t, wRaw)
+
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal([]byte(raw.Content), &entry))
+	entry["text"] = "Edited assist-mem body."
+	entry["evidence"] = "edited evidence"
+	edited, err := json.Marshal(entry)
+	require.NoError(t, err)
+
+	w := fx.te.putMemory(t, relPath, string(edited), raw.SHA)
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	ledger, err := os.ReadFile(fx.ledgerPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(ledger), "Edited assist-mem body.")
+	assert.Contains(t, string(ledger), "edited evidence")
+}
+
+func TestMemoryDelete_AssistMemArchivesLedgerEntry(t *testing.T) {
+	fx := setupMemoryFixture(t)
+	relPath := "assist-mem/abd80440ea5d8479.jsonl"
+
+	wRaw := fx.te.get(t, "/api/v1/memories/"+encodeMemPath(relPath)+"/raw")
+	require.Equal(t, http.StatusOK, wRaw.Code, "body: %s", wRaw.Body.String())
+	raw := decode[struct {
+		SHA string `json:"sha"`
+	}](t, wRaw)
+
+	w := fx.te.deleteMemory(t, relPath, raw.SHA)
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	ledger, err := os.ReadFile(fx.ledgerPath)
+	require.NoError(t, err)
+	var entry struct {
+		Status string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(ledger), &entry))
+	assert.Equal(t, "archived", entry.Status)
+}
+
+func TestMemoryDelete_CrossAgentDeletesFile(t *testing.T) {
+	fx := setupMemoryFixture(t)
+
+	w := fx.te.deleteMemory(t, fx.crossRelPath, memSHA(fx.crossContent))
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	_, err := os.Stat(filepath.Join(fx.ssotDir, fx.crossRelPath))
+	assert.True(t, os.IsNotExist(err), "cross-agent DELETE must remove the SSOT file")
+	out, gerr := exec.Command(
+		"git", "-C", fx.ssotDir, "log", "-1", "--pretty=%s").CombinedOutput()
+	require.NoError(t, gerr, "git log: %s", out)
+	assert.Contains(t, string(out), "memory: delete "+fx.crossRelPath)
+}
+
+func TestMemoryDelete_CanonicalRejected(t *testing.T) {
+	fx := setupMemoryFixture(t)
+	w := fx.te.deleteMemory(t, "canonical/entrypoint.json", "")
+	assert.Equal(t, http.StatusBadRequest, w.Code, "body: %s", w.Body.String())
 }
 
 func TestMemoryFeedbackWritesQuotedFrontmatterAndResyncs(t *testing.T) {
@@ -360,15 +446,24 @@ func TestMemoryFeedbackRejectsInvalidVoteAndStatus(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, wStatus.Code, "body: %s", wStatus.Body.String())
 }
 
-func TestAssistMemIsReadOnlyAndHasNoHistory(t *testing.T) {
+func TestAssistMemIsEditableButHasNoGitHistory(t *testing.T) {
 	fx := setupMemoryFixture(t)
 	relPath := "assist-mem/abd80440ea5d8479.jsonl"
 
 	wRaw := fx.te.get(t, "/api/v1/memories/"+encodeMemPath(relPath)+"/raw")
-	assert.Equal(t, http.StatusBadRequest, wRaw.Code)
+	require.Equal(t, http.StatusOK, wRaw.Code, "body: %s", wRaw.Body.String())
+	raw := decode[struct {
+		Content string `json:"content"`
+		SHA     string `json:"sha"`
+	}](t, wRaw)
 
-	wPut := fx.te.putMemory(t, relPath, "edited", "")
-	assert.Equal(t, http.StatusBadRequest, wPut.Code)
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal([]byte(raw.Content), &entry))
+	entry["text"] = "Editable assist-mem entry."
+	edited, err := json.Marshal(entry)
+	require.NoError(t, err)
+	wPut := fx.te.putMemory(t, relPath, string(edited), raw.SHA)
+	assert.Equal(t, http.StatusOK, wPut.Code, "body: %s", wPut.Body.String())
 
 	wHistory := fx.te.get(t, "/api/v1/memories/"+encodeMemPath(relPath)+"/history")
 	require.Equal(t, http.StatusOK, wHistory.Code, "body: %s", wHistory.Body.String())

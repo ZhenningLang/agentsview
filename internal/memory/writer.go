@@ -196,6 +196,28 @@ func (w *FileWriter) Write(ctx context.Context, req WriteRequest) (string, error
 	return sha256Hex([]byte(req.Content)), nil
 }
 
+func (w *FileWriter) Delete(ctx context.Context, relPath, baseSHA string) error {
+	full, err := w.resolvePath(relPath)
+	if err != nil {
+		return err
+	}
+	existing, readErr := os.ReadFile(full)
+	if readErr != nil {
+		return fmt.Errorf("reading current memory file: %w", readErr)
+	}
+	if baseSHA != "" && sha256Hex(existing) != baseSHA {
+		return ErrConflict
+	}
+	if err := os.Remove(full); err != nil {
+		return err
+	}
+	if !w.noGit {
+		w.rebuildIndex(ctx)
+		w.commit(ctx, fmt.Sprintf("memory: delete %s", relPath))
+	}
+	return nil
+}
+
 // atomicWrite writes data to a temp file in the same directory and renames
 // it over dst, so a reader never observes a partial file.
 func (w *FileWriter) atomicWrite(dst string, data []byte) error {
