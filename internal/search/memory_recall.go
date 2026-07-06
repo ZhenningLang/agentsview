@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"sort"
@@ -24,22 +25,25 @@ var ftsTermRE = regexp.MustCompile(`[A-Za-z][A-Za-z0-9]{2,}`)
 const ftsMaxTerms = 12
 
 type MemoryRecallRequest struct {
-	Query  string
-	TopK   int
-	Filter db.MemoryFilter
+	Query           string
+	TopK            int
+	Filter          db.MemoryFilter
+	PreferCanonical bool
 }
 
 type MemoryRecallHit struct {
-	RelPath     string  `json:"rel_path"`
-	Source      string  `json:"source"`
-	Title       string  `json:"title"`
-	Date        string  `json:"date"`
-	ProblemType string  `json:"problem_type"`
-	Status      string  `json:"status"`
-	Excerpt     string  `json:"excerpt"`
-	Score       float64 `json:"score"`
-	Semantic    float64 `json:"semantic"`
-	Lexical     float64 `json:"lexical"`
+	RelPath              string  `json:"rel_path"`
+	Source               string  `json:"source"`
+	Title                string  `json:"title"`
+	Date                 string  `json:"date"`
+	ProblemType          string  `json:"problem_type"`
+	Status               string  `json:"status"`
+	CanonicalCoveredRefs string  `json:"canonical_covered_refs"`
+	CanonicalProvenance  string  `json:"canonical_provenance"`
+	Excerpt              string  `json:"excerpt"`
+	Score                float64 `json:"score"`
+	Semantic             float64 `json:"semantic"`
+	Lexical              float64 `json:"lexical"`
 }
 
 type MemoryRecallResponse struct {
@@ -78,14 +82,27 @@ func MemoryRecall(
 	if err != nil {
 		return resp, err
 	}
+	explicitSource := strings.TrimSpace(req.Filter.Source) != ""
+	if !req.PreferCanonical && !explicitSource {
+		embedded = withoutCanonicalMemories(embedded)
+	}
 	lexicalFilter := req.Filter
 	lexicalFilter.Q = ftsQueryFromText(query)
+	if req.PreferCanonical && !explicitSource {
+		lexicalFilter.Q = query
+	}
 	var lexical []db.Memory
 	if lexicalFilter.Q != "" {
 		lexical, err = store.ListMemories(ctx, lexicalFilter)
 		if err != nil {
+			if req.PreferCanonical && !explicitSource {
+				return resp, err
+			}
 			lexical = nil
 		}
+	}
+	if !req.PreferCanonical && !explicitSource {
+		lexical = withoutCanonicalMemories(lexical)
 	}
 
 	hits := mergeMemoryRecall(queryVector, embedded, lexical)
@@ -93,12 +110,118 @@ func MemoryRecall(
 	if limit <= 0 || limit > db.MaxSearchLimit {
 		limit = db.DefaultSearchLimit
 	}
-	if len(hits) > limit {
+	if req.PreferCanonical && !explicitSource {
+		hits = suppressCoveredRawWithinLimit(hits, limit)
+	} else if len(hits) > limit {
 		hits = hits[:limit]
 	}
 	resp.Hits = hits
 	resp.Count = len(hits)
 	return resp, nil
+}
+
+func withoutCanonicalMemories(memories []db.Memory) []db.Memory {
+	out := memories[:0]
+	for _, m := range memories {
+		if m.Source == db.SourceCanonical {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+type canonicalCoveredRef struct {
+	Source  string `json:"source"`
+	RelPath string `json:"rel_path"`
+}
+
+func suppressCoveredRawWithinLimit(hits []MemoryRecallHit, limit int) []MemoryRecallHit {
+	selected := make([]MemoryRecallHit, 0, min(limit, len(hits)))
+	covered := map[string]struct{}{}
+	for _, hit := range hits {
+		if hit.Source != db.SourceCanonical {
+			if _, ok := covered[memoryRefKey(hit.Source, hit.RelPath)]; ok {
+				continue
+			}
+			if len(selected) < limit {
+				selected = append(selected, hit)
+			}
+			continue
+		}
+
+		refs := coveredRefs(hit)
+		if len(selected) < limit {
+			selected = append(selected, hit)
+		} else {
+			continue
+		}
+		if len(refs) == 0 {
+			continue
+		}
+		for _, ref := range refs {
+			covered[memoryRefKey(ref.Source, ref.RelPath)] = struct{}{}
+		}
+		selected = withoutCoveredRawHits(selected, covered)
+	}
+	return selected
+}
+
+func withoutCoveredRawHits(hits []MemoryRecallHit, covered map[string]struct{}) []MemoryRecallHit {
+	out := hits[:0]
+	for _, hit := range hits {
+		if hit.Source != db.SourceCanonical {
+			if _, ok := covered[memoryRefKey(hit.Source, hit.RelPath)]; ok {
+				continue
+			}
+		}
+		out = append(out, hit)
+	}
+	return out
+}
+
+func suppressCoveredRaw(hits []MemoryRecallHit) []MemoryRecallHit {
+	covered := map[string]struct{}{}
+	for _, hit := range hits {
+		for _, ref := range coveredRefs(hit) {
+			covered[memoryRefKey(ref.Source, ref.RelPath)] = struct{}{}
+		}
+	}
+	if len(covered) == 0 {
+		return hits
+	}
+	out := hits[:0]
+	for _, hit := range hits {
+		if hit.Source != db.SourceCanonical {
+			if _, ok := covered[memoryRefKey(hit.Source, hit.RelPath)]; ok {
+				continue
+			}
+		}
+		out = append(out, hit)
+	}
+	return out
+}
+
+func coveredRefs(hit MemoryRecallHit) []canonicalCoveredRef {
+	if hit.Source != db.SourceCanonical || strings.TrimSpace(hit.CanonicalCoveredRefs) == "" {
+		return nil
+	}
+	var refs []canonicalCoveredRef
+	if err := json.Unmarshal([]byte(hit.CanonicalCoveredRefs), &refs); err != nil {
+		return nil
+	}
+	out := refs[:0]
+	for _, ref := range refs {
+		if ref.Source == "" || ref.RelPath == "" {
+			continue
+		}
+		out = append(out, ref)
+	}
+	return out
+}
+
+func memoryRefKey(source, relPath string) string {
+	return source + "\x00" + relPath
 }
 
 // ftsQueryFromText turns an arbitrary candidate blob into a safe FTS5 MATCH
@@ -138,16 +261,16 @@ func mergeMemoryRecall(queryVector []float32, embedded, lexical []db.Memory) []M
 		hit := memoryHit(m)
 		hit.Semantic = score
 		hit.Score = score * 0.85
-		byPath[m.RelPath] = &hit
+		byPath[memoryRefKey(m.Source, m.RelPath)] = &hit
 	}
 	for idx, m := range lexical {
 		lex := 1.0 / float64(idx+1)
-		hit, ok := byPath[m.RelPath]
+		hit, ok := byPath[memoryRefKey(m.Source, m.RelPath)]
 		if !ok {
 			h := memoryHit(m)
 			h.Lexical = lex
 			h.Score = lex * 0.15
-			byPath[m.RelPath] = &h
+			byPath[memoryRefKey(m.Source, m.RelPath)] = &h
 			continue
 		}
 		hit.Lexical = lex
@@ -168,13 +291,15 @@ func mergeMemoryRecall(queryVector []float32, embedded, lexical []db.Memory) []M
 
 func memoryHit(m db.Memory) MemoryRecallHit {
 	return MemoryRecallHit{
-		RelPath:     m.RelPath,
-		Source:      m.Source,
-		Title:       fallbackTitle(m),
-		Date:        m.Date,
-		ProblemType: m.ProblemType,
-		Status:      m.Status,
-		Excerpt:     excerpt(m.Body),
+		RelPath:              m.RelPath,
+		Source:               m.Source,
+		Title:                fallbackTitle(m),
+		Date:                 m.Date,
+		ProblemType:          m.ProblemType,
+		Status:               m.Status,
+		CanonicalCoveredRefs: m.CanonicalCoveredRefs,
+		CanonicalProvenance:  m.CanonicalProvenance,
+		Excerpt:              excerpt(m.Body),
 	}
 }
 
