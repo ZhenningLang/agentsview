@@ -942,12 +942,14 @@ func startMemoryGC(ctx context.Context, cfg config.Config) {
 // when the store is not a local writer (PG/DuckDB serve modes never own the
 // SSOT files) — fail-open like the syncs above. A nil controller leaves the
 // server's enable endpoint reporting "not available", never panicking.
-// startSynthesize starts the background topic-synthesis worker: it clusters the
-// atomic notes and distills each cluster into one coherent topic note via
-// compact_memory.py. Like consolidate it is always started (when prerequisites
-// exist) so the UI toggle takes effect without a restart; SynthesizeEnabled
-// (default OFF) only sets the initial armed state. Returns nil when a writable
-// memory dir / dotfiles root is unavailable.
+// startSynthesize starts the background memory-synthesis worker. In normal
+// startup it provides a CanonicalStore, so synthesize writes raw-preserving
+// source='canonical' DB rows; the Python compact_memory path remains wired only
+// as the worker's compatibility fallback when no canonical writer is supplied.
+// Like consolidate it is always started (when prerequisites exist) so the UI
+// toggle takes effect without a restart; SynthesizeEnabled (default OFF) only
+// sets the initial armed state. Returns nil when a writable memory dir /
+// dotfiles root is unavailable.
 func startSynthesize(
 	ctx context.Context, cfg config.Config, database db.Store,
 ) *synthesize.Controller {
@@ -965,13 +967,14 @@ func startSynthesize(
 	// with the same long background timeout so a slow response never fails a cycle.
 	synthHTTP := &http.Client{Timeout: 90 * time.Second}
 	worker := &synthesize.Worker{
-		Root:   root,
-		Store:  database,
-		LLM:    llm.NewWithHTTPClient(cfg.ConsolidateLLM(), synthHTTP),
-		Script: synthesize.PythonScriptRunner{},
-		Commit: consolidate.GitCommitter{Dir: dir},
-		Resync: resync,
-		Audit:  synthesize.NewAuditLog(synthesize.AuditPath(dir)),
+		Root:           root,
+		Store:          database,
+		CanonicalStore: writer,
+		LLM:            llm.NewWithHTTPClient(cfg.ConsolidateLLM(), synthHTTP),
+		Script:         synthesize.PythonScriptRunner{},
+		Commit:         consolidate.GitCommitter{Dir: dir},
+		Resync:         resync,
+		Audit:          synthesize.NewAuditLog(synthesize.AuditPath(dir)),
 	}
 	ctrl := synthesize.NewController(worker, cfg.SynthesizeEnabled)
 	go ctrl.Run(ctx, cfg.ResolveSynthesizeInterval())

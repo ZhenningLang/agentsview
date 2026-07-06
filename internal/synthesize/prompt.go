@@ -37,6 +37,8 @@ Do NOT invent facts beyond the notes. Do NOT include secrets. Keep JSON keys and
 // topic note so the merge prompt can tell the model which inputs it must not lose.
 type promptNote struct {
 	ID      string `json:"id"`
+	Source  string `json:"source,omitempty"`
+	RelPath string `json:"rel_path,omitempty"`
 	Title   string `json:"title"`
 	Body    string `json:"body,omitempty"`
 	IsTopic bool   `json:"is_topic,omitempty"`
@@ -52,7 +54,7 @@ const maxTopicBodyRunes = 2000
 func BuildUserPrompt(cluster []SourceNote) string {
 	items := make([]promptNote, 0, len(cluster))
 	for _, n := range cluster {
-		items = append(items, promptNote{ID: n.ID, Title: n.Title, Body: truncateRunes(n.Body, maxBodyRunes)})
+		items = append(items, promptNote{ID: n.ID, Source: n.Source, RelPath: n.RelPath, Title: n.Title, Body: truncateRunes(n.Body, maxBodyRunes)})
 	}
 	data, err := json.Marshal(items)
 	if err != nil {
@@ -70,7 +72,7 @@ func BuildMergeUserPrompt(cluster []SourceNote) string {
 		if n.IsTopic {
 			limit = maxTopicBodyRunes
 		}
-		items = append(items, promptNote{ID: n.ID, Title: n.Title, Body: truncateRunes(n.Body, limit), IsTopic: n.IsTopic})
+		items = append(items, promptNote{ID: n.ID, Source: n.Source, RelPath: n.RelPath, Title: n.Title, Body: truncateRunes(n.Body, limit), IsTopic: n.IsTopic})
 	}
 	data, err := json.Marshal(items)
 	if err != nil {

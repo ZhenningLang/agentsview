@@ -23,10 +23,9 @@ const (
 	// must require near-duplicate similarity to avoid collapsing distinct-but-
 	// related topics into one. Distinct themes (cosine below this) stay separate.
 	defaultMergeSimilarity = 0.82
-	// defaultMaxClusters caps clusters folded per cycle. With the ~4h interval
-	// this comfortably keeps up with new atomics and self-clears a burst backlog
-	// over a few cycles (verified: resync between cycles excludes folded sources,
-	// so a higher cap does not re-synthesize already-folded clusters).
+	// defaultMaxClusters caps clusters planned per cycle. Canonical mode preserves
+	// raw inputs, so this is a per-run LLM/spend cap rather than a self-clearing
+	// backlog mechanism.
 	defaultMaxClusters = 20
 )
 
@@ -40,6 +39,12 @@ type NoteStore interface {
 	MemoryEmbeddings(ctx context.Context, f db.MemoryFilter) ([]db.Memory, error)
 }
 
+// CanonicalStore writes generated canonical rows. It is intentionally scoped to
+// source replacement so canonical synthesis cannot mutate raw source rows.
+type CanonicalStore interface {
+	ReplaceMemoriesBySource(ctx context.Context, source string, memories []db.Memory) error
+}
+
 // Committer commits the memory dir as a local-only git repo (never pushes).
 type Committer interface {
 	Commit(ctx context.Context, message string) error
@@ -50,20 +55,23 @@ type Resyncer interface {
 	Resync(ctx context.Context) error
 }
 
-// Worker runs one synthesis cycle: read atomic notes -> cluster -> per cluster
-// LLM distill -> compact_memory.py write -> commit -> resync -> audit.
+// Worker runs one synthesis cycle. With CanonicalStore configured it writes
+// raw-preserving source='canonical' DB rows; without it, the legacy compact
+// memory script/commit/resync path is retained for compatibility.
 type Worker struct {
 	Root            string // dotfiles root (compact_memory --root)
 	MinSimilarity   float64
 	MergeSimilarity float64
 	MaxClusters     int
+	SourceAllowlist []string
 
-	Store  NoteStore
-	LLM    LLMClient
-	Script ScriptRunner
-	Commit Committer
-	Resync Resyncer
-	Audit  *AuditLog
+	Store          NoteStore
+	CanonicalStore CanonicalStore
+	LLM            LLMClient
+	Script         ScriptRunner
+	Commit         Committer
+	Resync         Resyncer
+	Audit          *AuditLog
 
 	now func() time.Time
 }
@@ -96,9 +104,113 @@ func (w *Worker) maxClusters() int {
 	return defaultMaxClusters
 }
 
+func (w *Worker) sourceAllowlist() []string {
+	if len(w.SourceAllowlist) == 0 {
+		return []string{db.SourceAssistMem, db.SourceCCNative, db.SourceCrossAgent}
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(w.SourceAllowlist))
+	for _, source := range w.SourceAllowlist {
+		source = strings.TrimSpace(source)
+		if source == "" || source == db.SourceCanonical || seen[source] {
+			continue
+		}
+		seen[source] = true
+		out = append(out, source)
+	}
+	return out
+}
+
 // RunOnce performs a single synthesis cycle. It never panics on bad LLM output
 // or a failing script: each recoverable problem is captured in the record.
 func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
+	if w.CanonicalStore != nil {
+		return w.runCanonical(ctx, false)
+	}
+	return w.runLegacyCompact(ctx)
+}
+
+// Preview plans the canonical rows that RunOnce would write, without mutating
+// the store. It is the dry-run surface for UI/API wiring in later phases.
+func (w *Worker) Preview(ctx context.Context) (RunRecord, error) {
+	return w.runCanonical(ctx, true)
+}
+
+func (w *Worker) runCanonical(ctx context.Context, dryRun bool) (RunRecord, error) {
+	rec := RunRecord{StartedAt: w.clock().UTC().Format(time.RFC3339), DryRun: dryRun}
+	notes, sourceCounts, eligibleCounts, err := w.loadSourceNotes(ctx)
+	rec.SourceCounts = sourceCounts
+	rec.EligibleSourceCounts = eligibleCounts
+	rec.NoteCount = len(notes)
+	if err != nil {
+		rec.Error = fmt.Sprintf("reading notes: %v", err)
+		w.record(rec)
+		return rec, err
+	}
+
+	plan, err := w.planCanonical(ctx, notes)
+	if err != nil {
+		rec.Error = err.Error()
+		w.record(rec)
+		return rec, err
+	}
+	rec.ClusterCount = plan.ClusterCount
+	rec.PlannedCanonicalCount = len(plan.Rows)
+	rec.ConflictSamples = plan.ConflictSamples
+	rec.SkippedCount = plan.SkippedCount
+	rec.FailedCount = plan.FailedCount
+	rec.ConflictCount = plan.ConflictCount
+	rec.CoverageRefs = plan.CoverageRefs
+	result := "write canonical"
+	if dryRun {
+		result = "plan canonical"
+	}
+	for _, row := range plan.Rows {
+		rec.Topics = append(rec.Topics, TopicRecord{
+			Title:       row.Title,
+			SourceIDs:   sourceIDsFromRefsJSON(row.CanonicalCoveredRefs),
+			CoveredRefs: rawRefsFromJSON(row.CanonicalCoveredRefs),
+			RelPath:     row.RelPath,
+			Result:      result,
+		})
+	}
+	rec.Topics = append(rec.Topics, plan.SkippedTopics...)
+	if !dryRun && plan.FailedCount > 0 {
+		rec.Skipped = true
+		rec.Note = "canonical write skipped after failed clusters; previous canonical rows preserved"
+		w.record(rec)
+		return rec, nil
+	}
+	if len(plan.Rows) == 0 {
+		rec.Skipped = true
+		rec.Note = "no canonical clusters; canonical source cleared"
+		if !dryRun {
+			if err := w.CanonicalStore.ReplaceMemoriesBySource(ctx, db.SourceCanonical, nil); err != nil {
+				rec.Error = fmt.Sprintf("clearing canonical memories: %v", err)
+				w.record(rec)
+				return rec, err
+			}
+			rec.CanonicalWriteCount = 1
+		}
+		w.record(rec)
+		return rec, nil
+	}
+	if dryRun {
+		w.record(rec)
+		return rec, nil
+	}
+	if err := w.CanonicalStore.ReplaceMemoriesBySource(ctx, db.SourceCanonical, plan.Rows); err != nil {
+		rec.Error = fmt.Sprintf("writing canonical memories: %v", err)
+		w.record(rec)
+		return rec, err
+	}
+	rec.CanonicalWriteCount = len(plan.Rows)
+	rec.WriteCount = len(plan.Rows)
+	w.record(rec)
+	return rec, nil
+}
+
+func (w *Worker) runLegacyCompact(ctx context.Context) (RunRecord, error) {
 	rec := RunRecord{StartedAt: w.clock().UTC().Format(time.RFC3339)}
 
 	mems, err := w.Store.MemoryEmbeddings(ctx, db.MemoryFilter{Source: db.SourceCrossAgent, Status: "active"})
@@ -107,7 +219,7 @@ func (w *Worker) RunOnce(ctx context.Context) (RunRecord, error) {
 		w.record(rec)
 		return rec, err
 	}
-	notes := SourceNotesFromMemories(mems)
+	notes := legacySourceNotesFromMemories(mems)
 	rec.NoteCount = len(notes)
 
 	clusters := BuildClusters(notes, w.minSim(), w.mergeSim())

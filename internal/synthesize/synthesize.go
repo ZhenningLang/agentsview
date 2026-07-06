@@ -1,12 +1,12 @@
-// Package synthesize runs the optional topic-synthesis worker: it clusters the
-// atomic memory notes by embedding similarity and, per cluster, asks an LLM to
-// distill one coherent, structured, source-language (中文) topic note. The
-// deterministic write — citation validation, redact, INDEX rebuild, marking the
-// source atomics stale — is delegated to the dotfiles compact_memory.py SSOT,
-// mirroring how consolidate delegates to assist_consolidate.py.
+// Package synthesize runs the optional memory-synthesis worker: canonical mode
+// clusters raw memory rows by embedding similarity and writes generated
+// source='canonical' DB rows with raw provenance. The legacy compact-memory
+// script path remains available when no CanonicalStore is configured.
 package synthesize
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sort"
 	"strings"
 
@@ -18,16 +18,19 @@ import (
 // excluded from clustering so synthesis never feeds on its own output.
 const synthesizedOriginPrefix = "compact-memory:"
 
-// SourceNote is a note eligible to take part in a topic synthesis cluster — an
-// atomic note to fold, or (IsTopic) an existing topic note to merge/supersede.
-// ID is the note's filename stem (what compact_memory cites via "(because of
-// <id>)").
+// SourceNote is a memory row eligible to take part in a synthesis cluster. In
+// canonical mode ID/RawRefID are stable {source, rel_path} refs; in legacy mode
+// ID is kept as the compact_memory citation stem.
 type SourceNote struct {
-	ID        string
-	Title     string
-	Body      string
-	Project   string // origin_project of the source note ("" = general)
-	Embedding []float32
+	ID          string
+	Source      string
+	RelPath     string
+	RawRefID    string
+	Title       string
+	Body        string
+	Project     string // origin_project of the source note ("" = general)
+	ProblemType string
+	Embedding   []float32
 	// IsTopic marks a note already produced by compact_memory (origin_session
 	// starts with the synthesizedOriginPrefix). Such notes are NOT clustered as
 	// raw input; they are only merge targets/sources so the worker can fold a
@@ -35,27 +38,67 @@ type SourceNote struct {
 	IsTopic bool
 }
 
-// SourceNotesFromMemories converts active cross-agent notes into source notes.
-// It now INCLUDES already-synthesized topic notes (flagged IsTopic) so the
-// worker can merge into / dedup existing topics instead of always adding a new
-// one. It still drops INDEX and notes without an embedding (clustering needs the
-// vector).
+// SourceNotesFromMemories converts raw memory rows into source notes. It drops
+// canonical rows, INDEX, and rows without embeddings because clustering needs a
+// vector. Existing compact-memory topics are flagged IsTopic for the legacy
+// path.
 func SourceNotesFromMemories(memories []db.Memory) []SourceNote {
+	return sourceNotesFromMemories(memories, false)
+}
+
+func legacySourceNotesFromMemories(memories []db.Memory) []SourceNote {
+	return sourceNotesFromMemories(memories, true)
+}
+
+func sourceNotesFromMemories(memories []db.Memory, legacyIDs bool) []SourceNote {
 	out := make([]SourceNote, 0, len(memories))
 	for _, m := range memories {
+		if m.Source == db.SourceCanonical {
+			continue
+		}
 		// status is filtered to active at the DB query; here we only drop notes
 		// that are unsuitable as synthesis input regardless of status.
 		if len(m.LLMEmbedding) == 0 {
 			continue
 		}
-		id := strings.TrimSuffix(m.RelPath, ".md")
-		if id == "" || strings.EqualFold(id, "INDEX") {
+		source := m.Source
+		if source == "" {
+			source = db.SourceCrossAgent
+		}
+		stem := strings.TrimSuffix(m.RelPath, ".md")
+		if stem == "" || strings.EqualFold(stem, "INDEX") {
 			continue
 		}
+		id := stableRawRefID(source, m.RelPath)
+		if legacyIDs {
+			id = stem
+		}
 		isTopic := strings.HasPrefix(m.OriginSession, synthesizedOriginPrefix)
-		out = append(out, SourceNote{ID: id, Title: m.Title, Body: m.Body, Project: m.OriginProject, Embedding: m.LLMEmbedding, IsTopic: isTopic})
+		out = append(out, SourceNote{
+			ID:          id,
+			Source:      source,
+			RelPath:     m.RelPath,
+			RawRefID:    stableRawRefID(source, m.RelPath),
+			Title:       m.Title,
+			Body:        m.Body,
+			Project:     m.OriginProject,
+			ProblemType: m.ProblemType,
+			Embedding:   m.LLMEmbedding,
+			IsTopic:     isTopic,
+		})
 	}
 	return out
+}
+
+func stableRawRefID(source, relPath string) string {
+	return strings.TrimSpace(source) + ":" + strings.TrimSpace(relPath)
+}
+
+func canonicalRelPath(refIDs []string) string {
+	ids := append([]string(nil), refIDs...)
+	sort.Strings(ids)
+	sum := sha256.Sum256([]byte(strings.Join(ids, "|")))
+	return "canonical/" + hex.EncodeToString(sum[:])[:16] + ".json"
 }
 
 // ClusterNotes greedily groups notes whose embeddings are within minSim cosine

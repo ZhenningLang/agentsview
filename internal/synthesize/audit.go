@@ -17,26 +17,38 @@ func AuditPath(memoryDir string) string {
 
 // TopicRecord is one cluster's synthesis outcome within a cycle.
 type TopicRecord struct {
-	Title     string   `json:"title"`
-	SourceIDs []string `json:"source_ids"`
-	Result    string   `json:"result"` // compact_memory result line (write/skip/...)
-	Skipped   bool     `json:"skipped,omitempty"`
-	Error     string   `json:"error,omitempty"`
+	Title       string   `json:"title"`
+	SourceIDs   []string `json:"source_ids"`
+	CoveredRefs []RawRef `json:"covered_refs,omitempty"`
+	RelPath     string   `json:"rel_path,omitempty"`
+	Result      string   `json:"result"` // compact_memory result line (write/skip/...)
+	Skipped     bool     `json:"skipped,omitempty"`
+	Error       string   `json:"error,omitempty"`
 }
 
 // RunRecord is one synthesis cycle's audit entry.
 type RunRecord struct {
-	StartedAt    string        `json:"started_at"`
-	FinishedAt   string        `json:"finished_at,omitempty"`
-	NoteCount    int           `json:"note_count"`
-	ClusterCount int           `json:"cluster_count"`
-	WriteCount   int           `json:"write_count"`
-	Topics       []TopicRecord `json:"topics,omitempty"`
-	Committed    bool          `json:"committed"`
-	Resynced     bool          `json:"resynced"`
-	Skipped      bool          `json:"skipped,omitempty"`
-	Note         string        `json:"note,omitempty"`
-	Error        string        `json:"error,omitempty"`
+	StartedAt             string         `json:"started_at"`
+	FinishedAt            string         `json:"finished_at,omitempty"`
+	NoteCount             int            `json:"note_count"`
+	SourceCounts          map[string]int `json:"source_counts,omitempty"`
+	EligibleSourceCounts  map[string]int `json:"eligible_source_counts,omitempty"`
+	ClusterCount          int            `json:"cluster_count"`
+	PlannedCanonicalCount int            `json:"planned_canonical_count,omitempty"`
+	CanonicalWriteCount   int            `json:"canonical_write_count,omitempty"`
+	SkippedCount          int            `json:"skipped_count,omitempty"`
+	FailedCount           int            `json:"failed_count,omitempty"`
+	ConflictCount         int            `json:"conflict_count,omitempty"`
+	WriteCount            int            `json:"write_count"`
+	ConflictSamples       []string       `json:"conflict_samples,omitempty"`
+	CoverageRefs          []RawRef       `json:"coverage_refs,omitempty"`
+	DryRun                bool           `json:"dry_run,omitempty"`
+	Topics                []TopicRecord  `json:"topics,omitempty"`
+	Committed             bool           `json:"committed"`
+	Resynced              bool           `json:"resynced"`
+	Skipped               bool           `json:"skipped,omitempty"`
+	Note                  string         `json:"note,omitempty"`
+	Error                 string         `json:"error,omitempty"`
 }
 
 // AuditLog is an append-only jsonl writer/reader for synthesis cycles.
