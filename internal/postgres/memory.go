@@ -16,7 +16,8 @@ import (
 
 const pgMemoryCols = `rel_path, source, title, date, problem_type, type, status,
 	origin_session, origin_project, feedback_vote, feedback_comment,
-	feedback_status, body, body_tokens, source_mtime, synced_at`
+	feedback_status, canonical_covered_refs, canonical_provenance, body,
+	body_tokens, source_mtime, synced_at`
 
 const pgMemoryEmbeddingCols = `llm_embedding, llm_embedding_dim`
 
@@ -154,8 +155,9 @@ func scanPGMemory(
 	if err := rows.Scan(
 		&m.RelPath, &m.Source, &m.Title, &m.Date, &m.ProblemType, &m.Type,
 		&m.Status, &m.OriginSession, &m.OriginProject, &m.FeedbackVote,
-		&m.FeedbackComment, &m.FeedbackStatus, &m.Body, &m.BodyTokens,
-		&m.SourceMtime, &m.SyncedAt,
+		&m.FeedbackComment, &m.FeedbackStatus, &m.CanonicalCoveredRefs,
+		&m.CanonicalProvenance, &m.Body, &m.BodyTokens, &m.SourceMtime,
+		&m.SyncedAt,
 	); err != nil {
 		return db.Memory{}, err
 	}
@@ -175,8 +177,9 @@ func scanMemoryEmbeddings(rows interface {
 		if err := rows.Scan(
 			&m.RelPath, &m.Source, &m.Title, &m.Date, &m.ProblemType, &m.Type,
 			&m.Status, &m.OriginSession, &m.OriginProject, &m.FeedbackVote,
-			&m.FeedbackComment, &m.FeedbackStatus, &m.Body, &m.BodyTokens,
-			&m.SourceMtime, &m.SyncedAt, &data, &dim,
+			&m.FeedbackComment, &m.FeedbackStatus, &m.CanonicalCoveredRefs,
+			&m.CanonicalProvenance, &m.Body, &m.BodyTokens, &m.SourceMtime,
+			&m.SyncedAt, &data, &dim,
 		); err != nil {
 			return nil, err
 		}

@@ -12,7 +12,7 @@ import (
 
 // SchemaVersion is the version of the DuckDB mirror schema created by
 // EnsureSchema. Increment it when a non-optional DuckDB column/table is added.
-const SchemaVersion = 4
+const SchemaVersion = 5
 
 const schemaVersionMetadataKey = "agentsview_schema_version"
 const defaultRepairMetadataKey = "agentsview_default_repair_v1"
@@ -576,6 +576,12 @@ var mirrorTables = []tableSpec{
 			type TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT '',
 			origin_session TEXT NOT NULL DEFAULT '',
+			origin_project TEXT NOT NULL DEFAULT '',
+			feedback_vote TEXT NOT NULL DEFAULT '',
+			feedback_comment TEXT NOT NULL DEFAULT '',
+			feedback_status TEXT NOT NULL DEFAULT '',
+			canonical_covered_refs TEXT NOT NULL DEFAULT '',
+			canonical_provenance TEXT NOT NULL DEFAULT '',
 			body TEXT NOT NULL DEFAULT '',
 			body_tokens INTEGER NOT NULL DEFAULT 0,
 			source_mtime BIGINT NOT NULL DEFAULT 0,
@@ -592,6 +598,12 @@ var mirrorTables = []tableSpec{
 			{"type", "type TEXT NOT NULL DEFAULT ''"},
 			{"status", "status TEXT NOT NULL DEFAULT ''"},
 			{"origin_session", "origin_session TEXT NOT NULL DEFAULT ''"},
+			{"origin_project", "origin_project TEXT NOT NULL DEFAULT ''"},
+			{"feedback_vote", "feedback_vote TEXT NOT NULL DEFAULT ''"},
+			{"feedback_comment", "feedback_comment TEXT NOT NULL DEFAULT ''"},
+			{"feedback_status", "feedback_status TEXT NOT NULL DEFAULT ''"},
+			{"canonical_covered_refs", "canonical_covered_refs TEXT NOT NULL DEFAULT ''"},
+			{"canonical_provenance", "canonical_provenance TEXT NOT NULL DEFAULT ''"},
 			{"body", "body TEXT NOT NULL DEFAULT ''"},
 			{"body_tokens", "body_tokens INTEGER NOT NULL DEFAULT 0"},
 			{"source_mtime", "source_mtime BIGINT NOT NULL DEFAULT 0"},
@@ -604,6 +616,9 @@ var mirrorTables = []tableSpec{
 			"CREATE INDEX IF NOT EXISTS idx_memory_type ON memory(type)",
 			"CREATE INDEX IF NOT EXISTS idx_memory_status ON memory(status)",
 			"CREATE INDEX IF NOT EXISTS idx_memory_source ON memory(source)",
+			"CREATE INDEX IF NOT EXISTS idx_memory_origin_project ON memory(origin_project)",
+			"CREATE INDEX IF NOT EXISTS idx_memory_feedback_vote ON memory(feedback_vote)",
+			"CREATE INDEX IF NOT EXISTS idx_memory_feedback_status ON memory(feedback_status)",
 		},
 	},
 	{

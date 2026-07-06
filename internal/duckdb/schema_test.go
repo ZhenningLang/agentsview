@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -59,7 +60,7 @@ func TestEnsureSchemaCreatesRequiredMirrorTables(t *testing.T) {
 		`SELECT value FROM sync_metadata WHERE key = ?`,
 		schemaVersionMetadataKey,
 	).Scan(&version))
-	assert.Equal(t, "4", version)
+	assert.Equal(t, strconv.Itoa(SchemaVersion), version)
 	var repaired string
 	require.NoError(t, db.QueryRowContext(ctx,
 		`SELECT value FROM sync_metadata WHERE key = ?`,

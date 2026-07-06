@@ -101,6 +101,112 @@ func TestMemoryEmbeddingsReturnsLocalVectors(t *testing.T) {
 	assert.Equal(t, []float32{1, 0}, embeddings[1].LLMEmbedding)
 }
 
+func TestCanonicalMemoryProvenanceRoundTrips(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	raw := Memory{
+		RelPath: "assist-mem/raw.jsonl", Source: SourceAssistMem,
+		Title: "Raw", Date: "2026-07-01", Body: "raw body",
+		SyncedAt: "2026-07-01T00:00:00.000Z",
+	}
+	canonical := Memory{
+		RelPath: "canonical/entrypoint.json", Source: SourceCanonical,
+		Title: "Entrypoint", Date: "2026-07-02", Status: "active",
+		CanonicalCoveredRefs: `[{"source":"assist-mem","rel_path":"assist-mem/raw.jsonl"}]`,
+		CanonicalProvenance:  `{"topic":"entrypoint","sources":["assist-mem"]}`,
+		Body:                 "canonical body",
+		LLMEmbedding:         []float32{1, 0},
+		SyncedAt:             "2026-07-02T00:00:00.000Z",
+	}
+	require.NoError(t, d.ReplaceMemoriesBySource(ctx, SourceAssistMem, []Memory{raw}))
+	require.NoError(t, d.ReplaceMemoriesBySource(ctx, SourceCanonical, []Memory{canonical}))
+
+	all, err := d.ListMemories(ctx, MemoryFilter{})
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+	canonicalRows, err := d.ListMemories(ctx, MemoryFilter{Source: SourceCanonical})
+	require.NoError(t, err)
+	require.Len(t, canonicalRows, 1)
+	assert.Equal(t, canonical.CanonicalCoveredRefs, canonicalRows[0].CanonicalCoveredRefs)
+	assert.Equal(t, canonical.CanonicalProvenance, canonicalRows[0].CanonicalProvenance)
+
+	fetched, err := d.GetMemory(ctx, canonical.RelPath)
+	require.NoError(t, err)
+	require.NotNil(t, fetched)
+	assert.Equal(t, canonical.CanonicalCoveredRefs, fetched.CanonicalCoveredRefs)
+	assert.Equal(t, canonical.CanonicalProvenance, fetched.CanonicalProvenance)
+
+	embeddings, err := d.MemoryEmbeddings(ctx, MemoryFilter{Source: SourceCanonical})
+	require.NoError(t, err)
+	require.Len(t, embeddings, 1)
+	assert.Equal(t, canonical.CanonicalCoveredRefs, embeddings[0].CanonicalCoveredRefs)
+	assert.Equal(t, canonical.CanonicalProvenance, embeddings[0].CanonicalProvenance)
+	assert.Equal(t, []float32{1, 0}, embeddings[0].LLMEmbedding)
+
+	rawRows, err := d.ListMemories(ctx, MemoryFilter{Source: SourceAssistMem})
+	require.NoError(t, err)
+	require.Len(t, rawRows, 1)
+	assert.Empty(t, rawRows[0].CanonicalCoveredRefs)
+	assert.Empty(t, rawRows[0].CanonicalProvenance)
+}
+
+func TestReplaceMemoriesBySourceCanonicalRollbackLeavesRawRows(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	for source, relPath := range map[string]string{
+		SourceCrossAgent: "cross.md",
+		SourceAssistMem:  "assist-mem/raw.jsonl",
+		SourceCCNative:   "proj/memory/raw.md",
+		SourceCanonical:  "canonical/current.json",
+	} {
+		require.NoError(t, d.ReplaceMemoriesBySource(ctx, source, []Memory{{
+			RelPath: relPath, Source: source, Title: source,
+			Date: "2026-07-01", SyncedAt: "2026-07-01T00:00:00.000Z",
+		}}))
+	}
+
+	require.NoError(t, d.ReplaceMemoriesBySource(ctx, SourceCanonical, nil))
+
+	canonical, err := d.ListMemories(ctx, MemoryFilter{Source: SourceCanonical})
+	require.NoError(t, err)
+	assert.Empty(t, canonical)
+	for _, source := range []string{SourceCrossAgent, SourceAssistMem, SourceCCNative} {
+		rows, err := d.ListMemories(ctx, MemoryFilter{Source: source})
+		require.NoError(t, err)
+		require.Len(t, rows, 1, source)
+		assert.Equal(t, source, rows[0].Source)
+	}
+}
+
+func TestOpenMigratesLegacyMemoryCanonicalColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-memory-canonical.db")
+	d, err := Open(path)
+	require.NoError(t, err)
+	require.NoError(t, d.ReplaceMemories(context.Background(), sampleMemories()))
+	require.NoError(t, d.Close())
+
+	conn, err := sql.Open("sqlite3", makeDSN(path, false))
+	require.NoError(t, err)
+	_, err = conn.Exec("ALTER TABLE memory DROP COLUMN canonical_covered_refs")
+	require.NoError(t, err)
+	_, err = conn.Exec("ALTER TABLE memory DROP COLUMN canonical_provenance")
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+
+	d, err = Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	cols := sqliteLLMTableColumns(t, d, "memory")
+	assert.Equal(t, sqliteLLMColumnInfo{Type: "TEXT", NotNull: true, DefaultValue: "''"}, cols["canonical_covered_refs"])
+	assert.Equal(t, sqliteLLMColumnInfo{Type: "TEXT", NotNull: true, DefaultValue: "''"}, cols["canonical_provenance"])
+
+	got, err := d.ListMemories(context.Background(), MemoryFilter{})
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Empty(t, got[0].CanonicalCoveredRefs)
+	assert.Empty(t, got[0].CanonicalProvenance)
+}
+
 func TestReplaceAndListMemories(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()

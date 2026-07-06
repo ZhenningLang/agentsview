@@ -459,6 +459,8 @@ CREATE TABLE IF NOT EXISTS memory (
     feedback_vote TEXT NOT NULL DEFAULT '',
     feedback_comment TEXT NOT NULL DEFAULT '',
     feedback_status TEXT NOT NULL DEFAULT '',
+    canonical_covered_refs TEXT NOT NULL DEFAULT '',
+    canonical_provenance TEXT NOT NULL DEFAULT '',
     body           TEXT NOT NULL DEFAULT '',
     body_tokens    INTEGER NOT NULL DEFAULT 0,
     source_mtime   INTEGER NOT NULL DEFAULT 0,

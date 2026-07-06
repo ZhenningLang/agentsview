@@ -799,6 +799,16 @@ func (db *DB) migrateColumns() error {
 			"ALTER TABLE memory ADD COLUMN feedback_status TEXT NOT NULL " +
 				"DEFAULT ''",
 		},
+		{
+			"memory", "canonical_covered_refs",
+			"ALTER TABLE memory ADD COLUMN canonical_covered_refs TEXT NOT NULL " +
+				"DEFAULT ''",
+		},
+		{
+			"memory", "canonical_provenance",
+			"ALTER TABLE memory ADD COLUMN canonical_provenance TEXT NOT NULL " +
+				"DEFAULT ''",
+		},
 	}
 
 	for _, m := range migrations {

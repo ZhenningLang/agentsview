@@ -15,7 +15,9 @@ import (
 // ILIKE substring search (same dialect the message search uses).
 
 const duckMemoryCols = `rel_path, source, title, date, problem_type, type, status,
-	origin_session, body, body_tokens, source_mtime, synced_at`
+	origin_session, origin_project, feedback_vote, feedback_comment,
+	feedback_status, canonical_covered_refs, canonical_provenance, body,
+	body_tokens, source_mtime, synced_at`
 
 const duckMemoryEmbeddingCols = `llm_embedding, llm_embedding_dim`
 
@@ -43,6 +45,18 @@ func (s *Store) ListMemories(
 	if f.OriginSession != "" {
 		preds = append(preds, "origin_session = ?")
 		args = append(args, f.OriginSession)
+	}
+	if f.OriginProject != "" {
+		preds = append(preds, "origin_project = ?")
+		args = append(args, f.OriginProject)
+	}
+	if f.FeedbackVote != "" {
+		preds = append(preds, "feedback_vote = ?")
+		args = append(args, f.FeedbackVote)
+	}
+	if f.FeedbackStatus != "" {
+		preds = append(preds, "feedback_status = ?")
+		args = append(args, f.FeedbackStatus)
 	}
 	if f.Q != "" {
 		preds = append(preds, "body ILIKE '%' || ? || '%'")
@@ -114,6 +128,18 @@ func (s *Store) MemoryEmbeddings(
 		preds = append(preds, "origin_session = ?")
 		args = append(args, f.OriginSession)
 	}
+	if f.OriginProject != "" {
+		preds = append(preds, "origin_project = ?")
+		args = append(args, f.OriginProject)
+	}
+	if f.FeedbackVote != "" {
+		preds = append(preds, "feedback_vote = ?")
+		args = append(args, f.FeedbackVote)
+	}
+	if f.FeedbackStatus != "" {
+		preds = append(preds, "feedback_status = ?")
+		args = append(args, f.FeedbackStatus)
+	}
 	if f.Q != "" {
 		preds = append(preds, "body ILIKE '%' || ? || '%'")
 		args = append(args, f.Q)
@@ -142,8 +168,10 @@ func scanDuckMemory(
 	var m db.Memory
 	if err := rows.Scan(
 		&m.RelPath, &m.Source, &m.Title, &m.Date, &m.ProblemType, &m.Type,
-		&m.Status, &m.OriginSession, &m.Body, &m.BodyTokens,
-		&m.SourceMtime, &m.SyncedAt,
+		&m.Status, &m.OriginSession, &m.OriginProject, &m.FeedbackVote,
+		&m.FeedbackComment, &m.FeedbackStatus, &m.CanonicalCoveredRefs,
+		&m.CanonicalProvenance, &m.Body, &m.BodyTokens, &m.SourceMtime,
+		&m.SyncedAt,
 	); err != nil {
 		return db.Memory{}, err
 	}
@@ -162,8 +190,10 @@ func scanDuckMemoryEmbeddings(rows interface {
 		var dim int
 		if err := rows.Scan(
 			&m.RelPath, &m.Source, &m.Title, &m.Date, &m.ProblemType, &m.Type,
-			&m.Status, &m.OriginSession, &m.Body, &m.BodyTokens,
-			&m.SourceMtime, &m.SyncedAt, &data, &dim,
+			&m.Status, &m.OriginSession, &m.OriginProject, &m.FeedbackVote,
+			&m.FeedbackComment, &m.FeedbackStatus, &m.CanonicalCoveredRefs,
+			&m.CanonicalProvenance, &m.Body, &m.BodyTokens, &m.SourceMtime,
+			&m.SyncedAt, &data, &dim,
 		); err != nil {
 			return nil, err
 		}

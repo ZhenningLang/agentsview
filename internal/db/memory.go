@@ -9,10 +9,10 @@ import (
 )
 
 // Memory source kinds. A memory note originates from the legacy cross-agent
-// SSOT (~/.dotfiles/memory/user), the explicit assist-mem ledger, or CC-native
-// auto-memory directories (~/.claude/projects/<project>/memory). The source
-// column lets the single memory table hold multiple data sources and the UI
-// filter between them.
+// SSOT (~/.dotfiles/memory/user), the explicit assist-mem ledger, CC-native
+// auto-memory directories (~/.claude/projects/<project>/memory), or generated
+// canonical rows. The source column lets the single memory table hold multiple
+// data sources and the UI filter between them.
 const (
 	// SourceCrossAgent is the existing cross-agent user-memory SSOT.
 	SourceCrossAgent = "cross-agent"
@@ -20,6 +20,8 @@ const (
 	SourceAssistMem = "assist-mem"
 	// SourceCCNative is CC-native auto-memory scanned across project dirs.
 	SourceCCNative = "cc-native"
+	// SourceCanonical is generated current-memory output with raw provenance.
+	SourceCanonical = "canonical"
 )
 
 // Memory is one user-memory note: a markdown file under a memory data source
@@ -40,22 +42,24 @@ type Memory struct {
 	OriginSession string `json:"origin_session"`
 	// OriginProject is the project a note belongs to ("" = the General bucket:
 	// user-global or cross-project notes). It drives the /memories project facet.
-	OriginProject   string    `json:"origin_project"`
-	FeedbackVote    string    `json:"feedback_vote"`
-	FeedbackComment string    `json:"feedback_comment"`
-	FeedbackStatus  string    `json:"feedback_status"`
-	Body            string    `json:"body,omitempty"`
-	BodyTokens      int       `json:"body_tokens"`
-	SourceMtime     int64     `json:"source_mtime"`
-	SyncedAt        string    `json:"synced_at"`
-	LLMEmbedding    []float32 `json:"-"`
-	LLMEmbeddingDim int       `json:"-"`
+	OriginProject        string    `json:"origin_project"`
+	FeedbackVote         string    `json:"feedback_vote"`
+	FeedbackComment      string    `json:"feedback_comment"`
+	FeedbackStatus       string    `json:"feedback_status"`
+	CanonicalCoveredRefs string    `json:"canonical_covered_refs"`
+	CanonicalProvenance  string    `json:"canonical_provenance"`
+	Body                 string    `json:"body,omitempty"`
+	BodyTokens           int       `json:"body_tokens"`
+	SourceMtime          int64     `json:"source_mtime"`
+	SyncedAt             string    `json:"synced_at"`
+	LLMEmbedding         []float32 `json:"-"`
+	LLMEmbeddingDim      int       `json:"-"`
 }
 
 // MemoryFilter narrows a memory listing. Empty fields = no filter. Q is a
 // full-text query over the note body (FTS5 MATCH on SQLite, dialect-
 // specific elsewhere). Source filters by data source (cross-agent vs
-// cc-native).
+// cross-agent, assist-mem, cc-native, or canonical).
 type MemoryFilter struct {
 	Source         string
 	ProblemType    string
@@ -72,7 +76,8 @@ type MemoryFilter struct {
 // every backend's scan helper.
 const memoryCols = `rel_path, source, title, date, problem_type, type, status,
 	origin_session, origin_project, feedback_vote, feedback_comment,
-	feedback_status, body, body_tokens, source_mtime, synced_at`
+	feedback_status, canonical_covered_refs, canonical_provenance, body,
+	body_tokens, source_mtime, synced_at`
 
 const memoryEmbeddingCols = `llm_embedding, llm_embedding_dim`
 
@@ -81,8 +86,9 @@ func scanMemory(rows *sql.Rows) (Memory, error) {
 	if err := rows.Scan(
 		&m.RelPath, &m.Source, &m.Title, &m.Date, &m.ProblemType, &m.Type,
 		&m.Status, &m.OriginSession, &m.OriginProject, &m.FeedbackVote,
-		&m.FeedbackComment, &m.FeedbackStatus, &m.Body, &m.BodyTokens,
-		&m.SourceMtime, &m.SyncedAt,
+		&m.FeedbackComment, &m.FeedbackStatus, &m.CanonicalCoveredRefs,
+		&m.CanonicalProvenance, &m.Body, &m.BodyTokens, &m.SourceMtime,
+		&m.SyncedAt,
 	); err != nil {
 		return Memory{}, err
 	}
@@ -102,8 +108,9 @@ func scanMemoryWithEmbedding(rows interface {
 		if err := rows.Scan(
 			&m.RelPath, &m.Source, &m.Title, &m.Date, &m.ProblemType, &m.Type,
 			&m.Status, &m.OriginSession, &m.OriginProject, &m.FeedbackVote,
-			&m.FeedbackComment, &m.FeedbackStatus, &m.Body, &m.BodyTokens,
-			&m.SourceMtime, &m.SyncedAt, &data, &dim,
+			&m.FeedbackComment, &m.FeedbackStatus, &m.CanonicalCoveredRefs,
+			&m.CanonicalProvenance, &m.Body, &m.BodyTokens, &m.SourceMtime,
+			&m.SyncedAt, &data, &dim,
 		); err != nil {
 			return nil, err
 		}
@@ -332,7 +339,7 @@ func replaceMemoriesTx(
 	}
 	cols := strings.ReplaceAll(memoryCols+", "+memoryEmbeddingCols, "\n\t", " ")
 	stmt, err := tx.PrepareContext(ctx, `INSERT INTO memory (`+cols+`)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 	if err != nil {
 		return fmt.Errorf("prepare memory insert: %w", err)
 	}
@@ -351,8 +358,9 @@ func replaceMemoriesTx(
 		if _, err := stmt.ExecContext(ctx,
 			m.RelPath, m.Source, m.Title, m.Date, m.ProblemType, m.Type,
 			m.Status, m.OriginSession, m.OriginProject, m.FeedbackVote,
-			m.FeedbackComment, m.FeedbackStatus, m.Body, m.BodyTokens,
-			m.SourceMtime, m.SyncedAt, encoded, dim,
+			m.FeedbackComment, m.FeedbackStatus, m.CanonicalCoveredRefs,
+			m.CanonicalProvenance, m.Body, m.BodyTokens, m.SourceMtime,
+			m.SyncedAt, encoded, dim,
 		); err != nil {
 			return fmt.Errorf("insert memory %q: %w", m.RelPath, err)
 		}

@@ -29,6 +29,7 @@ type schemaProbeState struct {
 	mu                  sync.Mutex
 	informationQueries  int
 	execs               []string
+	queries             []string
 	alterTableExecs     []string
 	currentSchema       string
 	existingColumnNames map[string][]string
@@ -110,6 +111,9 @@ func (c *schemaProbeConn) ExecContext(
 func (c *schemaProbeConn) QueryContext(
 	_ context.Context, query string, args []driver.NamedValue,
 ) (driver.Rows, error) {
+	c.state.mu.Lock()
+	c.state.queries = append(c.state.queries, query)
+	c.state.mu.Unlock()
 	normalized := strings.ToLower(query)
 	switch {
 	case strings.Contains(normalized, "information_schema.columns"):
@@ -190,6 +194,12 @@ func (s *schemaProbeState) executedSQL() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return strings.Join(s.execs, "\n")
+}
+
+func (s *schemaProbeState) queriedSQL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return strings.Join(s.queries, "\n")
 }
 
 func TestEnsureSchemaBatchesColumnIntrospection(t *testing.T) {
@@ -292,6 +302,28 @@ func TestEnsureSchemaCreatesMemoryFacetIndexesAfterLateColumns(t *testing.T) {
 	assertMemoryIndexAfterAlter(t, sql, "origin_project", "idx_memory_origin_project")
 	assertMemoryIndexAfterAlter(t, sql, "feedback_vote", "idx_memory_feedback_vote")
 	assertMemoryIndexAfterAlter(t, sql, "feedback_status", "idx_memory_feedback_status")
+}
+
+func TestEnsureSchemaAddsCanonicalMemoryColumns(t *testing.T) {
+	existing := schemaProbeExistingColumnsExceptMemoryFacets()
+	db, state := newSchemaProbeDB(t, existing)
+
+	require.NoError(t, EnsureSchema(context.Background(), db, "agentsview"))
+
+	sql := state.executedSQL()
+	assert.Contains(t, sql, "canonical_covered_refs TEXT NOT NULL DEFAULT ''")
+	assert.Contains(t, sql, "canonical_provenance TEXT NOT NULL DEFAULT ''")
+}
+
+func TestCheckSchemaCompatProbesMemoryColumns(t *testing.T) {
+	db, state := newSchemaProbeDB(t, nil)
+
+	require.NoError(t, CheckSchemaCompat(context.Background(), db))
+
+	sql := state.queriedSQL()
+	assert.Contains(t, sql, "canonical_covered_refs")
+	assert.Contains(t, sql, "canonical_provenance")
+	assert.Contains(t, sql, "origin_project")
 }
 
 func schemaProbeExistingColumnsExceptMemoryFacets() map[string][]string {

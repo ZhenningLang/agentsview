@@ -28,7 +28,7 @@ func (s *Server) registerMemoryRoutes() {
 }
 
 type memoriesListInput struct {
-	Source         string `query:"source" doc:"Filter by data source (assist-mem | cross-agent | cc-native)"`
+	Source         string `query:"source" doc:"Filter by data source (assist-mem | cross-agent | cc-native | canonical)"`
 	ProblemType    string `query:"problem_type" doc:"Filter by frontmatter problem_type"`
 	Type           string `query:"type" doc:"Filter by frontmatter type"`
 	Status         string `query:"status" doc:"Filter by frontmatter status"`
@@ -168,6 +168,8 @@ func (s *Server) writerForRelPath(
 	switch m.Source {
 	case db.SourceAssistMem:
 		return nil, "", apiError(http.StatusBadRequest, "assist-mem ledger entries are read-only")
+	case db.SourceCanonical:
+		return nil, "", apiError(http.StatusBadRequest, "canonical memory entries are read-only")
 	case db.SourceCCNative:
 		root := s.cfg.ResolveCCMemoryDir()
 		if root == "" {
@@ -195,7 +197,9 @@ func (s *Server) isHistoryUnsupportedMemory(ctx context.Context, relPath string)
 	if m == nil {
 		return false, apiError(http.StatusNotFound, "memory not found")
 	}
-	return m.Source == db.SourceCCNative || m.Source == db.SourceAssistMem, nil
+	return m.Source == db.SourceCCNative ||
+		m.Source == db.SourceAssistMem ||
+		m.Source == db.SourceCanonical, nil
 }
 
 // resyncMemory best-effort refreshes the DB cache from disk after a write.

@@ -318,6 +318,8 @@ CREATE TABLE IF NOT EXISTS memory (
     feedback_vote TEXT NOT NULL DEFAULT '',
     feedback_comment TEXT NOT NULL DEFAULT '',
     feedback_status TEXT NOT NULL DEFAULT '',
+    canonical_covered_refs TEXT NOT NULL DEFAULT '',
+    canonical_provenance TEXT NOT NULL DEFAULT '',
     body           TEXT NOT NULL DEFAULT '',
     body_tokens    INTEGER NOT NULL DEFAULT 0,
     source_mtime   BIGINT NOT NULL DEFAULT 0,
@@ -752,6 +754,16 @@ func EnsureSchema(
 			"memory", "feedback_status",
 			`feedback_status TEXT NOT NULL DEFAULT ''`,
 			"adding memory.feedback_status",
+		},
+		{
+			"memory", "canonical_covered_refs",
+			`canonical_covered_refs TEXT NOT NULL DEFAULT ''`,
+			"adding memory.canonical_covered_refs",
+		},
+		{
+			"memory", "canonical_provenance",
+			`canonical_provenance TEXT NOT NULL DEFAULT ''`,
+			"adding memory.canonical_provenance",
 		},
 	}
 	step = time.Now()
@@ -1664,6 +1676,18 @@ func CheckSchemaCompat(
 		 FROM skill_health LIMIT 0`)
 	if err != nil {
 		return fmt.Errorf("skill_health table missing required columns: %w", err)
+	}
+	rows.Close()
+
+	rows, err = db.QueryContext(ctx,
+		`SELECT origin_project, feedback_vote, feedback_comment,
+			feedback_status, canonical_covered_refs, canonical_provenance
+		 FROM memory LIMIT 0`)
+	if err != nil {
+		return fmt.Errorf(
+			"memory table missing required columns: %w",
+			err,
+		)
 	}
 	rows.Close()
 	return nil

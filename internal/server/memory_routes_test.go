@@ -102,6 +102,16 @@ func setupMemoryFixture(t *testing.T) *memoryFixture {
 			Date:    "2026-07-01",
 			Status:  "active",
 		}}))
+	require.NoError(t, te.db.ReplaceMemoriesBySource(
+		ctx, db.SourceCanonical, []db.Memory{{
+			RelPath:              "canonical/entrypoint.json",
+			Source:               db.SourceCanonical,
+			Title:                "Canonical Entrypoint",
+			Date:                 "2026-07-02",
+			Status:               "active",
+			CanonicalCoveredRefs: `[{"source":"assist-mem","rel_path":"assist-mem/abd80440ea5d8479.jsonl"}]`,
+			CanonicalProvenance:  `{"topic":"entrypoint"}`,
+		}}))
 
 	return &memoryFixture{
 		te:           te,
@@ -293,6 +303,27 @@ func TestAssistMemIsReadOnlyAndHasNoHistory(t *testing.T) {
 	assert.Empty(t, got.History)
 }
 
+func TestCanonicalMemoryIsReadOnlyAndHasNoHistory(t *testing.T) {
+	fx := setupMemoryFixture(t)
+	relPath := "canonical/entrypoint.json"
+
+	wRaw := fx.te.get(t, "/api/v1/memories/"+encodeMemPath(relPath)+"/raw")
+	assert.Equal(t, http.StatusBadRequest, wRaw.Code)
+
+	wPut := fx.te.putMemory(t, relPath, "edited", "")
+	assert.Equal(t, http.StatusBadRequest, wPut.Code)
+
+	wFeedback := fx.te.postMemoryFeedback(t, relPath, "up", "", "handled")
+	assert.Equal(t, http.StatusBadRequest, wFeedback.Code)
+
+	wHistory := fx.te.get(t, "/api/v1/memories/"+encodeMemPath(relPath)+"/history")
+	require.Equal(t, http.StatusOK, wHistory.Code, "body: %s", wHistory.Body.String())
+	got := decode[struct {
+		History []any `json:"history"`
+	}](t, wHistory)
+	assert.Empty(t, got.History)
+}
+
 func TestMemoryListFiltersAssistMemSource(t *testing.T) {
 	fx := setupMemoryFixture(t)
 
@@ -305,6 +336,22 @@ func TestMemoryListFiltersAssistMemSource(t *testing.T) {
 	require.Len(t, got.Memories, 1)
 	assert.Equal(t, db.SourceAssistMem, got.Memories[0].Source)
 	assert.Equal(t, "assist-mem/abd80440ea5d8479.jsonl", got.Memories[0].RelPath)
+}
+
+func TestMemoryListFiltersCanonicalSource(t *testing.T) {
+	fx := setupMemoryFixture(t)
+
+	w := fx.te.get(t, "/api/v1/memories?source=canonical")
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	got := decode[struct {
+		Memories []db.Memory `json:"memories"`
+	}](t, w)
+
+	require.Len(t, got.Memories, 1)
+	assert.Equal(t, db.SourceCanonical, got.Memories[0].Source)
+	assert.Equal(t, "canonical/entrypoint.json", got.Memories[0].RelPath)
+	assert.Equal(t, `[{"source":"assist-mem","rel_path":"assist-mem/abd80440ea5d8479.jsonl"}]`, got.Memories[0].CanonicalCoveredRefs)
+	assert.Equal(t, `{"topic":"entrypoint"}`, got.Memories[0].CanonicalProvenance)
 }
 
 func TestMemoryFeedbackReportsConflictWhenDiskChangedAfterDBSnapshot(t *testing.T) {
