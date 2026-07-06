@@ -16,6 +16,7 @@
   type SortKey = "title" | "date" | "problem_type";
   type TierFilter = "" | "atomic" | "topic";
   type LifecycleFilter = "" | "folded";
+  type CanonicalCoveredRef = { source: string; rel_path: string };
 
   let loading = $state(true);
   let error = $state<string | null>(null);
@@ -50,7 +51,12 @@
     if (s === "assist-mem") return "Assist Mem";
     if (s === "cc-native") return "CC 原生";
     if (s === "cross-agent") return "跨 agent";
+    if (s === "canonical") return "Canonical generated";
     return s || "—";
+  }
+
+  function isCanonical(m: Memory | null | undefined): boolean {
+    return m?.source === "canonical";
   }
 
   function tierOf(m: Memory): "topic" | "atomic" {
@@ -139,9 +145,10 @@
   const assistMemCount = $derived(
     allMemories.filter((m) => m.source === "assist-mem" && isActive(m)).length,
   );
-  const legacyMemoryCount = $derived(
-    allMemories.filter((m) => m.source !== "assist-mem").length,
+  const canonicalCount = $derived(
+    allMemories.filter((m) => m.source === "canonical" && isActive(m)).length,
   );
+  const allSourceCount = $derived(allMemories.length);
 
   // Client-side sort over the server-filtered rows.
   let sortKey = $state<SortKey>("date");
@@ -224,7 +231,15 @@
     load();
   }
 
-  function showLegacySources() {
+  function showCanonical() {
+    source = "canonical";
+    status = "active";
+    tierFilter = "";
+    lifecycleFilter = "";
+    load();
+  }
+
+  function showAllSources() {
     status = "";
     source = "";
     tierFilter = "";
@@ -255,7 +270,10 @@
   // does not apply to either source.
   let detailIsCCNative = $derived(detail?.source === "cc-native");
   let detailIsAssistMem = $derived(detail?.source === "assist-mem");
-  let detailHistoryUnsupported = $derived(detailIsCCNative || detailIsAssistMem);
+  let detailIsCanonical = $derived(isCanonical(detail));
+  let detailHistoryUnsupported = $derived(
+    detailIsCCNative || detailIsAssistMem || detailIsCanonical,
+  );
 
   // The rel_path whose detail modal is open, kept separately so edit/history
   // actions have the key even while detail is being refetched.
@@ -522,6 +540,52 @@
     return rows.filter(([, v]) => v !== "" && v !== undefined);
   }
 
+  function parseCanonicalCoveredRefs(m: Memory | null | undefined): CanonicalCoveredRef[] {
+    if (!m?.canonical_covered_refs?.trim()) return [];
+    try {
+      const parsed = JSON.parse(m.canonical_covered_refs) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      return parsed.flatMap((item) => {
+        if (!item || typeof item !== "object") return [];
+        const ref = item as Record<string, unknown>;
+        const refSource = typeof ref.source === "string" ? ref.source.trim() : "";
+        const relPath = typeof ref.rel_path === "string" ? ref.rel_path.trim() : "";
+        if (!refSource || !relPath) return [];
+        return [{ source: refSource, rel_path: relPath }];
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  function canonicalCoverageCount(m: Memory): number {
+    return parseCanonicalCoveredRefs(m).length;
+  }
+
+  function canonicalProvenanceRows(m: Memory | null | undefined): string[] {
+    if (!m?.canonical_provenance?.trim()) return [];
+    try {
+      const parsed = JSON.parse(m.canonical_provenance) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return [m.canonical_provenance];
+      }
+      const obj = parsed as Record<string, unknown>;
+      const preferredKeys = ["topic", "sources", "version", "cluster_key"];
+      const extraKeys = Object.keys(obj)
+        .filter((key) => !preferredKeys.includes(key))
+        .sort((a, b) => a.localeCompare(b));
+      return [...preferredKeys, ...extraKeys].flatMap((key) => {
+        const value = obj[key];
+        if (value === undefined || value === null || value === "") return [];
+        const rendered =
+          typeof value === "object" ? JSON.stringify(value) : String(value);
+        return [`${key}: ${Array.isArray(value) ? value.join(", ") : rendered}`];
+      });
+    } catch {
+      return [m.canonical_provenance];
+    }
+  }
+
   function bodySnippet(body: string | undefined): string {
     if (!body) return "";
     const trimmed = body.trim().replace(/\s+/g, " ");
@@ -550,11 +614,17 @@
           <p>{assistMemCount} active assist-mem entries</p>
           <button type="button" onclick={showAssistMem}>看 assist-mem</button>
         </article>
+        <article class="canonical-step">
+          <span class="step-label">Canonical</span>
+          <strong>{canonicalCount}</strong>
+          <p>generated current-memory rows</p>
+          <button type="button" onclick={showCanonical}>看 canonical</button>
+        </article>
         <article class="legacy-step">
-          <span class="step-label">Legacy</span>
-          <strong>{legacyMemoryCount}</strong>
-          <p>旧来源仅用于迁移/排查</p>
-          <button type="button" onclick={showLegacySources}>看 legacy sources</button>
+          <span class="step-label">All sources</span>
+          <strong>{allSourceCount}</strong>
+          <p>全部 raw/canonical 来源用于核对</p>
+          <button type="button" onclick={showAllSources}>看全部来源</button>
         </article>
       </div>
     </section>
@@ -569,6 +639,7 @@
       <select bind:value={source} onchange={load} aria-label="source 过滤">
         <option value="">来源: 全部</option>
         <option value="assist-mem">Assist Mem</option>
+        <option value="canonical">Canonical generated</option>
         <option value="cross-agent">跨 agent</option>
         <option value="cc-native">CC 原生</option>
       </select>
@@ -680,6 +751,11 @@
         <tr class="clickable" onclick={() => openDetail(m.rel_path)}>
           <td class="title">
             <div class="title-main">{m.title || m.rel_path}</div>
+            {#if isCanonical(m)}
+              <div class="canonical-subtext">
+                coverage {canonicalCoverageCount(m)}
+              </div>
+            {/if}
             {#if m.body}
               <div class="snippet">{bodySnippet(m.body)}</div>
             {/if}
@@ -749,17 +825,22 @@
               {#if detail.problem_type}· {detail.problem_type}{/if}
               {#if detail.type}· {detail.type}{/if}
               {#if detail.status}· {detail.status}{/if}
+              {#if detailIsCanonical}· Canonical generated{/if}
             </div>
           </div>
           <div class="modal-actions">
             {#if !editing}
-              {#if !detailIsAssistMem}
+              {#if !detailIsAssistMem && !detailIsCanonical}
                 <button class="action-btn" onclick={startEdit}>编辑</button>
               {/if}
             {/if}
             {#if detailHistoryUnsupported}
               <span class="no-history" title="该来源不支持 git 历史"
-                >{detailIsAssistMem ? "Assist Mem 只读" : "CC 原生不支持历史"}</span
+                >{detailIsCanonical
+                  ? "Canonical generated/read-only"
+                  : detailIsAssistMem
+                    ? "Assist Mem 只读"
+                    : "CC 原生不支持历史"}</span
               >
             {:else}
               <button
@@ -830,6 +911,38 @@
               {/each}
             </tbody>
           </table>
+          {#if detailIsCanonical}
+            {@const coveredRefs = parseCanonicalCoveredRefs(detail)}
+            {@const provenanceRows = canonicalProvenanceRows(detail)}
+            <section class="canonical-detail" aria-label="Canonical coverage">
+              <h4>Canonical coverage</h4>
+              <div class="canonical-summary">
+                {coveredRefs.length} covered raw {coveredRefs.length === 1 ? "ref" : "refs"}
+              </div>
+              {#if coveredRefs.length > 0}
+                <ul class="coverage-list">
+                  {#each coveredRefs as ref (`${ref.source}:${ref.rel_path}`)}
+                    <li>
+                      <span class="badge source source-{ref.source}">{sourceLabel(ref.source)}</span>
+                      <code>{ref.rel_path}</code>
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <div class="canonical-empty">No covered raw refs recorded.</div>
+              {/if}
+              <h4>Provenance</h4>
+              {#if provenanceRows.length > 0}
+                <ul class="provenance-list">
+                  {#each provenanceRows as row (row)}
+                    <li>{row}</li>
+                  {/each}
+                </ul>
+              {:else}
+                <div class="canonical-empty">No provenance metadata recorded.</div>
+              {/if}
+            </section>
+          {/if}
           <h4>正文</h4>
           <pre class="body">{detail.body || "(无正文)"}</pre>
         {/if}
@@ -955,7 +1068,7 @@
   }
   .pipeline-steps {
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 0.55rem;
   }
   .pipeline-steps article {
@@ -971,6 +1084,10 @@
   }
   .pipeline-steps .legacy-step {
     opacity: 0.72;
+  }
+  .pipeline-steps .canonical-step {
+    border-color: color-mix(in srgb, var(--accent-indigo) 36%, var(--border-default));
+    background: color-mix(in srgb, var(--accent-indigo) 9%, var(--bg-surface));
   }
   .step-label {
     display: block;
@@ -1091,6 +1208,12 @@
     color: var(--text-secondary, #888);
     margin-top: 0.15rem;
   }
+  .canonical-subtext {
+    margin-top: 0.12rem;
+    color: var(--accent-indigo);
+    font-size: 0.72rem;
+    font-weight: 500;
+  }
   td.nowrap {
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
@@ -1154,6 +1277,10 @@
   .badge.source.source-assist-mem {
     background: #e0e7ff;
     color: #3730a3;
+  }
+  .badge.source.source-canonical {
+    background: #ede9fe;
+    color: #6d28d9;
   }
   .sortable-th {
     cursor: pointer;
@@ -1233,6 +1360,34 @@
     padding: 0.3rem 0.5rem;
     border-bottom: 1px solid var(--border-default);
     vertical-align: top;
+  }
+  .canonical-detail {
+    margin-top: 0.8rem;
+    padding: 0.7rem;
+    border: 1px solid color-mix(in srgb, var(--accent-indigo) 28%, var(--border-default));
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--accent-indigo) 7%, var(--bg-surface));
+  }
+  .canonical-detail h4:first-child {
+    margin-top: 0;
+  }
+  .canonical-summary,
+  .canonical-empty {
+    color: var(--text-secondary, #666);
+    font-size: 0.78rem;
+  }
+  .coverage-list,
+  .provenance-list {
+    margin: 0.45rem 0 0;
+    padding-left: 1rem;
+    font-size: 0.78rem;
+  }
+  .coverage-list li,
+  .provenance-list li {
+    margin: 0.3rem 0;
+  }
+  .coverage-list code {
+    margin-left: 0.35rem;
   }
   .fm-key {
     color: var(--text-secondary, #666);

@@ -5,7 +5,8 @@ import { getBase, authHeaders, ApiError, responseErrorMessage } from "./runtime"
 export interface Memory {
   rel_path: string;
   // Data source: "cross-agent" (legacy user-memory SSOT), "assist-mem"
-  // (explicit ledger), or "cc-native" (CC auto-memory scanned across project dirs).
+  // (explicit ledger), "cc-native" (CC auto-memory scanned across project dirs),
+  // or "canonical" (generated current-memory output with raw provenance).
   source: string;
   title: string;
   date: string;
@@ -19,6 +20,8 @@ export interface Memory {
   feedback_vote: string;
   feedback_comment: string;
   feedback_status: string;
+  canonical_covered_refs?: string;
+  canonical_provenance?: string;
   body?: string;
   body_tokens: number;
   source_mtime: number;
