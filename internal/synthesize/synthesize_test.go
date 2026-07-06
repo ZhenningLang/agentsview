@@ -431,6 +431,69 @@ func TestWorkerLznLikeFixtureSeparatesExceptionAndEnvironmentWithSimilarVectors(
 	assert.Contains(t, rec.ConflictSamples, "separate guard: cross-agent:environment.md")
 }
 
+func TestWorkerLznAcceptanceFixtureFromCommittedTestdata(t *testing.T) {
+	fixture := loadLznAcceptanceFixture(t)
+	store := &captureStore{memsBySource: map[string][]db.Memory{}}
+	for _, rawMemory := range fixture.Memories {
+		memory := rawMemory.dbMemory()
+		store.memsBySource[memory.Source] = append(store.memsBySource[memory.Source], memory)
+	}
+	w := canonicalTestWorker(store, fixture.LLMResponse)
+
+	rec, err := w.Preview(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, 1, rec.PlannedCanonicalCount)
+	require.Len(t, rec.Topics, 1)
+	assert.ElementsMatch(t, []RawRef{
+		{Source: db.SourceAssistMem, RelPath: "lzn-preview/entrypoint.jsonl"},
+		{Source: db.SourceCCNative, RelPath: "lzn-test/memory/entrypoint.md"},
+	}, rec.Topics[0].CoveredRefs)
+	assert.NotContains(t, rec.Topics[0].SourceIDs, "cross-agent:lzn-preview/security-exception.md")
+	assert.NotContains(t, rec.Topics[0].SourceIDs, "cc-native:lzn-test/memory/environment.md")
+	assert.GreaterOrEqual(t, rec.ConflictCount, 2)
+	assert.Contains(t, rec.ConflictSamples, "separate guard: cross-agent:lzn-preview/security-exception.md")
+	assert.Contains(t, rec.ConflictSamples, "separate guard: cc-native:lzn-test/memory/environment.md")
+	assert.Equal(t, map[string]int{db.SourceAssistMem: 1, db.SourceCCNative: 2, db.SourceCrossAgent: 1}, rec.SourceCounts)
+	assert.Equal(t, map[string]int{db.SourceAssistMem: 1, db.SourceCCNative: 2, db.SourceCrossAgent: 1}, rec.EligibleSourceCounts)
+}
+
+type lznAcceptanceFixture struct {
+	LLMResponse string                `json:"llm_response"`
+	Memories    []lznAcceptanceMemory `json:"memories"`
+}
+
+type lznAcceptanceMemory struct {
+	Source      string    `json:"source"`
+	RelPath     string    `json:"rel_path"`
+	Title       string    `json:"title"`
+	Body        string    `json:"body"`
+	ProblemType string    `json:"problem_type"`
+	Embedding   []float32 `json:"embedding"`
+}
+
+func loadLznAcceptanceFixture(t *testing.T) lznAcceptanceFixture {
+	t.Helper()
+	data, err := os.ReadFile("testdata/lzn_acceptance.json")
+	require.NoError(t, err)
+	var raw lznAcceptanceFixture
+	require.NoError(t, json.Unmarshal(data, &raw))
+	require.NotEmpty(t, raw.LLMResponse)
+	require.NotEmpty(t, raw.Memories)
+
+	for _, rawMemory := range raw.Memories {
+		require.NotEmpty(t, rawMemory.Source)
+		require.NotEmpty(t, rawMemory.RelPath)
+		require.NotEmpty(t, rawMemory.Embedding)
+	}
+	return raw
+}
+
+func (m lznAcceptanceMemory) dbMemory() db.Memory {
+	memory := memoryWithProblemType(m.Source, m.RelPath, m.Title, m.ProblemType, m.Embedding)
+	memory.Body = m.Body
+	return memory
+}
+
 func TestClusterProjectDerivation(t *testing.T) {
 	cases := []struct {
 		name        string

@@ -1,0 +1,37 @@
+{
+  "llm_response": "{\"skip\":false,\"title\":\"lzn-preview current entrypoint\",\"insight\":\"The current lzn-preview entrypoint is cmd/agentsview main.\",\"problem_type\":\"entrypoint\"}",
+  "memories": [
+    {
+      "source": "assist-mem",
+      "rel_path": "lzn-preview/entrypoint.jsonl",
+      "title": "lzn-preview current entrypoint",
+      "body": "lzn preview entrypoint lives in cmd/agentsview main",
+      "problem_type": "entrypoint",
+      "embedding": [1, 0, 0]
+    },
+    {
+      "source": "cc-native",
+      "rel_path": "lzn-test/memory/entrypoint.md",
+      "title": "lzn-test uses lzn-preview entrypoint",
+      "body": "lzn preview entrypoint duplicate from cc native memory",
+      "problem_type": "entrypoint",
+      "embedding": [0.998, 0.002, 0]
+    },
+    {
+      "source": "cross-agent",
+      "rel_path": "lzn-preview/security-exception.md",
+      "title": "lzn-preview security exception",
+      "body": "lzn preview security exception stays separate",
+      "problem_type": "security-exception",
+      "embedding": [0.997, 0.003, 0]
+    },
+    {
+      "source": "cc-native",
+      "rel_path": "lzn-test/memory/environment.md",
+      "title": "lzn-preview environment fact",
+      "body": "lzn preview environment fact uses preview namespace",
+      "problem_type": "environment",
+      "embedding": [0.996, 0.004, 0]
+    }
+  ]
+}
