@@ -82,10 +82,14 @@
   let allMemories = $state<Memory[]>([]);
 
   let reqSeq = 0;
+  let catalogReqSeq = 0;
 
   async function loadCatalog() {
+    const seq = ++catalogReqSeq;
     try {
-      allMemories = await fetchMemories({});
+      const result = await fetchMemories({});
+      if (seq !== catalogReqSeq) return;
+      allMemories = result;
     } catch {
       // Non-fatal: facet dropdowns just fall back to whatever the filtered
       // result yields.
@@ -112,6 +116,10 @@
     } finally {
       if (seq === reqSeq) loading = false;
     }
+  }
+
+  async function refresh() {
+    await Promise.all([loadCatalog(), load()]);
   }
 
   onMount(async () => {
@@ -708,7 +716,7 @@
       {#if hasFilters}
         <button class="clear" onclick={clearFilters}>清除</button>
       {/if}
-      <button class="refresh" onclick={load} title="Reload" aria-label="刷新"
+      <button class="refresh" onclick={refresh} title="Reload" aria-label="刷新"
         >↻</button
       >
     </div>

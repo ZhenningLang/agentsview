@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	stdsync "sync"
 	"syscall"
 	"time"
 	_ "time/tzdata"
@@ -229,7 +230,8 @@ func runServe(cfg config.Config) {
 
 	// Explicit assist-mem ledger: sync entries written by /assist-mem into the
 	// same read-only memory table, tagged source=assist-mem.
-	startAssistMemSync(ctx, cfg, database)
+	stopAssistMemSync := startAssistMemSync(ctx, cfg, database)
+	defer stopAssistMemSync()
 
 	// CC-native memory: sync the second memory data source (CC auto-memory
 	// across project dirs) into the same read-only memory dimension table,
@@ -777,22 +779,114 @@ func (r memoryResyncer) Resync(ctx context.Context) error {
 
 func startAssistMemSync(
 	ctx context.Context, cfg config.Config, database db.Store,
-) {
-	if !syncAssistMemOnce(ctx, cfg, database) {
-		return
+) func() {
+	path := cfg.AssistMemLedgerPath()
+	writer, ok := database.(memory.Writer)
+	if path == "" || !ok {
+		return func() {}
 	}
+	syncCtx, cancelSync := context.WithCancel(ctx)
+	runner := newSerialRunner(func() {
+		if _, err := os.Stat(path); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				log.Printf("assist-mem sync: stat %s: %v", path, err)
+			}
+			return
+		}
+		embedder := memorySyncEmbedder(cfg, nil)
+		syncer := memory.NewLedgerSyncerWithEmbedder(path, writer, nil, embedder)
+		if err := syncer.Sync(syncCtx); err != nil && syncCtx.Err() == nil {
+			log.Printf("assist-mem sync: %v", err)
+		}
+	})
+
+	var watcher *sync.Watcher
+	watcher, err := sync.NewWatcher(watcherDebounce, func(paths []string) {
+		for _, changed := range paths {
+			if pathChangeAffectsTarget(changed, path) {
+				watcher.WatchShallow(filepath.Dir(path))
+				runner.Run()
+				return
+			}
+		}
+	}, nil)
+	stopWatcher := func() {}
+	if err != nil {
+		log.Printf("assist-mem watcher: %v", err)
+	} else {
+		watchRoot := nearestExistingDir(filepath.Dir(path))
+		watched := watchRoot != "" && watcher.WatchShallow(watchRoot)
+		watcher.Start()
+		if watched {
+			stopWatcher = watcher.Stop
+		} else {
+			watcher.Stop()
+			log.Printf("assist-mem watcher: could not watch an ancestor of %s", path)
+		}
+	}
+	runner.Run()
+	var wg stdsync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		ticker := time.NewTicker(periodicSyncInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-syncCtx.Done():
 				return
 			case <-ticker.C:
-				syncAssistMemOnce(ctx, cfg, database)
+				runner.Run()
 			}
 		}
 	}()
+	var stopOnce stdsync.Once
+	return func() {
+		stopOnce.Do(func() {
+			cancelSync()
+			stopWatcher()
+			wg.Wait()
+		})
+	}
+}
+
+type serialRunner struct {
+	mu stdsync.Mutex
+	fn func()
+}
+
+func newSerialRunner(fn func()) *serialRunner {
+	return &serialRunner{fn: fn}
+}
+
+func (r *serialRunner) Run() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fn()
+}
+
+func nearestExistingDir(path string) string {
+	for path != "" {
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			return path
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return ""
+		}
+		path = parent
+	}
+	return ""
+}
+
+func pathChangeAffectsTarget(changed, target string) bool {
+	changed = filepath.Clean(changed)
+	target = filepath.Clean(target)
+	if changed == target {
+		return true
+	}
+	rel, err := filepath.Rel(changed, target)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func syncAssistMemOnce(ctx context.Context, cfg config.Config, database db.Store) bool {

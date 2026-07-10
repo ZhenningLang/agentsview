@@ -1436,19 +1436,27 @@ func (c *Config) ResolveMemoryDir() string {
 	return ""
 }
 
-// ResolveAssistMemLedger returns the effective explicit assist-mem ledger path.
-// It prefers an explicit config/env value, then probes the default
-// ~/.dotfiles/memory/ledger/entries.jsonl. It returns "" when no candidate file
-// exists so the feature fails open.
-func (c *Config) ResolveAssistMemLedger() string {
-	candidates := make([]string, 0, 2)
+// AssistMemLedgerPath returns the configured assist-mem ledger target even
+// before the file exists, so the daemon can watch for its first creation.
+func (c *Config) AssistMemLedgerPath() string {
 	if c.AssistMemLedger != "" {
-		candidates = append(candidates, c.AssistMemLedger)
+		return c.AssistMemLedger
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates,
-			filepath.Join(home, ".dotfiles", "memory", "ledger", "entries.jsonl"))
+		return filepath.Join(home, ".dotfiles", "memory", "ledger", "entries.jsonl")
 	}
+	return ""
+}
+
+// ResolveAssistMemLedger returns the effective explicit assist-mem ledger path
+// when the target currently exists. It returns "" so one-shot callers fail
+// open when the ledger has not been created yet.
+func (c *Config) ResolveAssistMemLedger() string {
+	path := c.AssistMemLedgerPath()
+	if path == "" {
+		return ""
+	}
+	candidates := []string{path}
 	for _, path := range candidates {
 		if info, err := os.Stat(path); err == nil && !info.IsDir() {
 			return path

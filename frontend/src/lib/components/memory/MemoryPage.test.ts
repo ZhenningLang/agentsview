@@ -217,6 +217,62 @@ describe("MemoryPage", () => {
     expect(text).not.toContain("候选入口");
   });
 
+  it("refreshes both the filtered list and the overview catalog", async () => {
+    const secondAssist = memory({
+      rel_path: "assist-mem/kilo-session.jsonl",
+      source: "assist-mem",
+      title: "kilo session entrypoint",
+      date: "2026-07-10 23:17:35",
+      origin_session: "assist-mem:kilo-session",
+    });
+    let rows = allRows;
+    mocks.fetchMemories.mockImplementation((filter = {}) => {
+      const source = (filter as { source?: string }).source;
+      const result = source ? rows.filter((m) => m.source === source) : rows;
+      return Promise.resolve(result);
+    });
+
+    component = mount(MemoryPage, { target: document.body });
+    await waitForText("1 active assist-mem entries");
+
+    rows = [...allRows, secondAssist];
+    await clickByAriaLabel("刷新");
+
+    expect(document.body.textContent ?? "").toContain("2 active assist-mem entries");
+    expect(document.body.textContent ?? "").toContain("kilo session entrypoint");
+  });
+
+  it("keeps the newest overview catalog when an older request resolves late", async () => {
+    const secondAssist = memory({
+      rel_path: "assist-mem/kilo-session.jsonl",
+      source: "assist-mem",
+      title: "kilo session entrypoint",
+      date: "2026-07-10 23:17:35",
+      origin_session: "assist-mem:kilo-session",
+    });
+    const newRows = [...allRows, secondAssist];
+    let resolveOldCatalog!: (rows: typeof allRows) => void;
+    const oldCatalog = new Promise<typeof allRows>((resolve) => {
+      resolveOldCatalog = resolve;
+    });
+    let catalogCalls = 0;
+    mocks.fetchMemories.mockImplementation((filter = {}) => {
+      const source = (filter as { source?: string }).source;
+      if (source) return Promise.resolve(newRows.filter((m) => m.source === source));
+      catalogCalls++;
+      return catalogCalls === 1 ? oldCatalog : Promise.resolve(newRows);
+    });
+
+    component = mount(MemoryPage, { target: document.body });
+    await clickByAriaLabel("刷新");
+    await waitForText("2 active assist-mem entries");
+
+    resolveOldCatalog(allRows);
+    await flush();
+
+    expect(document.body.textContent ?? "").toContain("2 active assist-mem entries");
+  });
+
   it("shows canonical rows only through explicit canonical controls with generated labels", async () => {
     component = mount(MemoryPage, { target: document.body });
     await waitForText("lzn-preview entrypoint raw");

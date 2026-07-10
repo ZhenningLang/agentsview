@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -115,6 +116,88 @@ func TestSyncAssistMemOnceMirrorsLedgerIntoMemoryTable(t *testing.T) {
 	assert.Equal(t, "assist-mem/213307d78f007581.jsonl", got[0].RelPath)
 	assert.Equal(t, "Beacon", got[0].OriginProject)
 	assert.Contains(t, got[0].Body, "direct push to main")
+}
+
+func TestStartAssistMemSyncMirrorsLedgerChangesWithoutWaitingForPeriodicSync(t *testing.T) {
+	dataDir := t.TempDir()
+	ledgerPath := filepath.Join(dataDir, "entries.jsonl")
+	first := `{"created_at":"2026-07-10T15:17:35Z","id":"first","scope":"global","source":"explicit","status":"active","text":"first memory","type":"entrypoint"}` + "\n"
+	require.NoError(t, os.WriteFile(ledgerPath, []byte(first), 0o644))
+
+	database, err := db.Open(filepath.Join(dataDir, "agentsview.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stop := startAssistMemSync(ctx, config.Config{AssistMemLedger: ledgerPath}, database)
+	t.Cleanup(stop)
+
+	second := `{"created_at":"2026-07-10T15:18:35Z","id":"second","scope":"global","source":"explicit","status":"active","text":"second memory","type":"entrypoint"}` + "\n"
+	file, err := os.OpenFile(ledgerPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err)
+	_, err = file.WriteString(second)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	require.Eventually(t, func() bool {
+		got, listErr := database.ListMemories(context.Background(), db.MemoryFilter{Source: db.SourceAssistMem})
+		return listErr == nil && len(got) == 2
+	}, 2*time.Second, 20*time.Millisecond)
+}
+
+func TestStartAssistMemSyncWatchesLedgerCreatedAfterStartup(t *testing.T) {
+	dataDir := t.TempDir()
+	ledgerDir := filepath.Join(dataDir, "memory", "ledger")
+	ledgerPath := filepath.Join(ledgerDir, "entries.jsonl")
+
+	database, err := db.Open(filepath.Join(dataDir, "agentsview.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	stop := startAssistMemSync(ctx, config.Config{AssistMemLedger: ledgerPath}, database)
+	t.Cleanup(stop)
+
+	entry := `{"created_at":"2026-07-10T15:17:35Z","id":"first","scope":"global","source":"explicit","status":"active","text":"first memory","type":"entrypoint"}` + "\n"
+	require.NoError(t, os.MkdirAll(ledgerDir, 0o755))
+	require.NoError(t, os.WriteFile(ledgerPath, []byte(entry), 0o644))
+
+	require.Eventually(t, func() bool {
+		got, listErr := database.ListMemories(context.Background(), db.MemoryFilter{Source: db.SourceAssistMem})
+		return listErr == nil && len(got) == 1
+	}, 2*time.Second, 20*time.Millisecond)
+
+	second := `{"created_at":"2026-07-10T15:18:35Z","id":"second","scope":"global","source":"explicit","status":"active","text":"second memory","type":"entrypoint"}` + "\n"
+	file, err := os.OpenFile(ledgerPath, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err)
+	_, err = file.WriteString(second)
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	require.Eventually(t, func() bool {
+		got, listErr := database.ListMemories(context.Background(), db.MemoryFilter{Source: db.SourceAssistMem})
+		return listErr == nil && len(got) == 2
+	}, 2*time.Second, 20*time.Millisecond)
+}
+
+func TestSerialRunnerDoesNotOverlapAssistMemSyncs(t *testing.T) {
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{}, 2)
+	runner := newSerialRunner(func() {
+		entered <- struct{}{}
+		<-release
+	})
+
+	go runner.Run()
+	require.Eventually(t, func() bool { return len(entered) == 1 }, time.Second, time.Millisecond)
+	go runner.Run()
+
+	assert.Never(t, func() bool { return len(entered) > 1 }, 100*time.Millisecond, 5*time.Millisecond)
+	release <- struct{}{}
+	require.Eventually(t, func() bool { return len(entered) == 2 }, time.Second, time.Millisecond)
+	release <- struct{}{}
 }
 
 func TestSyncAssistMemOnceMirrorsLatestLedgerTopicIntoMemoryTable(t *testing.T) {
