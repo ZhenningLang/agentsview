@@ -274,10 +274,14 @@ type syncJob struct {
 func (e *Engine) SyncPaths(paths []string) {
 	files := e.classifyPaths(paths)
 	if len(files) == 0 {
+		e.syncMu.Lock()
+		e.phaseStats.Reset()
+		e.syncMu.Unlock()
 		return
 	}
 
 	e.syncMu.Lock()
+	e.phaseStats.Reset()
 	// Defers run LIFO: the emit closure (declared first) runs AFTER
 	// syncMu.Unlock, so an Emitter implementation cannot widen the
 	// critical section or deadlock by re-entering sync code. The
@@ -3274,6 +3278,7 @@ func drainResults(results <-chan syncJob, remaining int) {
 // session row without overwriting unrelated columns.
 type incrementalUpdate struct {
 	sessionID            string
+	agent                parser.AgentType
 	msgs                 []parser.ParsedMessage
 	endedAt              time.Time
 	msgCount             int // total (old + new)
@@ -3895,6 +3900,7 @@ func (e *Engine) tryIncrementalJSONL(
 			return processResult{
 				incremental: &incrementalUpdate{
 					sessionID:            inc.ID,
+					agent:                agent,
 					endedAt:              endedAt,
 					msgCount:             inc.MsgCount,
 					userMsgCount:         inc.UserMsgCount,
@@ -3952,11 +3958,11 @@ func (e *Engine) tryIncrementalJSONL(
 	for _, m := range newMsgs {
 		msgHasCtx, msgHasOut := m.TokenPresence()
 		if msgHasOut {
-			totalOut += m.OutputTokens
+			totalOut += db.ClampPlausibleTokens(m.OutputTokens)
 			hasTotalOut = true
 		}
-		if msgHasCtx && (!hasPeakCtx || m.ContextTokens > peakCtx) {
-			peakCtx = m.ContextTokens
+		if contextTokens := db.ClampPlausibleTokens(m.ContextTokens); msgHasCtx && (!hasPeakCtx || contextTokens > peakCtx) {
+			peakCtx = contextTokens
 			hasPeakCtx = true
 		}
 	}
@@ -3964,6 +3970,7 @@ func (e *Engine) tryIncrementalJSONL(
 	return processResult{
 		incremental: &incrementalUpdate{
 			sessionID:            inc.ID,
+			agent:                agent,
 			msgs:                 newMsgs,
 			endedAt:              endedAt,
 			msgCount:             inc.MsgCount + len(newMsgs),
@@ -5315,7 +5322,7 @@ func (e *Engine) writeBatch(
 
 	resolveWorktreeProject := e.loadWorktreeProjectResolver()
 	for _, pw := range batch {
-		s, msgs, ok := e.prepareSessionWrite(
+		s, msgs, usageEvents, ok := e.prepareSessionWrite(
 			pw, resolveWorktreeProject,
 		)
 		if !ok {
@@ -5378,7 +5385,7 @@ func (e *Engine) writeBatch(
 			continue
 		}
 		if err := e.db.ReplaceSessionUsageEvents(
-			s.ID, toDBUsageEvents(s.ID, pw.usageEvents),
+			s.ID, usageEvents,
 		); err != nil {
 			log.Printf(
 				"write usage events for %s: %v",
@@ -5433,7 +5440,7 @@ func (e *Engine) writeSourceSnapshot(
 			needsRetry:   needsRetry,
 			forceReplace: true,
 		}
-		s, msgs, ok := e.prepareSessionWrite(
+		s, msgs, usageEvents, ok := e.prepareSessionWrite(
 			pw, resolveWorktreeProject,
 		)
 		if !ok {
@@ -5441,13 +5448,14 @@ func (e *Engine) writeSourceSnapshot(
 		}
 		update, findings := computeSignalsAndSecrets(s, msgs)
 		writes = append(writes, db.SessionBatchWrite{
-			Session:         s,
-			Messages:        msgs,
-			UsageEvents:     toDBUsageEvents(s.ID, result.UsageEvents),
-			Signals:         update,
-			Findings:        findings,
-			DataVersion:     dataVersionForWrite(pw),
-			ReplaceMessages: true,
+			Session:              s,
+			Messages:             msgs,
+			UsageEvents:          usageEvents,
+			Signals:              update,
+			Findings:             findings,
+			DataVersion:          dataVersionForWrite(pw),
+			ReplaceMessages:      true,
+			TokenAggregateSource: pw.sess.AggregateTokenSource,
 		})
 	}
 
@@ -5468,12 +5476,13 @@ func (e *Engine) writeSourceSnapshot(
 func (e *Engine) prepareSessionWrite(
 	pw pendingWrite,
 	resolveWorktreeProject worktreeProjectResolver,
-) (db.Session, []db.Message, bool) {
+) (db.Session, []db.Message, []db.UsageEvent, bool) {
 	msgs := toDBMessages(pw, e.blockedResultCategories)
 	s := toDBSession(pw)
 	s.MessageCount, s.UserMessageCount =
 		postFilterCounts(msgs)
 	e.applyRemoteRewrites(&s, msgs)
+	usageEvents := toDBUsageEventsRaw(s.ID, pw.usageEvents)
 	if s.Cwd != "" && resolveWorktreeProject != nil {
 		if mapped, ok := resolveWorktreeProject(
 			s.Machine, s.Cwd, s.Project,
@@ -5481,15 +5490,90 @@ func (e *Engine) prepareSessionWrite(
 			s.Project = mapped
 		}
 	}
+
+	stats := db.ValidateAndSanitize(&s, msgs, usageEvents)
+	switch pw.sess.AggregateTokenSource {
+	case parser.TokenAggregateMessages:
+		s.TotalOutputTokens, s.HasTotalOutputTokens, _, _ =
+			messageTokenTotals(msgs)
+		_, _, s.PeakContextTokens, s.HasPeakContextTokens =
+			messageTokenTotals(msgs)
+	case parser.TokenAggregateUsageEvents:
+		s.TotalOutputTokens, s.HasTotalOutputTokens, _, _ =
+			usageEventTokenTotals(pw.usageEvents, true)
+		_, _, s.PeakContextTokens, s.HasPeakContextTokens =
+			usageEventTokenTotals(pw.usageEvents, true)
+	}
 	s.IsAutomated = isAutomatedFromSession(s)
+	e.recordValidation(s.ID, string(pw.sess.Agent), stats)
 
 	if e.shouldPreserveOpenCodeArchive(
 		pw.sess.Agent, pw.sess.File.Path, s.ID,
 		pw.sess.File.Mtime, derefString(s.FileHash), msgs,
 	) {
-		return db.Session{}, nil, false
+		return db.Session{}, nil, nil, false
 	}
-	return s, msgs, true
+	return s, msgs, usageEvents, true
+}
+
+func (e *Engine) recordValidation(
+	sessionID, agent string, stats db.ValidationStats,
+) {
+	if stats.Empty() {
+		return
+	}
+	e.phaseStats.recordValidation(stats)
+	log.Printf(
+		"parser validation session=%s agent=%s controls=%d models=%d tokens=%d roles=%d timestamps=%d",
+		sessionID, agent,
+		stats.ControlCharsStripped, stats.ModelClamped,
+		stats.TokensClamped, stats.RoleCoerced,
+		stats.TimestampsBlanked,
+	)
+}
+
+func messageTokenTotals(
+	msgs []db.Message,
+) (totalOutput int, hasOutput bool, peakContext int, hasContext bool) {
+	for _, msg := range msgs {
+		if msg.HasOutputTokens {
+			hasOutput = true
+			totalOutput += msg.OutputTokens
+		}
+		if msg.HasContextTokens {
+			hasContext = true
+			if msg.ContextTokens > peakContext {
+				peakContext = msg.ContextTokens
+			}
+		}
+	}
+	return totalOutput, hasOutput, peakContext, hasContext
+}
+
+func usageEventTokenTotals(
+	events []parser.ParsedUsageEvent,
+	clamp bool,
+) (totalOutput int, hasOutput bool, peakContext int, hasContext bool) {
+	rolled := make([]parser.ParsedUsageEvent, 0, len(events))
+	for _, event := range events {
+		if db.UsageSourceIsSessionSummary(
+			db.SanitizeUTF8(event.Source),
+		) {
+			continue
+		}
+		if clamp {
+			event.InputTokens = db.ClampPlausibleTokens(event.InputTokens)
+			event.OutputTokens = db.ClampPlausibleTokens(event.OutputTokens)
+			event.CacheCreationInputTokens = db.ClampPlausibleTokens(
+				event.CacheCreationInputTokens,
+			)
+			event.CacheReadInputTokens = db.ClampPlausibleTokens(
+				event.CacheReadInputTokens,
+			)
+		}
+		rolled = append(rolled, event)
+	}
+	return parser.UsageEventTokenAggregate(rolled)
 }
 
 type batchSourceFile struct {
@@ -5506,7 +5590,7 @@ func (e *Engine) writeBatchBulk(
 
 	for _, pw := range batch {
 		tPrep := time.Now()
-		s, msgs, ok := e.prepareSessionWrite(
+		s, msgs, usageEvents, ok := e.prepareSessionWrite(
 			pw, resolveWorktreeProject,
 		)
 		e.phaseStats.PrepNanos.Add(int64(time.Since(tPrep)))
@@ -5522,13 +5606,14 @@ func (e *Engine) writeBatchBulk(
 		update, findings := computeSignalsAndSecrets(s, msgs)
 		e.phaseStats.ScanNanos.Add(int64(time.Since(tScan)))
 		writes = append(writes, db.SessionBatchWrite{
-			Session:         s,
-			Messages:        msgs,
-			UsageEvents:     toDBUsageEvents(s.ID, pw.usageEvents),
-			Signals:         update,
-			Findings:        findings,
-			DataVersion:     dataVersionForWrite(pw),
-			ReplaceMessages: replaceMessages,
+			Session:              s,
+			Messages:             msgs,
+			UsageEvents:          usageEvents,
+			Signals:              update,
+			Findings:             findings,
+			DataVersion:          dataVersionForWrite(pw),
+			ReplaceMessages:      replaceMessages,
+			TokenAggregateSource: pw.sess.AggregateTokenSource,
 		})
 		if pw.sess.File.Path != "" {
 			sources[s.ID] = batchSourceFile{
@@ -5578,6 +5663,8 @@ func (e *Engine) writeIncremental(
 		},
 		e.blockedResultCategories,
 	)
+	stats := db.ValidateAndSanitize(nil, dbMsgs, nil)
+	e.recordValidation(inc.sessionID, string(inc.agent), stats)
 
 	// Adjust counts for blocked-category filtering.
 	newTotal, newUser := postFilterCounts(dbMsgs)
@@ -5591,6 +5678,7 @@ func (e *Engine) writeIncremental(
 		s := inc.endedAt.Format(time.RFC3339Nano)
 		endedAt = &s
 	}
+	endedAt, _ = db.BlankImplausibleTimestampPtr(endedAt)
 
 	// Write messages first — only advance file_size when
 	// the insert succeeds so a failure is retried.
@@ -5693,7 +5781,7 @@ func (e *Engine) writeSessionFullWithResolver(
 	pw pendingWrite,
 	resolveWorktreeProject worktreeProjectResolver,
 ) error {
-	s, msgs, ok := e.prepareSessionWrite(
+	s, msgs, usageEvents, ok := e.prepareSessionWrite(
 		pw, resolveWorktreeProject,
 	)
 	if !ok {
@@ -5718,7 +5806,7 @@ func (e *Engine) writeSessionFullWithResolver(
 		return err
 	}
 	if err := e.db.ReplaceSessionUsageEvents(
-		s.ID, toDBUsageEvents(s.ID, pw.usageEvents),
+		s.ID, usageEvents,
 	); err != nil {
 		log.Printf(
 			"replace usage events for %s: %v",
@@ -6062,6 +6150,14 @@ func toDBMessages(pw pendingWrite, blocked map[string]bool) []db.Message {
 func toDBUsageEvents(
 	sessionID string, events []parser.ParsedUsageEvent,
 ) []db.UsageEvent {
+	out := toDBUsageEventsRaw(sessionID, events)
+	_ = db.ValidateAndSanitize(nil, nil, out)
+	return out
+}
+
+func toDBUsageEventsRaw(
+	sessionID string, events []parser.ParsedUsageEvent,
+) []db.UsageEvent {
 	out := make([]db.UsageEvent, 0, len(events))
 	for _, ev := range events {
 		out = append(out, db.UsageEvent{
@@ -6369,6 +6465,7 @@ func (e *Engine) SyncSingleSessionContext(
 	ctx context.Context, sessionID string,
 ) (err error) {
 	e.syncMu.Lock()
+	e.phaseStats.Reset()
 	preserved := false
 	// Defers run LIFO: unlock runs first (releasing syncMu), then
 	// emit. Keep emission outside the critical section so a future

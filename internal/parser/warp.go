@@ -363,6 +363,7 @@ func buildWarpSession(
 	if meta.totalTokens > 0 {
 		sess.HasTotalOutputTokens = true
 		sess.TotalOutputTokens = meta.totalTokens
+		sess.AggregateTokenSource = TokenAggregateSummary
 	}
 
 	return sess, parsed, nil

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tidwall/gjson"
 	"go.kenn.io/agentsview/internal/db"
 )
 
@@ -662,18 +661,7 @@ func scanPGDailyUsageRow(rows *sql.Rows) (pgDailyUsageScanRow, error) {
 func pgDailyUsageAmounts(
 	r pgDailyUsageScanRow, pricing map[string]modelRates,
 ) (inputTok, outputTok, cacheCrTok, cacheRdTok int, cost, savings float64) {
-	if r.usageSource == "message" {
-		usage := gjson.Parse(r.tokenJSON)
-		inputTok = int(usage.Get("input_tokens").Int())
-		outputTok = int(usage.Get("output_tokens").Int())
-		cacheCrTok = int(usage.Get("cache_creation_input_tokens").Int())
-		cacheRdTok = int(usage.Get("cache_read_input_tokens").Int())
-	} else {
-		inputTok = r.inputTokens
-		outputTok = r.outputTokens
-		cacheCrTok = r.cacheCreationInputTokens
-		cacheRdTok = r.cacheReadInputTokens
-	}
+	inputTok, outputTok, cacheCrTok, cacheRdTok = pgUsageRowTokens(r)
 
 	rates, _ := lookupModelRates(pricing, r.model)
 	if r.costUSD.Valid {
@@ -692,22 +680,24 @@ func pgDailyUsageAmounts(
 	return
 }
 
+func pgUsageRowTokens(
+	r pgDailyUsageScanRow,
+) (inputTok, outputTok, cacheCrTok, cacheRdTok int) {
+	return db.UsageTokenValues(
+		r.usageSource, r.tokenJSON,
+		r.inputTokens, r.outputTokens,
+		r.cacheCreationInputTokens, r.cacheReadInputTokens,
+	)
+}
+
 func pgSessionRowCost(
 	r pgUsageScanRow, pricing map[string]modelRates,
 ) (cost float64, priced, contributes bool) {
-	var inTok, outTok, crTok, rdTok int
-	if r.usageSource == "message" {
-		usage := gjson.Parse(r.tokenJSON)
-		inTok = int(usage.Get("input_tokens").Int())
-		outTok = int(usage.Get("output_tokens").Int())
-		crTok = int(usage.Get("cache_creation_input_tokens").Int())
-		rdTok = int(usage.Get("cache_read_input_tokens").Int())
-	} else {
-		inTok = r.inputTokens
-		outTok = r.outputTokens
-		crTok = r.cacheCreationInputTokens
-		rdTok = r.cacheReadInputTokens
-	}
+	inTok, outTok, crTok, rdTok := db.UsageTokenValues(
+		r.usageSource, r.tokenJSON,
+		r.inputTokens, r.outputTokens,
+		r.cacheCreationInputTokens, r.cacheReadInputTokens,
+	)
 
 	if r.costUSD.Valid {
 		return r.costUSD.Float64, true, true

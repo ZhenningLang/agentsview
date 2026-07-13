@@ -4,6 +4,17 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+
+	"go.kenn.io/agentsview/internal/parser"
+)
+
+type TokenAggregateSource = parser.TokenAggregateSource
+
+const (
+	TokenAggregateUnknown     = parser.TokenAggregateUnknown
+	TokenAggregateMessages    = parser.TokenAggregateMessages
+	TokenAggregateUsageEvents = parser.TokenAggregateUsageEvents
+	TokenAggregateSummary     = parser.TokenAggregateSummary
 )
 
 // SessionBatchWrite is one full session rewrite for a bulk
@@ -11,13 +22,14 @@ import (
 // complete message set to store, the computed signal values,
 // and the data version to stamp after messages are written.
 type SessionBatchWrite struct {
-	Session         Session
-	Messages        []Message
-	UsageEvents     []UsageEvent
-	Signals         SessionSignalUpdate
-	Findings        []SecretFinding
-	DataVersion     int
-	ReplaceMessages bool
+	Session              Session
+	Messages             []Message
+	UsageEvents          []UsageEvent
+	Signals              SessionSignalUpdate
+	Findings             []SecretFinding
+	DataVersion          int
+	ReplaceMessages      bool
+	TokenAggregateSource TokenAggregateSource
 }
 
 // SessionBatchResult summarizes a WriteSessionBatch call.
@@ -56,6 +68,7 @@ func (db *DB) WriteSessionBatch(
 	defer func() { _ = tx.Rollback() }()
 
 	for i, write := range writes {
+		write, _ = sanitizeSessionBatchWrite(write)
 		savepoint := fmt.Sprintf("session_batch_%d", i)
 		if _, err := tx.Exec("SAVEPOINT " + savepoint); err != nil {
 			return result, fmt.Errorf(
@@ -123,6 +136,7 @@ func (db *DB) WriteSessionSnapshot(
 	defer func() { _ = tx.Rollback() }()
 
 	for i, write := range writes {
+		write, _ = sanitizeSessionBatchWrite(write)
 		savepoint := fmt.Sprintf("source_snapshot_%d", i)
 		if _, err := tx.Exec("SAVEPOINT " + savepoint); err != nil {
 			return result, fmt.Errorf(
@@ -213,6 +227,7 @@ func (db *DB) WriteSessionBatchAtomic(
 	defer func() { _ = tx.Rollback() }()
 
 	for _, write := range writes {
+		write, _ = sanitizeSessionBatchWrite(write)
 		messagesWritten, err := writeOneSessionBatchTx(tx, write)
 		if err != nil {
 			result.WrittenSessions = 0
@@ -247,6 +262,76 @@ func (db *DB) WriteSessionBatchAtomic(
 		return result, fmt.Errorf("committing batch tx: %w", err)
 	}
 	return result, nil
+}
+
+func sanitizeSessionBatchWrite(
+	write SessionBatchWrite,
+) (SessionBatchWrite, ValidationStats) {
+	var messageStats, eventStats ValidationStats
+	write.Messages, messageStats = SanitizedMessages(write.Messages)
+	write.UsageEvents, eventStats = SanitizedUsageEvents(write.UsageEvents)
+	stats := ValidateAndSanitize(&write.Session, nil, nil)
+	stats.Add(messageStats)
+	stats.Add(eventStats)
+	switch write.TokenAggregateSource {
+	case TokenAggregateMessages:
+		write.Session.TotalOutputTokens,
+			write.Session.HasTotalOutputTokens, _, _ =
+			batchMessageTokenTotals(write.Messages)
+		_, _, write.Session.PeakContextTokens,
+			write.Session.HasPeakContextTokens =
+			batchMessageTokenTotals(write.Messages)
+	case TokenAggregateUsageEvents:
+		write.Session.TotalOutputTokens,
+			write.Session.HasTotalOutputTokens, _, _ =
+			batchUsageEventTokenTotals(write.UsageEvents)
+		_, _, write.Session.PeakContextTokens,
+			write.Session.HasPeakContextTokens =
+			batchUsageEventTokenTotals(write.UsageEvents)
+	}
+	return write, stats
+}
+
+func batchMessageTokenTotals(
+	msgs []Message,
+) (totalOutput int, hasOutput bool, peakContext int, hasContext bool) {
+	for _, msg := range msgs {
+		if msg.HasOutputTokens {
+			hasOutput = true
+			totalOutput += msg.OutputTokens
+		}
+		if msg.HasContextTokens {
+			hasContext = true
+			if msg.ContextTokens > peakContext {
+				peakContext = msg.ContextTokens
+			}
+		}
+	}
+	return totalOutput, hasOutput, peakContext, hasContext
+}
+
+func batchUsageEventTokenTotals(
+	events []UsageEvent,
+) (totalOutput int, hasOutput bool, peakContext int, hasContext bool) {
+	for _, event := range events {
+		if UsageSourceIsSessionSummary(SanitizeUTF8(event.Source)) {
+			continue
+		}
+		if event.OutputTokens > 0 {
+			hasOutput = true
+			totalOutput += event.OutputTokens
+		}
+		contextTokens := event.InputTokens +
+			event.CacheCreationInputTokens +
+			event.CacheReadInputTokens
+		if contextTokens > 0 {
+			hasContext = true
+			if contextTokens > peakContext {
+				peakContext = contextTokens
+			}
+		}
+	}
+	return totalOutput, hasOutput, peakContext, hasContext
 }
 
 func rollbackSavepoint(tx *sql.Tx, savepoint string) error {

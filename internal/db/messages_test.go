@@ -32,6 +32,232 @@ func TestInsertAndGetMessage_ThinkingText(t *testing.T) {
 	assert.Equal(t, "I am pondering", got[0].ThinkingText, "ThinkingText")
 }
 
+func TestDirectDBWriteEntrypointsSanitizeParserOutput(t *testing.T) {
+	t.Run("upsert session", func(t *testing.T) {
+		d := testDB(t)
+		first := "first\x07message"
+		started := "1500-01-01T00:00:00Z"
+		require.NoError(t, d.UpsertSession(Session{
+			ID: "direct-session", Project: "proj\x1bect",
+			Machine: defaultMachine, Agent: defaultAgent,
+			FirstMessage: &first, StartedAt: &started,
+		}))
+
+		got, err := d.GetSessionFull(context.Background(), "direct-session")
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.Equal(t, "project", got.Project)
+		require.NotNil(t, got.FirstMessage)
+		assert.Equal(t, "firstmessage", *got.FirstMessage)
+		assert.Nil(t, got.StartedAt)
+	})
+
+	t.Run("insert messages and nested tools", func(t *testing.T) {
+		d := testDB(t)
+		insertSession(t, d, "direct-message", "proj")
+		resultRaw := "result\x07body"
+		eventRaw := "event\u0085body"
+		require.NoError(t, d.InsertMessages([]Message{{
+			SessionID: "direct-message", Ordinal: 0,
+			Role: "wizard", Content: "answer\x1bbody",
+			ContentLength: len("answer\x1bbody"),
+			Model:         strings.Repeat("m", MaxModelLen+20),
+			ContextTokens: -1, OutputTokens: MaxPlausibleTokens + 1,
+			HasContextTokens: true, HasOutputTokens: true,
+			Timestamp: "2999-01-01T00:00:00Z",
+			ToolCalls: []ToolCall{{
+				ToolName: "Re\x07ad", Category: "R\x1bead",
+				ToolUseID: "tool\x00id", InputJSON: "{\"x\":1}\x07",
+				SkillName:           "sk\u0085ill",
+				ResultContent:       resultRaw,
+				ResultContentLength: len(resultRaw),
+				SubagentSessionID:   "agent\x1bchild",
+				ResultEvents: []ToolResultEvent{{
+					ToolUseID: "tool\x00id", AgentID: "agent\x07id",
+					SubagentSessionID: "child\u0085id",
+					Source:            "custom\x1b", Status: "complete\x07d",
+					Content: eventRaw, ContentLength: len(eventRaw),
+					Timestamp: "2999-01-01T00:00:00Z",
+				}},
+			}},
+		}}))
+
+		msgs, err := d.GetAllMessages(context.Background(), "direct-message")
+		require.NoError(t, err)
+		require.Len(t, msgs, 1)
+		assert.Empty(t, msgs[0].Role)
+		assert.Equal(t, "answerbody", msgs[0].Content)
+		assert.Equal(t, len("answerbody"), msgs[0].ContentLength)
+		assert.Len(t, msgs[0].Model, MaxModelLen)
+		assert.Zero(t, msgs[0].ContextTokens)
+		assert.Equal(t, MaxPlausibleTokens, msgs[0].OutputTokens)
+		assert.Empty(t, msgs[0].Timestamp)
+		require.Len(t, msgs[0].ToolCalls, 1)
+		call := msgs[0].ToolCalls[0]
+		assert.Equal(t, "Read", call.ToolName)
+		assert.Equal(t, "Read", call.Category)
+		assert.Equal(t, "toolid", call.ToolUseID)
+		assert.Equal(t, "{\"x\":1}", call.InputJSON)
+		assert.Equal(t, "skill", call.SkillName)
+		assert.Equal(t, "resultbody", call.ResultContent)
+		assert.Equal(t, len("resultbody"), call.ResultContentLength)
+		assert.Equal(t, "agentchild", call.SubagentSessionID)
+		require.Len(t, call.ResultEvents, 1)
+		event := call.ResultEvents[0]
+		assert.Equal(t, "toolid", event.ToolUseID)
+		assert.Equal(t, "agentid", event.AgentID)
+		assert.Equal(t, "childid", event.SubagentSessionID)
+		assert.Equal(t, "custom", event.Source)
+		assert.Equal(t, "completed", event.Status)
+		assert.Equal(t, "eventbody", event.Content)
+		assert.Equal(t, len("eventbody"), event.ContentLength)
+		assert.Empty(t, event.Timestamp)
+	})
+
+	t.Run("atomic batch and usage event", func(t *testing.T) {
+		d := testDB(t)
+		result, err := d.WriteSessionBatchAtomic([]SessionBatchWrite{{
+			Session: Session{
+				ID: "direct-batch", Project: "proj\x07ect",
+				Machine: defaultMachine, Agent: defaultAgent,
+				MessageCount:         1,
+				TotalOutputTokens:    9_000_000,
+				HasTotalOutputTokens: true,
+			},
+			Messages: []Message{{
+				SessionID: "direct-batch", Ordinal: 0,
+				Role: "assistant", Content: "ok",
+				OutputTokens: 9_000_000, HasOutputTokens: true,
+			}},
+			UsageEvents: []UsageEvent{{
+				SessionID: "direct-batch", Source: "generation\x07",
+				Model:       strings.Repeat("m", MaxModelLen+1),
+				InputTokens: 9_000_000,
+				OccurredAt:  "1800-01-01T00:00:00Z",
+			}},
+			TokenAggregateSource: TokenAggregateMessages,
+			ReplaceMessages:      true,
+		}})
+		require.NoError(t, err)
+		assert.Equal(t, 1, result.WrittenSessions)
+
+		session, err := d.GetSessionFull(context.Background(), "direct-batch")
+		require.NoError(t, err)
+		require.NotNil(t, session)
+		assert.Equal(t, "project", session.Project)
+		assert.Equal(t, MaxPlausibleTokens, session.TotalOutputTokens)
+		events, err := d.GetUsageEvents(context.Background(), "direct-batch")
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, "generation", events[0].Source)
+		assert.Len(t, events[0].Model, MaxModelLen)
+		assert.Equal(t, MaxPlausibleTokens, events[0].InputTokens)
+		assert.Empty(t, events[0].OccurredAt)
+	})
+}
+
+func TestSessionBatchTokenAggregateProvenanceIsExplicit(t *testing.T) {
+	tests := []struct {
+		name       string
+		source     TokenAggregateSource
+		wantOutput int
+		wantPeak   int
+	}{
+		{
+			name:       "authoritative summary survives row-value collision",
+			source:     TokenAggregateSummary,
+			wantOutput: 3_000_000,
+			wantPeak:   3_000_000,
+		},
+		{
+			name:       "message-derived aggregate follows sanitized rows",
+			source:     TokenAggregateMessages,
+			wantOutput: MaxPlausibleTokens,
+			wantPeak:   MaxPlausibleTokens,
+		},
+		{
+			name:       "unknown provenance preserves aggregate without guessing",
+			source:     TokenAggregateUnknown,
+			wantOutput: 3_000_000,
+			wantPeak:   3_000_000,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := testDB(t)
+			result, err := d.WriteSessionBatchAtomic([]SessionBatchWrite{{
+				Session: Session{
+					ID: "provenance", Project: "proj",
+					Machine: defaultMachine, Agent: defaultAgent,
+					MessageCount:         1,
+					TotalOutputTokens:    3_000_000,
+					PeakContextTokens:    3_000_000,
+					HasTotalOutputTokens: true,
+					HasPeakContextTokens: true,
+				},
+				Messages: []Message{{
+					SessionID: "provenance", Ordinal: 0,
+					Role: "assistant", Content: "answer",
+					OutputTokens: 3_000_000, ContextTokens: 3_000_000,
+					HasOutputTokens: true, HasContextTokens: true,
+				}},
+				TokenAggregateSource: tt.source,
+				ReplaceMessages:      true,
+			}})
+			require.NoError(t, err)
+			assert.Equal(t, 1, result.WrittenSessions)
+
+			got, err := d.GetSessionFull(context.Background(), "provenance")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, tt.wantOutput, got.TotalOutputTokens)
+			assert.Equal(t, tt.wantPeak, got.PeakContextTokens)
+		})
+	}
+}
+
+func TestSessionBatchSanitizesDirtySummarySourceWithoutReclassifyingAggregate(t *testing.T) {
+	d := testDB(t)
+	result, err := d.WriteSessionBatchAtomic([]SessionBatchWrite{{
+		Session: Session{
+			ID: "dirty-summary", Project: "proj",
+			Machine: defaultMachine, Agent: "droid",
+			MessageCount:         1,
+			TotalOutputTokens:    3_000_000,
+			PeakContextTokens:    3_500_000,
+			HasTotalOutputTokens: true,
+			HasPeakContextTokens: true,
+		},
+		Messages: []Message{{
+			SessionID: "dirty-summary", Ordinal: 0,
+			Role: "user", Content: "hello",
+		}},
+		UsageEvents: []UsageEvent{{
+			SessionID: "dirty-summary", Source: "droid-settings\x07",
+			InputTokens: 2_500_000, OutputTokens: 3_000_000,
+			CacheCreationInputTokens: 500_000,
+			CacheReadInputTokens:     500_000,
+		}},
+		TokenAggregateSource: TokenAggregateSummary,
+		ReplaceMessages:      true,
+	}})
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.WrittenSessions)
+
+	got, err := d.GetSessionFull(context.Background(), "dirty-summary")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, 3_000_000, got.TotalOutputTokens)
+	assert.Equal(t, 3_500_000, got.PeakContextTokens)
+	events, err := d.GetUsageEvents(context.Background(), "dirty-summary")
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.Equal(t, "droid-settings", events[0].Source)
+	assert.Equal(t, 3_000_000, events[0].OutputTokens)
+	assert.Equal(t, 2_500_000, events[0].InputTokens)
+}
+
 func TestWriteSessionBatchCommitsGoodRowsAndSkipsBadRows(t *testing.T) {
 	d := testDB(t)
 

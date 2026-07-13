@@ -79,6 +79,41 @@ func TestImportClaudeAI(t *testing.T) {
 	assert.Len(t, msgs, 2)
 }
 
+func TestImportClaudeAISanitizesParserOutputBeforePersistence(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	raw := `[{
+  "uuid":"import-dirty",
+  "name":"Dirty\u0007 Name",
+  "created_at":"2026-02-01T09:00:00Z",
+  "updated_at":"2026-02-01T09:01:00Z",
+  "chat_messages":[{
+    "uuid":"m1",
+    "text":"Hello\u001b world",
+    "content":[{"type":"text","text":"Hello\u001b world"}],
+    "sender":"human",
+    "created_at":"2026-02-01T09:00:00Z"
+  }]
+}]`
+
+	stats, err := ImportClaudeAI(ctx, d, strings.NewReader(raw), nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, stats.Imported)
+
+	session, err := d.GetSessionFull(ctx, "claude-ai:import-dirty")
+	require.NoError(t, err)
+	require.NotNil(t, session)
+	require.NotNil(t, session.SessionName)
+	assert.Equal(t, "Dirty Name", *session.SessionName)
+	require.NotNil(t, session.FirstMessage)
+	assert.Equal(t, "Hello world", *session.FirstMessage)
+	msgs, err := d.GetAllMessages(ctx, session.ID)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "Hello world", msgs[0].Content)
+	assert.Equal(t, len("Hello world"), msgs[0].ContentLength)
+}
+
 func TestImportClaudeAI_ReimportSkipsUnchanged(t *testing.T) {
 	d := testDB(t)
 	ctx := context.Background()

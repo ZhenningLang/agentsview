@@ -4,6 +4,8 @@ import (
 	"log"
 	"sync/atomic"
 	"time"
+
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // PhaseStats accumulates wall-clock time spent in each phase of the
@@ -17,12 +19,18 @@ import (
 // the batch. PhaseStats measures the time spent in each step of that
 // consumer so a profile-driven analysis can attribute the wall clock.
 type PhaseStats struct {
-	PrepNanos      atomic.Int64 // prepareSessionWrite (toDBMessages, toDBSession, ...)
-	ScanNanos      atomic.Int64 // computeSignalsAndSecrets (regex scan)
-	WriteNanos     atomic.Int64 // db.WriteSessionBatch (one DB tx per batch)
-	Batches        atomic.Int64
-	BatchedWrites  atomic.Int64 // sessions written via bulk batches
-	WriteBatchSize atomic.Int64 // sum of len(writes) across all batches
+	PrepNanos               atomic.Int64 // prepareSessionWrite (toDBMessages, toDBSession, ...)
+	ScanNanos               atomic.Int64 // computeSignalsAndSecrets (regex scan)
+	WriteNanos              atomic.Int64 // db.WriteSessionBatch (one DB tx per batch)
+	Batches                 atomic.Int64
+	BatchedWrites           atomic.Int64 // sessions written via bulk batches
+	WriteBatchSize          atomic.Int64 // sum of len(writes) across all batches
+	ValidationSessions      atomic.Int64
+	ValidationControlFields atomic.Int64
+	ValidationModels        atomic.Int64
+	ValidationTokens        atomic.Int64
+	ValidationRoles         atomic.Int64
+	ValidationTimestamps    atomic.Int64
 }
 
 // Reset zeroes every counter. Called at the start of each sync pass so
@@ -34,6 +42,24 @@ func (p *PhaseStats) Reset() {
 	p.Batches.Store(0)
 	p.BatchedWrites.Store(0)
 	p.WriteBatchSize.Store(0)
+	p.ValidationSessions.Store(0)
+	p.ValidationControlFields.Store(0)
+	p.ValidationModels.Store(0)
+	p.ValidationTokens.Store(0)
+	p.ValidationRoles.Store(0)
+	p.ValidationTimestamps.Store(0)
+}
+
+func (p *PhaseStats) recordValidation(stats db.ValidationStats) {
+	if stats.Empty() {
+		return
+	}
+	p.ValidationSessions.Add(1)
+	p.ValidationControlFields.Add(int64(stats.ControlCharsStripped))
+	p.ValidationModels.Add(int64(stats.ModelClamped))
+	p.ValidationTokens.Add(int64(stats.TokensClamped))
+	p.ValidationRoles.Add(int64(stats.RoleCoerced))
+	p.ValidationTimestamps.Add(int64(stats.TimestampsBlanked))
 }
 
 // Log emits a single-line summary of accumulated phase totals. It is

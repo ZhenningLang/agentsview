@@ -337,6 +337,11 @@ func TestSanitizePG(t *testing.T) {
 			want:  "abc",
 		},
 		{
+			name:  "control runes use shared sanitizer",
+			input: "a\x1bb\u0085c\td",
+			want:  "abc\td",
+		},
+		{
 			name:  "empty string",
 			input: "",
 			want:  "",

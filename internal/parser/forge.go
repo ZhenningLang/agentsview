@@ -453,6 +453,9 @@ func applyForgeMetrics(sess *ParsedSession, metricsRaw string) {
 		sess.HasPeakContextTokens = true
 	}
 	sess.aggregateTokenPresenceKnown = sess.HasTotalOutputTokens || sess.HasPeakContextTokens
+	if sess.aggregateTokenPresenceKnown {
+		sess.AggregateTokenSource = TokenAggregateSummary
+	}
 }
 
 func forgeToolOutputText(output gjson.Result) string {

@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tidwall/gjson"
-
 	pricingpkg "go.kenn.io/agentsview/internal/pricing"
 )
 
@@ -738,20 +736,7 @@ func scanDailyUsageRow(rows *sql.Rows) (dailyUsageScanRow, error) {
 func dailyUsageAmounts(
 	r dailyUsageScanRow, pricing map[string]modelRates,
 ) (inputTok, outputTok, cacheCrTok, cacheRdTok int, cost, savings float64) {
-	if r.usageSource == "message" {
-		usage := gjson.Parse(r.tokenJSON)
-		inputTok = int(usage.Get("input_tokens").Int())
-		outputTok = int(usage.Get("output_tokens").Int())
-		cacheCrTok = int(
-			usage.Get("cache_creation_input_tokens").Int())
-		cacheRdTok = int(
-			usage.Get("cache_read_input_tokens").Int())
-	} else {
-		inputTok = r.inputTokens
-		outputTok = r.outputTokens
-		cacheCrTok = r.cacheCreationInputTokens
-		cacheRdTok = r.cacheReadInputTokens
-	}
+	inputTok, outputTok, cacheCrTok, cacheRdTok = usageRowTokens(r)
 
 	rates, _ := lookupModelRates(pricing, r.model)
 	if r.costUSD.Valid {
@@ -769,6 +754,16 @@ func dailyUsageAmounts(
 		(rates.input - rates.cacheCreation) / 1_000_000
 	savings = readDelta + crDelta
 	return
+}
+
+func usageRowTokens(
+	r dailyUsageScanRow,
+) (inputTok, outputTok, cacheCrTok, cacheRdTok int) {
+	return UsageTokenValues(
+		r.usageSource, r.tokenJSON,
+		r.inputTokens, r.outputTokens,
+		r.cacheCreationInputTokens, r.cacheReadInputTokens,
+	)
 }
 
 func (db *DB) loadTopSessionMetadata(
@@ -1560,19 +1555,11 @@ type SessionUsage struct {
 func sessionRowCost(
 	r usageScanRow, pricing map[string]modelRates,
 ) (cost float64, priced, contributes bool) {
-	var inTok, outTok, crTok, rdTok int
-	if r.usageSource == "message" {
-		usage := gjson.Parse(r.tokenJSON)
-		inTok = int(usage.Get("input_tokens").Int())
-		outTok = int(usage.Get("output_tokens").Int())
-		crTok = int(usage.Get("cache_creation_input_tokens").Int())
-		rdTok = int(usage.Get("cache_read_input_tokens").Int())
-	} else {
-		inTok = r.inputTokens
-		outTok = r.outputTokens
-		crTok = r.cacheCreationInputTokens
-		rdTok = r.cacheReadInputTokens
-	}
+	inTok, outTok, crTok, rdTok := UsageTokenValues(
+		r.usageSource, r.tokenJSON,
+		r.inputTokens, r.outputTokens,
+		r.cacheCreationInputTokens, r.cacheReadInputTokens,
+	)
 
 	if r.costUSD.Valid {
 		return r.costUSD.Float64, true, true

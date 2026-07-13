@@ -116,6 +116,167 @@ func TestPushSystemFingerprintCollisionRegression(t *testing.T) {
 	checkIsSystem(t, pg, sessID, secondSet, 7)
 }
 
+func TestPushNestedToolFingerprintRepairsDirtyPGAndThenNoOps(t *testing.T) {
+	pgURL := testPGURL(t)
+	const schema = "agentsview_push_tool_fingerprint_test"
+	pg, err := Open(pgURL, schema, true)
+	require.NoError(t, err)
+	defer pg.Close()
+
+	ctx := context.Background()
+	_, err = pg.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`)
+	require.NoError(t, err)
+	require.NoError(t, EnsureSchema(ctx, pg, schema))
+
+	localDB, err := db.Open(filepath.Join(t.TempDir(), "local.db"))
+	require.NoError(t, err)
+	defer localDB.Close()
+	syncer := &Sync{
+		pg: pg, local: localDB, machine: "test-machine",
+		schema: schema, schemaDone: true,
+	}
+
+	const sessionID = "tool-fingerprint-001"
+	started := "2026-01-01T00:00:00Z"
+	require.NoError(t, localDB.UpsertSession(db.Session{
+		ID: sessionID, Project: "p", Machine: "test-machine",
+		Agent: "claude", CreatedAt: started, StartedAt: &started,
+		MessageCount: 1,
+	}))
+	require.NoError(t, localDB.InsertMessages([]db.Message{{
+		SessionID: sessionID, Ordinal: 0,
+		Role: "assistant", Content: "answer", ContentLength: 6,
+		ToolCalls: []db.ToolCall{{
+			ToolName: "Read", Category: "Read", ToolUseID: "tool-id",
+			InputJSON:     `{"path":"README.md"}`,
+			ResultContent: "same", ResultContentLength: 4,
+			ResultEvents: []db.ToolResultEvent{{
+				ToolUseID: "tool-id", Source: "custom",
+				Status: "completed", Content: "equal", ContentLength: 5,
+				Timestamp: started, EventIndex: 0,
+			}},
+		}},
+	}}))
+
+	first, err := syncer.Push(ctx, false, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, first.MessagesPushed)
+
+	_, err = pg.Exec(`
+		UPDATE tool_calls SET tool_name = 'R' || chr(7) || 'ead'
+		WHERE session_id = $1;
+		UPDATE tool_result_events SET source = 'custo' || chr(7) || 'm'
+		WHERE session_id = $1`, sessionID)
+	require.NoError(t, err)
+	require.NoError(t, localDB.SetSyncState("last_push_at", ""))
+	require.NoError(t, localDB.SetSyncState(lastPushBoundaryStateKey, ""))
+
+	second, err := syncer.Push(ctx, false, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, second.MessagesPushed)
+	var toolName, source string
+	require.NoError(t, pg.QueryRow(`
+		SELECT tool_name FROM tool_calls WHERE session_id = $1`,
+		sessionID).Scan(&toolName))
+	require.NoError(t, pg.QueryRow(`
+		SELECT source FROM tool_result_events WHERE session_id = $1`,
+		sessionID).Scan(&source))
+	assert.Equal(t, "Read", toolName)
+	assert.Equal(t, "custom", source)
+
+	require.NoError(t, localDB.SetSyncState("last_push_at", ""))
+	require.NoError(t, localDB.SetSyncState(lastPushBoundaryStateKey, ""))
+	third, err := syncer.Push(ctx, false, nil)
+	require.NoError(t, err)
+	assert.Zero(t, third.MessagesPushed)
+}
+
+func TestPushExactMessageAndUsageFingerprintRepairsDirtyPGAndThenNoOps(t *testing.T) {
+	pgURL := testPGURL(t)
+	const schema = "agentsview_push_message_fingerprint_test"
+	pg, err := Open(pgURL, schema, true)
+	require.NoError(t, err)
+	defer pg.Close()
+
+	ctx := context.Background()
+	_, err = pg.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`)
+	require.NoError(t, err)
+	require.NoError(t, EnsureSchema(ctx, pg, schema))
+
+	localDB, err := db.Open(filepath.Join(t.TempDir(), "local.db"))
+	require.NoError(t, err)
+	defer localDB.Close()
+	syncer := &Sync{
+		pg: pg, local: localDB, machine: "test-machine",
+		schema: schema, schemaDone: true,
+	}
+
+	const sessionID = "message-fingerprint-001"
+	started := "2026-01-01T00:00:00.123456789Z"
+	require.NoError(t, localDB.UpsertSession(db.Session{
+		ID: sessionID, Project: "p", Machine: "test-machine",
+		Agent: "claude", CreatedAt: started, StartedAt: &started,
+		MessageCount: 1,
+	}))
+	require.NoError(t, localDB.InsertMessages([]db.Message{{
+		SessionID: sessionID, Ordinal: 0,
+		Role: "assistant", Content: "answer aaaa", ThinkingText: "plan",
+		Timestamp: started, HasThinking: true, HasToolUse: false,
+		ContentLength: len("answer aaaa") + len("plan"), Model: "model",
+	}}))
+	require.NoError(t, localDB.ReplaceSessionUsageEvents(sessionID,
+		[]db.UsageEvent{{
+			SessionID: sessionID, Source: "generation", Model: "model",
+			InputTokens: 1, OutputTokens: 2,
+			OccurredAt: started, DedupKey: "generation",
+		}}))
+	first, err := syncer.Push(ctx, false, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, first.MessagesPushed)
+
+	_, err = pg.Exec(`
+		UPDATE messages SET
+			role = 'assistant' || chr(7),
+			content = 'answer bbbb',
+			thinking_text = 'idea',
+			has_thinking = FALSE,
+			timestamp = '2026-01-01T00:00:01Z'
+		WHERE session_id = $1;
+		UPDATE usage_events SET
+			occurred_at = '2026-01-01T00:00:01Z'
+		WHERE session_id = $1`, sessionID)
+	require.NoError(t, err)
+	require.NoError(t, localDB.SetSyncState("last_push_at", ""))
+	require.NoError(t, localDB.SetSyncState(lastPushBoundaryStateKey, ""))
+
+	second, err := syncer.Push(ctx, false, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, second.MessagesPushed)
+	var role, content, thinking string
+	var hasThinking bool
+	var messageTimestamp, usageTimestamp time.Time
+	require.NoError(t, pg.QueryRow(`
+		SELECT role, content, thinking_text, has_thinking, timestamp
+		FROM messages WHERE session_id = $1`, sessionID).Scan(
+		&role, &content, &thinking, &hasThinking, &messageTimestamp,
+	))
+	require.NoError(t, pg.QueryRow(`
+		SELECT occurred_at FROM usage_events WHERE session_id = $1`,
+		sessionID).Scan(&usageTimestamp))
+	assert.Equal(t, "assistant", role)
+	assert.Equal(t, "answer aaaa", content)
+	assert.Equal(t, "plan", thinking)
+	assert.True(t, hasThinking)
+	assert.Equal(t, started[:26]+"Z", FormatISO8601(messageTimestamp))
+	assert.Equal(t, started[:26]+"Z", FormatISO8601(usageTimestamp))
+
+	require.NoError(t, localDB.SetSyncState("last_push_at", ""))
+	require.NoError(t, localDB.SetSyncState(lastPushBoundaryStateKey, ""))
+	third, err := syncer.Push(ctx, false, nil)
+	require.NoError(t, err)
+	assert.Zero(t, third.MessagesPushed)
+}
+
 // TestPushSessionTerminationStatus verifies that pushSession round-trips
 // the termination_status column to PG: a non-nil value writes the string,
 // and a subsequent push with nil clears the column back to NULL via the

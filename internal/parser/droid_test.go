@@ -78,6 +78,7 @@ func TestParseDroidSession_IncludesSettingsUsageEvent(t *testing.T) {
 	assert.Equal(t, 200, sess.TotalOutputTokens)
 	assert.True(t, sess.HasPeakContextTokens)
 	assert.Equal(t, 1430, sess.PeakContextTokens)
+	assert.Equal(t, TokenAggregateSummary, sess.AggregateTokenSource)
 
 	require.Len(t, result.Messages, 4)
 	assert.True(t, result.Messages[0].IsSystem)

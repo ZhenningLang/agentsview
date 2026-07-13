@@ -560,6 +560,7 @@ func TestParseCopilotSession_OutputTokens(t *testing.T) {
 	// Session total should be sum of both assistant messages.
 	assert.True(t, sess.HasTotalOutputTokens, "HasTotalOutputTokens")
 	assert.Equal(t, 205, sess.TotalOutputTokens, "TotalOutputTokens")
+	assert.Equal(t, TokenAggregateMessages, sess.AggregateTokenSource)
 
 	// Per-message token presence.
 	assert.True(t, msgs[1].HasOutputTokens, "msgs[1].HasOutputTokens")

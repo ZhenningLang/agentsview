@@ -1,10 +1,12 @@
 package sync_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -6116,6 +6118,103 @@ func TestIncrementalSync_ClaudeAppend(t *testing.T) {
 	assert.True(t, msgs[1].HasOutputTokens, "assistant HasOutputTokens = false, want true")
 	assert.Equal(t, 200, msgs[1].OutputTokens, "assistant OutputTokens = %d, want 200", msgs[1].OutputTokens)
 	assert.Equal(t, 500, msgs[1].ContextTokens, "assistant ContextTokens = %d, want 500", msgs[1].ContextTokens)
+}
+
+func TestIncrementalSync_ClaudeAppendSanitizesParserOutput(t *testing.T) {
+	env := setupTestEnv(t)
+	initial := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("hello", tsZero),
+	)
+	path := env.writeClaudeSession(
+		t, "proj", "inc-validation.jsonl", initial,
+	)
+	env.engine.SyncAll(context.Background(), nil)
+
+	longModel := strings.Repeat("m", db.MaxModelLen+50)
+	appendedJSON, err := json.Marshal(map[string]any{
+		"type":      "assistant",
+		"timestamp": "2999-01-01T00:00:00Z",
+		"message": map[string]any{
+			"model": longModel,
+			"usage": map[string]any{
+				"input_tokens":  9_000_000,
+				"output_tokens": 9_000_000,
+			},
+			"content": []map[string]any{
+				{"type": "text", "text": "bad\x1b]0;title\x07tail"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err)
+	_, err = f.WriteString(string(appendedJSON) + "\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	env.engine.SyncPaths([]string{path})
+	log.SetOutput(previousOutput)
+	log.SetFlags(previousFlags)
+
+	msgs := fetchMessages(t, env.db, "inc-validation")
+	require.Len(t, msgs, 2)
+	assert.Equal(t, "bad]0;titletail", msgs[1].Content)
+	assert.Len(t, msgs[1].Model, db.MaxModelLen)
+	assert.Equal(t, db.MaxPlausibleTokens, msgs[1].ContextTokens)
+	assert.Equal(t, db.MaxPlausibleTokens, msgs[1].OutputTokens)
+	assert.Empty(t, msgs[1].Timestamp)
+
+	session, err := env.db.GetSessionFull(
+		context.Background(), "inc-validation",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, session)
+	assert.Equal(t, db.MaxPlausibleTokens, session.TotalOutputTokens)
+	assert.Equal(t, db.MaxPlausibleTokens, session.PeakContextTokens)
+	require.NotNil(t, session.EndedAt)
+	assert.Equal(t, tsZero, *session.EndedAt,
+		"implausible append timestamp must not replace stored ended_at")
+	assert.Contains(t, logs.String(),
+		"parser validation session=inc-validation agent=claude")
+	assert.Contains(t, logs.String(),
+		"controls=1 models=1 tokens=2 roles=0 timestamps=1")
+	assert.Equal(t, int64(1),
+		env.engine.PhaseStats().ValidationSessions.Load())
+
+	cleanJSON, err := json.Marshal(map[string]any{
+		"type":      "assistant",
+		"timestamp": "2026-07-13T12:05:00Z",
+		"message": map[string]any{
+			"model": "claude-clean",
+			"usage": map[string]any{
+				"input_tokens":  10,
+				"output_tokens": 5,
+			},
+			"content": []map[string]any{
+				{"type": "text", "text": "clean append"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	f, err = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err)
+	_, err = f.WriteString(string(cleanJSON) + "\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	env.engine.SyncPaths([]string{path})
+	assert.Zero(t, env.engine.PhaseStats().ValidationSessions.Load(),
+		"validation counters must describe only the latest SyncPaths pass")
+
+	env.engine.PhaseStats().ValidationSessions.Store(1)
+	env.engine.SyncPaths([]string{filepath.Join(t.TempDir(), "ignored.txt")})
+	assert.Zero(t, env.engine.PhaseStats().ValidationSessions.Load(),
+		"ignored path calls still define the latest SyncPaths pass")
 }
 
 func TestIncrementalSync_ClaudeSameStatInPlaceRewrite(t *testing.T) {

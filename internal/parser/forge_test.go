@@ -347,6 +347,7 @@ func TestForgeTokenFallbacks(t *testing.T) {
 		s := sessions[0].Session
 		assertEq(t, "HasTotalOutputTokens", s.HasTotalOutputTokens, true)
 		assertEq(t, "TotalOutputTokens", s.TotalOutputTokens, 25) // 10+15
+		assertEq(t, "AggregateTokenSource", s.AggregateTokenSource, TokenAggregateMessages)
 		assertEq(t, "HasPeakContextTokens", s.HasPeakContextTokens, true)
 		// Peak is max(50+20=70, 80+30=110) = 110
 		assert.Contains(t, []int{110, 70}, s.PeakContextTokens,

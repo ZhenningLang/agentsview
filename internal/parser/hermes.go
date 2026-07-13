@@ -779,6 +779,9 @@ func applyHermesStateMetadata(
 	}
 	sess.aggregateTokenPresenceKnown =
 		sess.HasTotalOutputTokens || sess.HasPeakContextTokens
+	if sess.aggregateTokenPresenceKnown {
+		sess.AggregateTokenSource = TokenAggregateSummary
+	}
 
 	if selectedPath != "" {
 		if info, err := os.Stat(selectedPath); err == nil {

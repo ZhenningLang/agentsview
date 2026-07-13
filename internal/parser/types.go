@@ -552,7 +552,19 @@ type RoleType string
 const (
 	RoleUser      RoleType = "user"
 	RoleAssistant RoleType = "assistant"
+	RoleSystem    RoleType = "system"
+	RoleTool      RoleType = "tool"
 )
+
+// ValidRole reports whether a role is recognized or intentionally absent.
+func ValidRole(role RoleType) bool {
+	switch role {
+	case "", RoleUser, RoleAssistant, RoleSystem, RoleTool:
+		return true
+	default:
+		return false
+	}
+}
 
 // FileInfo holds file system metadata for a session source file.
 type FileInfo struct {
@@ -599,7 +611,19 @@ type ParsedSession struct {
 	// aggregateTokenPresenceKnown marks session aggregate token
 	// coverage as parser-owned and authoritative.
 	aggregateTokenPresenceKnown bool
+	AggregateTokenSource        TokenAggregateSource
 }
+
+// TokenAggregateSource identifies whether session token aggregates are
+// derived from row-level data or supplied directly by the provider.
+type TokenAggregateSource string
+
+const (
+	TokenAggregateUnknown     TokenAggregateSource = ""
+	TokenAggregateMessages    TokenAggregateSource = "messages"
+	TokenAggregateUsageEvents TokenAggregateSource = "usage_events"
+	TokenAggregateSummary     TokenAggregateSource = "summary"
+)
 
 // ParsedToolCall holds a single tool invocation extracted from
 // a message.
@@ -709,6 +733,7 @@ func accumulateMessageTokenUsage(
 	messages []ParsedMessage,
 ) {
 	sess.aggregateTokenPresenceKnown = true
+	sess.AggregateTokenSource = TokenAggregateMessages
 	for _, m := range messages {
 		if m.HasOutputTokens {
 			sess.HasTotalOutputTokens = true
@@ -736,22 +761,9 @@ func applyUsageEventTokenTotals(
 	sess *ParsedSession,
 	events []ParsedUsageEvent,
 ) {
-	totalOutput := 0
-	peakContext := 0
-	hasOutput := false
-	hasContext := false
-	for _, ev := range events {
-		if ev.OutputTokens > 0 {
-			hasOutput = true
-			totalOutput += ev.OutputTokens
-		}
-		if ev.InputTokens > 0 {
-			hasContext = true
-			if ev.InputTokens > peakContext {
-				peakContext = ev.InputTokens
-			}
-		}
-	}
+	sess.AggregateTokenSource = TokenAggregateUsageEvents
+	totalOutput, hasOutput, peakContext, hasContext :=
+		UsageEventTokenAggregate(events)
 	if hasOutput {
 		sess.HasTotalOutputTokens = true
 		sess.TotalOutputTokens = totalOutput
@@ -760,6 +772,29 @@ func applyUsageEventTokenTotals(
 		sess.HasPeakContextTokens = true
 		sess.PeakContextTokens = peakContext
 	}
+}
+
+// UsageEventTokenAggregate computes event-derived totals from positive output
+// tokens and peak full context (input plus cache creation and cache read).
+func UsageEventTokenAggregate(
+	events []ParsedUsageEvent,
+) (totalOutput int, hasOutput bool, peakContext int, hasContext bool) {
+	for _, ev := range events {
+		if ev.OutputTokens > 0 {
+			hasOutput = true
+			totalOutput += ev.OutputTokens
+		}
+		contextTokens := ev.InputTokens +
+			ev.CacheCreationInputTokens +
+			ev.CacheReadInputTokens
+		if contextTokens > 0 {
+			hasContext = true
+			if contextTokens > peakContext {
+				peakContext = contextTokens
+			}
+		}
+	}
+	return totalOutput, hasOutput, peakContext, hasContext
 }
 
 // InferTokenPresence determines whether context/output tokens were

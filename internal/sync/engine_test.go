@@ -3,8 +3,10 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -958,6 +960,222 @@ func TestWriteBatchRemoteIDPrefixUsageEvents(t *testing.T) {
 	assert.Equal(t, "gemini", events[0].Model)
 	assert.Equal(t, 100, events[0].InputTokens)
 	assert.Equal(t, 50, events[0].OutputTokens)
+}
+
+func TestWriteBatchSanitizesParserOutputBeforePersistence(t *testing.T) {
+	database := openTestDB(t)
+	e := &Engine{db: database}
+	started := time.Date(1500, 1, 1, 0, 0, 0, 0, time.UTC)
+	ended := time.Date(2999, 1, 1, 0, 0, 0, 0, time.UTC)
+	longModel := strings.Repeat("m", db.MaxModelLen+50)
+	pw := pendingWrite{
+		sess: parser.ParsedSession{
+			ID:                   "validation-full",
+			Project:              "proj\x1bect",
+			Machine:              "local",
+			Agent:                parser.AgentClaude,
+			FirstMessage:         "prompt\x07",
+			StartedAt:            started,
+			EndedAt:              ended,
+			MessageCount:         1,
+			TotalOutputTokens:    9_000_000,
+			PeakContextTokens:    8_000_000,
+			HasTotalOutputTokens: true,
+			HasPeakContextTokens: true,
+			AggregateTokenSource: parser.TokenAggregateMessages,
+		},
+		msgs: []parser.ParsedMessage{{
+			Ordinal:          0,
+			Role:             parser.RoleType("wizard"),
+			Content:          "answer\x1b]0;title\x07tail",
+			ThinkingText:     "think\u0085more",
+			Timestamp:        ended,
+			ContentLength:    len("answer\x1b]0;title\x07tail") + len("think\u0085more"),
+			Model:            longModel,
+			ContextTokens:    8_000_000,
+			OutputTokens:     9_000_000,
+			HasContextTokens: true,
+			HasOutputTokens:  true,
+		}},
+		usageEvents: []parser.ParsedUsageEvent{{
+			Source:      "generation\x07",
+			Model:       longModel,
+			InputTokens: 9_000_000,
+			OccurredAt:  "1800-01-01T00:00:00Z",
+		}},
+	}
+
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	previousFlags := log.Flags()
+	log.SetOutput(&logs)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(previousOutput)
+		log.SetFlags(previousFlags)
+	}()
+
+	written, _, failed := e.writeBatch(
+		[]pendingWrite{pw}, syncWriteDefault, false,
+	)
+	require.Equal(t, 0, failed)
+	require.Equal(t, 1, written)
+
+	session, err := database.GetSessionFull(
+		context.Background(), "validation-full",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, session)
+	assert.Equal(t, "project", session.Project)
+	assert.Nil(t, session.StartedAt)
+	assert.Nil(t, session.EndedAt)
+	assert.Equal(t, db.MaxPlausibleTokens, session.TotalOutputTokens)
+	assert.Equal(t, db.MaxPlausibleTokens, session.PeakContextTokens)
+
+	msgs, err := database.GetAllMessages(
+		context.Background(), "validation-full",
+	)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	assert.Empty(t, msgs[0].Role)
+	assert.Equal(t, "answer]0;titletail", msgs[0].Content)
+	assert.Equal(t, "thinkmore", msgs[0].ThinkingText)
+	assert.Len(t, msgs[0].Model, db.MaxModelLen)
+	assert.Equal(t, db.MaxPlausibleTokens, msgs[0].ContextTokens)
+	assert.Equal(t, db.MaxPlausibleTokens, msgs[0].OutputTokens)
+	assert.Empty(t, msgs[0].Timestamp)
+
+	events, err := database.GetUsageEvents(
+		context.Background(), "validation-full",
+	)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.Equal(t, "generation", events[0].Source)
+	assert.Len(t, events[0].Model, db.MaxModelLen)
+	assert.Equal(t, db.MaxPlausibleTokens, events[0].InputTokens)
+	assert.Empty(t, events[0].OccurredAt)
+
+	assert.Equal(t, 1, strings.Count(
+		logs.String(), "parser validation session=validation-full",
+	))
+	assert.Contains(t, logs.String(), "agent=claude")
+	assert.Contains(t, logs.String(),
+		"controls=5 models=2 tokens=3 roles=1 timestamps=4")
+	stats := e.PhaseStats()
+	assert.Equal(t, int64(1), stats.ValidationSessions.Load())
+	assert.Equal(t, int64(5), stats.ValidationControlFields.Load())
+	assert.Equal(t, int64(2), stats.ValidationModels.Load())
+	assert.Equal(t, int64(3), stats.ValidationTokens.Load())
+	assert.Equal(t, int64(1), stats.ValidationRoles.Load())
+	assert.Equal(t, int64(4), stats.ValidationTimestamps.Load())
+}
+
+func TestRecordValidationSkipsCleanSession(t *testing.T) {
+	e := &Engine{}
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(previousOutput)
+
+	e.recordValidation("clean", "claude", db.ValidationStats{})
+
+	assert.Empty(t, logs.String())
+	assert.Zero(t, e.PhaseStats().ValidationSessions.Load())
+}
+
+func TestWriteBatchPreservesSessionSummaryAboveRowLimit(t *testing.T) {
+	database := openTestDB(t)
+	e := &Engine{db: database}
+	pw := pendingWrite{
+		sess: parser.ParsedSession{
+			ID:                   "droid:large-summary",
+			Project:              "proj",
+			Machine:              "local",
+			Agent:                parser.AgentDroid,
+			MessageCount:         1,
+			TotalOutputTokens:    3_000_000,
+			PeakContextTokens:    3_500_000,
+			HasTotalOutputTokens: true,
+			HasPeakContextTokens: true,
+			AggregateTokenSource: parser.TokenAggregateSummary,
+		},
+		msgs: []parser.ParsedMessage{{
+			Ordinal: 0, Role: parser.RoleUser, Content: "hello",
+		}},
+		usageEvents: []parser.ParsedUsageEvent{{
+			Source:                   "droid-settings",
+			Model:                    "custom:model",
+			InputTokens:              2_500_000,
+			OutputTokens:             3_000_000,
+			CacheCreationInputTokens: 500_000,
+			CacheReadInputTokens:     500_000,
+		}},
+	}
+
+	written, _, failed := e.writeBatch(
+		[]pendingWrite{pw}, syncWriteDefault, false,
+	)
+	require.Equal(t, 0, failed)
+	require.Equal(t, 1, written)
+
+	session, err := database.GetSessionFull(
+		context.Background(), "droid:large-summary",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, session)
+	assert.Equal(t, 3_000_000, session.TotalOutputTokens)
+	assert.Equal(t, 3_500_000, session.PeakContextTokens)
+	events, err := database.GetUsageEvents(
+		context.Background(), "droid:large-summary",
+	)
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.Equal(t, 3_000_000, events[0].OutputTokens)
+	assert.Equal(t, 2_500_000, events[0].InputTokens)
+}
+
+func TestWriteBatchPreservesMultiMessageAggregateAboveRowLimit(t *testing.T) {
+	database := openTestDB(t)
+	e := &Engine{db: database}
+	pw := pendingWrite{
+		sess: parser.ParsedSession{
+			ID:                   "multi-message-total",
+			Project:              "proj",
+			Machine:              "local",
+			Agent:                parser.AgentClaude,
+			MessageCount:         2,
+			TotalOutputTokens:    3_000_000,
+			PeakContextTokens:    1_500_000,
+			HasTotalOutputTokens: true,
+			HasPeakContextTokens: true,
+			AggregateTokenSource: parser.TokenAggregateMessages,
+		},
+		msgs: []parser.ParsedMessage{
+			{
+				Ordinal: 0, Role: parser.RoleAssistant, Content: "one",
+				OutputTokens: 1_500_000, ContextTokens: 1_000_000,
+				HasOutputTokens: true, HasContextTokens: true,
+			},
+			{
+				Ordinal: 1, Role: parser.RoleAssistant, Content: "two",
+				OutputTokens: 1_500_000, ContextTokens: 1_500_000,
+				HasOutputTokens: true, HasContextTokens: true,
+			},
+		},
+	}
+
+	written, _, failed := e.writeBatch(
+		[]pendingWrite{pw}, syncWriteDefault, false,
+	)
+	require.Equal(t, 0, failed)
+	require.Equal(t, 1, written)
+	session, err := database.GetSessionFull(
+		context.Background(), "multi-message-total",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, session)
+	assert.Equal(t, 3_000_000, session.TotalOutputTokens)
+	assert.Equal(t, 1_500_000, session.PeakContextTokens)
 }
 
 // TestWriteBatchAntigravityReplacesMessages covers a live Antigravity

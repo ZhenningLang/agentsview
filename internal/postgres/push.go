@@ -767,6 +767,7 @@ func nilStrTS(s *string) any {
 func (s *Sync) pushSession(
 	ctx context.Context, tx *sql.Tx, sess db.Session,
 ) error {
+	_ = db.SanitizeSession(&sess)
 	createdAt, _ := ParseSQLiteTimestamp(sess.CreatedAt)
 	isAutomated := sess.IsAutomated
 	_, err := tx.ExecContext(ctx, `
@@ -1022,81 +1023,41 @@ func (s *Sync) pushMessages(
 	}
 
 	var pgCount int
-	var pgContentSum, pgContentMax, pgContentMin int64
-	// Exact string fingerprint for the system-message ordinal set:
-	// STRING_AGG produces e.g. "0,2,5" — impossible to collide for
-	// distinct ordinal sets (unlike SUM or SUM+SUM-of-squares).
-	var pgSystemFP sql.NullString
-	var pgToolCallCount int
-	var pgTCContentSum int64
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*),
-			COALESCE(SUM(content_length), 0),
-			COALESCE(MAX(content_length), 0),
-			COALESCE(MIN(content_length), 0),
-			STRING_AGG(ordinal::text, ',' ORDER BY ordinal)
-				FILTER (WHERE is_system)
+		`SELECT COUNT(*)
 		 FROM messages
 		 WHERE session_id = $1`,
 		sessionID,
-	).Scan(
-		&pgCount, &pgContentSum,
-		&pgContentMax, &pgContentMin,
-		&pgSystemFP,
-	); err != nil {
+	).Scan(&pgCount); err != nil {
 		return 0, fmt.Errorf(
 			"counting pg messages: %w", err,
 		)
 	}
-	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*),
-			COALESCE(SUM(result_content_length), 0)
-		 FROM tool_calls
-		 WHERE session_id = $1`,
-		sessionID,
-	).Scan(&pgToolCallCount, &pgTCContentSum); err != nil {
-		return 0, fmt.Errorf(
-			"counting pg tool_calls: %w", err,
-		)
-	}
-
 	if !full && pgCount == localCount && pgCount > 0 {
-		localSum, localMax, localMin, err := s.local.MessageContentFingerprint(sessionID)
+		localMessageFP, err := s.local.MessageDataFingerprint(sessionID)
 		if err != nil {
 			return 0, fmt.Errorf(
-				"computing local content fingerprint: %w",
+				"computing local message data fingerprint: %w",
 				err,
 			)
 		}
-		localSysFP, err := s.local.SystemMessageFingerprint(sessionID)
+		pgMessageFP, err := pgMessageDataFingerprint(ctx, tx, sessionID)
 		if err != nil {
 			return 0, fmt.Errorf(
-				"computing local system message fingerprint: %w", err,
+				"computing pg message data fingerprint: %w", err,
 			)
 		}
-		localTCCount, err := s.local.ToolCallCount(sessionID)
+		localToolFP, err := s.local.ToolDataFingerprint(sessionID)
 		if err != nil {
 			return 0, fmt.Errorf(
-				"counting local tool_calls: %w", err,
-			)
-		}
-		localTCSum, err := s.local.ToolCallContentFingerprint(sessionID)
-		if err != nil {
-			return 0, fmt.Errorf(
-				"computing local tool_call content "+
+				"computing local tool data "+
 					"fingerprint: %w", err,
 			)
 		}
-		localTokenFP, err := s.local.MessageTokenFingerprint(sessionID)
+		pgToolFP, err := pgToolDataFingerprint(ctx, tx, sessionID)
 		if err != nil {
 			return 0, fmt.Errorf(
-				"computing local token fingerprint: %w", err,
-			)
-		}
-		pgTokenFP, err := pgMessageTokenFingerprint(ctx, tx, sessionID)
-		if err != nil {
-			return 0, fmt.Errorf(
-				"computing pg token fingerprint: %w", err,
+				"computing pg tool data fingerprint: %w", err,
 			)
 		}
 		localUsageFP, err := s.local.UsageEventFingerprint(sessionID)
@@ -1111,13 +1072,8 @@ func (s *Sync) pushMessages(
 				"computing pg usage event fingerprint: %w", err,
 			)
 		}
-		if localSum == pgContentSum &&
-			localMax == pgContentMax &&
-			localMin == pgContentMin &&
-			localSysFP == pgSystemFP.String &&
-			localTCCount == pgToolCallCount &&
-			localTCSum == pgTCContentSum &&
-			localTokenFP == pgTokenFP &&
+		if localMessageFP == pgMessageFP &&
+			localToolFP == pgToolFP &&
 			localUsageFP == pgUsageFP {
 			return 0, nil
 		}
@@ -1166,6 +1122,7 @@ func (s *Sync) pushMessages(
 		if len(msgs) == 0 {
 			break
 		}
+		msgs, _ = db.SanitizedMessages(msgs)
 
 		nextOrdinal := msgs[len(msgs)-1].Ordinal + 1
 		if nextOrdinal <= startOrdinal {
@@ -1201,6 +1158,79 @@ func (s *Sync) pushMessages(
 	}
 
 	return count, nil
+}
+
+func pgToolDataFingerprint(
+	ctx context.Context, tx *sql.Tx, sessionID string,
+) (string, error) {
+	callRows, err := tx.QueryContext(ctx, `
+		SELECT message_ordinal, call_index, tool_name, category,
+			COALESCE(tool_use_id, ''), COALESCE(input_json, ''),
+			COALESCE(skill_name, ''),
+			COALESCE(result_content_length, 0),
+			COALESCE(result_content, ''),
+			COALESCE(subagent_session_id, '')
+		FROM tool_calls
+		WHERE session_id = $1
+		ORDER BY message_ordinal, call_index`, sessionID)
+	if err != nil {
+		return "", err
+	}
+	defer callRows.Close()
+	var calls []db.ToolCallFingerprintRow
+	for callRows.Next() {
+		var row db.ToolCallFingerprintRow
+		if err := callRows.Scan(
+			&row.MessageOrdinal, &row.CallIndex,
+			&row.Call.ToolName, &row.Call.Category,
+			&row.Call.ToolUseID, &row.Call.InputJSON,
+			&row.Call.SkillName, &row.Call.ResultContentLength,
+			&row.Call.ResultContent, &row.Call.SubagentSessionID,
+		); err != nil {
+			return "", err
+		}
+		calls = append(calls, row)
+	}
+	if err := callRows.Err(); err != nil {
+		return "", err
+	}
+
+	eventRows, err := tx.QueryContext(ctx, `
+		SELECT tool_call_message_ordinal, call_index,
+			COALESCE(tool_use_id, ''), COALESCE(agent_id, ''),
+			COALESCE(subagent_session_id, ''), source, status,
+			content, content_length, timestamp, event_index
+		FROM tool_result_events
+		WHERE session_id = $1
+		ORDER BY tool_call_message_ordinal, call_index, event_index`,
+		sessionID)
+	if err != nil {
+		return "", err
+	}
+	defer eventRows.Close()
+	var events []db.ToolResultEventFingerprintRow
+	for eventRows.Next() {
+		var row db.ToolResultEventFingerprintRow
+		var timestamp sql.NullTime
+		if err := eventRows.Scan(
+			&row.MessageOrdinal, &row.CallIndex,
+			&row.Event.ToolUseID, &row.Event.AgentID,
+			&row.Event.SubagentSessionID, &row.Event.Source,
+			&row.Event.Status, &row.Event.Content,
+			&row.Event.ContentLength, &timestamp,
+			&row.Event.EventIndex,
+		); err != nil {
+			return "", err
+		}
+		if timestamp.Valid {
+			row.Event.Timestamp = FormatISO8601(timestamp.Time)
+		}
+		events = append(events, row)
+	}
+	if err := eventRows.Err(); err != nil {
+		return "", err
+	}
+	return db.ComputeToolDataFingerprint(calls, events, false), nil
 }
 
 // replaceUsageEvents replaces a session's usage_events in PG with the
@@ -1401,12 +1431,14 @@ func reconcilePinnedMessages(
 	return nil
 }
 
-func pgMessageTokenFingerprint(
+func pgMessageDataFingerprint(
 	ctx context.Context, tx *sql.Tx, sessionID string,
 ) (string, error) {
 	rows, err := tx.QueryContext(ctx,
-		`SELECT ordinal, model, token_usage, context_tokens,
-			output_tokens, has_context_tokens, has_output_tokens,
+		`SELECT ordinal, role, content, thinking_text, timestamp,
+			has_thinking, has_tool_use, content_length, is_system,
+			model, token_usage, context_tokens, output_tokens,
+			has_context_tokens, has_output_tokens,
 			claude_message_id, claude_request_id,
 			source_type, source_subtype, source_uuid,
 			source_parent_uuid, is_sidechain, is_compact_boundary
@@ -1420,40 +1452,35 @@ func pgMessageTokenFingerprint(
 	}
 	defer rows.Close()
 
-	var b strings.Builder
+	var msgs []db.Message
 	for rows.Next() {
-		var ordinal, contextTokens, outputTokens int
-		var model, tokenUsage string
-		var hasContextTokens, hasOutputTokens bool
-		var claudeMsgID, claudeReqID string
-		var srcType, srcSubtype, srcUUID, srcParentUUID string
-		var isSidechain, isCompactBoundary bool
+		var msg db.Message
+		var tokenUsage string
+		var timestamp sql.NullTime
 		if err := rows.Scan(
-			&ordinal, &model, &tokenUsage, &contextTokens,
-			&outputTokens, &hasContextTokens, &hasOutputTokens,
-			&claudeMsgID, &claudeReqID,
-			&srcType, &srcSubtype, &srcUUID, &srcParentUUID,
-			&isSidechain, &isCompactBoundary,
+			&msg.Ordinal, &msg.Role, &msg.Content, &msg.ThinkingText,
+			&timestamp, &msg.HasThinking, &msg.HasToolUse,
+			&msg.ContentLength, &msg.IsSystem,
+			&msg.Model, &tokenUsage, &msg.ContextTokens,
+			&msg.OutputTokens, &msg.HasContextTokens,
+			&msg.HasOutputTokens, &msg.ClaudeMessageID,
+			&msg.ClaudeRequestID, &msg.SourceType,
+			&msg.SourceSubtype, &msg.SourceUUID,
+			&msg.SourceParentUUID, &msg.IsSidechain,
+			&msg.IsCompactBoundary,
 		); err != nil {
 			return "", err
 		}
-		fmt.Fprintf(&b,
-			"%d|%d:%s|%d:%s|%d|%d|%t|%t|%s|%s|"+
-				"%d:%s|%d:%s|%d:%s|%d:%s|%t|%t;",
-			ordinal,
-			len(model), model,
-			len(tokenUsage), tokenUsage,
-			contextTokens, outputTokens,
-			hasContextTokens, hasOutputTokens,
-			claudeMsgID, claudeReqID,
-			len(srcType), srcType,
-			len(srcSubtype), srcSubtype,
-			len(srcUUID), srcUUID,
-			len(srcParentUUID), srcParentUUID,
-			isSidechain, isCompactBoundary,
-		)
+		msg.TokenUsage = []byte(tokenUsage)
+		if timestamp.Valid {
+			msg.Timestamp = FormatISO8601(timestamp.Time)
+		}
+		msgs = append(msgs, msg)
 	}
-	return b.String(), rows.Err()
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return db.ComputeMessageDataFingerprint(msgs, false), nil
 }
 
 func pgUsageEventFingerprint(
@@ -1467,7 +1494,7 @@ func pgUsageEventFingerprint(
 			occurred_at, dedup_key
 		 FROM usage_events
 		 WHERE session_id = $1
-		 ORDER BY occurred_at NULLS FIRST, id`,
+		 ORDER BY id`,
 		sessionID,
 	)
 	if err != nil {
@@ -1475,7 +1502,7 @@ func pgUsageEventFingerprint(
 	}
 	defer rows.Close()
 
-	var b strings.Builder
+	var events []db.UsageEvent
 	for rows.Next() {
 		var ordinal sql.NullInt64
 		var source, model, costStatus, costSource string
@@ -1494,30 +1521,32 @@ func pgUsageEventFingerprint(
 		); err != nil {
 			return "", err
 		}
-		occurred := ""
-		if occurredAt.Valid {
-			occurred = FormatISO8601(occurredAt.Time)
+		event := db.UsageEvent{
+			Source: source, Model: model,
+			InputTokens: inputTokens, OutputTokens: outputTokens,
+			CacheCreationInputTokens: cacheCreationInputTokens,
+			CacheReadInputTokens:     cacheReadInputTokens,
+			ReasoningTokens:          reasoningTokens,
+			CostStatus:               costStatus, CostSource: costSource,
+			DedupKey: dedupKey.String,
 		}
-		fmt.Fprintf(&b,
-			"%t|%d|%d:%s|%d:%s|%d|%d|%d|%d|%d|%t|%g|%d:%s|%d:%s|%d:%s|%d:%s;",
-			ordinal.Valid,
-			ordinal.Int64,
-			len(source), source,
-			len(model), model,
-			inputTokens,
-			outputTokens,
-			cacheCreationInputTokens,
-			cacheReadInputTokens,
-			reasoningTokens,
-			cost.Valid,
-			cost.Float64,
-			len(costStatus), costStatus,
-			len(costSource), costSource,
-			len(occurred), occurred,
-			len(dedupKey.String), dedupKey.String,
-		)
+		if ordinal.Valid {
+			value := int(ordinal.Int64)
+			event.MessageOrdinal = &value
+		}
+		if cost.Valid {
+			value := cost.Float64
+			event.CostUSD = &value
+		}
+		if occurredAt.Valid {
+			event.OccurredAt = FormatISO8601(occurredAt.Time)
+		}
+		events = append(events, event)
 	}
-	return b.String(), rows.Err()
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return db.ComputeUsageEventFingerprint(events, false), nil
 }
 
 const msgInsertBatch = 100
@@ -1527,6 +1556,7 @@ func bulkInsertMessages(
 	ctx context.Context, tx *sql.Tx,
 	sessionID string, msgs []db.Message,
 ) error {
+	msgs, _ = db.SanitizedMessages(msgs)
 	for i := 0; i < len(msgs); i += msgInsertBatch {
 		end := min(i+msgInsertBatch, len(msgs))
 		batch := msgs[i:end]
@@ -1565,17 +1595,18 @@ func bulkInsertMessages(
 				}
 			}
 			args = append(args,
-				sessionID, m.Ordinal, m.Role,
-				sanitizePG(m.Content),
-				sanitizePG(m.ThinkingText), ts,
+				sessionID, m.Ordinal, sanitizePG(m.Role),
+				sanitizePG(m.Content), sanitizePG(m.ThinkingText), ts,
 				m.HasThinking,
 				m.HasToolUse, m.ContentLength, m.IsSystem,
-				m.Model, string(m.TokenUsage),
+				sanitizePG(m.Model), sanitizePG(string(m.TokenUsage)),
 				m.ContextTokens, m.OutputTokens,
 				m.HasContextTokens, m.HasOutputTokens,
-				m.ClaudeMessageID, m.ClaudeRequestID,
-				m.SourceType, m.SourceSubtype, m.SourceUUID,
-				m.SourceParentUUID, m.IsSidechain,
+				sanitizePG(m.ClaudeMessageID),
+				sanitizePG(m.ClaudeRequestID),
+				sanitizePG(m.SourceType), sanitizePG(m.SourceSubtype),
+				sanitizePG(m.SourceUUID), sanitizePG(m.SourceParentUUID),
+				m.IsSidechain,
 				m.IsCompactBoundary,
 			)
 		}
@@ -1596,6 +1627,7 @@ func bulkInsertUsageEvents(
 	if len(events) == 0 {
 		return nil
 	}
+	events, _ = db.SanitizedUsageEvents(events)
 	const usageBatch = 100
 	for i := 0; i < len(events); i += usageBatch {
 		end := min(i+usageBatch, len(events))
@@ -1905,13 +1937,10 @@ func (s *Sync) normalizeSyncTimestamps(
 	return NormalizeLocalSyncStateTimestamps(s.local)
 }
 
-// sanitizePG strips null bytes and replaces invalid UTF-8
-// sequences so text can be safely inserted into PostgreSQL,
-// which enforces strict UTF-8 encoding.
+// sanitizePG shares the local storage sanitizer so pushed values and local
+// fingerprints converge to the same fixed point.
 func sanitizePG(s string) string {
-	s = strings.ReplaceAll(s, "\x00", "")
-	s = strings.ToValidUTF8(s, "")
-	return s
+	return db.SanitizeUTF8(s)
 }
 
 func nilIfEmpty(s string) any {

@@ -8,9 +8,34 @@ import (
 	"log"
 	"strings"
 	"time"
+	"unicode"
 
 	"go.kenn.io/agentsview/internal/parser"
 )
+
+// SanitizeUTF8 removes text bytes that cannot safely round-trip through the
+// storage backends. Newline, tab, and carriage return remain valid content.
+// The function is idempotent so write, fingerprint, and push paths can share it.
+func SanitizeUTF8(s string) string {
+	s = strings.ReplaceAll(s, "\x00", "")
+	s = strings.ToValidUTF8(s, "")
+	if strings.IndexFunc(s, isStrippableControl) < 0 {
+		return s
+	}
+	return strings.Map(func(r rune) rune {
+		if isStrippableControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func isStrippableControl(r rune) bool {
+	if r == '\n' || r == '\t' || r == '\r' {
+		return false
+	}
+	return unicode.IsControl(r)
+}
 
 const (
 	selectMessageCols = `id, session_id, ordinal, role, content,
@@ -386,6 +411,7 @@ func (db *DB) InsertMessages(msgs []Message) error {
 	if len(msgs) == 0 {
 		return nil
 	}
+	msgs, _ = SanitizedMessages(msgs)
 	t := time.Now()
 	defer func() {
 		if d := time.Since(t); d > slowOpThreshold {
@@ -479,6 +505,7 @@ type savedPin struct {
 func (db *DB) ReplaceSessionMessages(
 	sessionID string, msgs []Message,
 ) error {
+	msgs, _ = SanitizedMessages(msgs)
 	t := time.Now()
 	defer func() {
 		if d := time.Since(t); d > slowOpThreshold {
@@ -612,6 +639,7 @@ func (db *DB) ReplaceSessionContent(
 	sessionID string, msgs []Message,
 	signals SessionSignalUpdate, findings []SecretFinding,
 ) error {
+	msgs, _ = SanitizedMessages(msgs)
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -957,15 +985,58 @@ func (db *DB) MessageCount(sessionID string) (int, error) {
 	return count, err
 }
 
+// MessageDataFingerprint returns an exact fixed-point fingerprint for every
+// parser-owned column in the messages table.
+func (db *DB) MessageDataFingerprint(sessionID string) (string, error) {
+	rows, err := db.getReader().Query(
+		`SELECT `+selectMessageCols+`
+		 FROM messages
+		 WHERE session_id = ?
+		 ORDER BY ordinal ASC`, sessionID,
+	)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	msgs, err := scanMessages(rows)
+	if err != nil {
+		return "", err
+	}
+	return ComputeMessageDataFingerprint(msgs, true), nil
+}
+
 // MessageContentFingerprint returns a lightweight fingerprint of all
 // messages for a session, computed as the sum, max, and min of
 // content_length values.
 func (db *DB) MessageContentFingerprint(sessionID string) (sum, max, min int64, err error) {
-	err = db.getReader().QueryRow(
-		"SELECT COALESCE(SUM(content_length), 0), COALESCE(MAX(content_length), 0), COALESCE(MIN(content_length), 0) FROM messages WHERE session_id = ?",
-		sessionID,
-	).Scan(&sum, &max, &min)
-	return sum, max, min, err
+	rows, err := db.getReader().Query(
+		`SELECT content, thinking_text, content_length
+		 FROM messages WHERE session_id = ?`, sessionID,
+	)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	defer rows.Close()
+	first := true
+	for rows.Next() {
+		var msg Message
+		if err := rows.Scan(
+			&msg.Content, &msg.ThinkingText, &msg.ContentLength,
+		); err != nil {
+			return 0, 0, 0, err
+		}
+		_ = SanitizeMessage(&msg)
+		length := int64(msg.ContentLength)
+		sum += length
+		if first || length > max {
+			max = length
+		}
+		if first || length < min {
+			min = length
+		}
+		first = false
+	}
+	return sum, max, min, rows.Err()
 }
 
 // MessageTokenFingerprint returns an exact ordered fingerprint of
@@ -1007,6 +1078,25 @@ func (db *DB) MessageTokenFingerprint(sessionID string) (string, error) {
 		); err != nil {
 			return "", err
 		}
+		msg := Message{
+			Model: model, ContextTokens: contextTokens,
+			OutputTokens:    outputTokens,
+			ClaudeMessageID: claudeMsgID,
+			ClaudeRequestID: claudeReqID,
+			SourceType:      srcType, SourceSubtype: srcSubtype,
+			SourceUUID: srcUUID, SourceParentUUID: srcParentUUID,
+		}
+		_ = SanitizeMessage(&msg)
+		model = msg.Model
+		contextTokens = msg.ContextTokens
+		outputTokens = msg.OutputTokens
+		claudeMsgID = msg.ClaudeMessageID
+		claudeReqID = msg.ClaudeRequestID
+		srcType = msg.SourceType
+		srcSubtype = msg.SourceSubtype
+		srcUUID = msg.SourceUUID
+		srcParentUUID = msg.SourceParentUUID
+		tokenUsage = SanitizeUTF8(tokenUsage)
 		fmt.Fprintf(&b,
 			"%d|%d:%s|%d:%s|%d|%d|%t|%t|%s|%s|"+
 				"%d:%s|%d:%s|%d:%s|%d:%s|%t|%t;",
@@ -1062,12 +1152,108 @@ func (db *DB) SystemMessageFingerprint(sessionID string) (string, error) {
 // values for a session's tool calls, used as a lightweight content
 // change detector.
 func (db *DB) ToolCallContentFingerprint(sessionID string) (int64, error) {
+	rows, err := db.getReader().Query(
+		`SELECT COALESCE(result_content, ''),
+			COALESCE(result_content_length, 0)
+		 FROM tool_calls WHERE session_id = ?`, sessionID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
 	var sum int64
-	err := db.getReader().QueryRow(
-		"SELECT COALESCE(SUM(result_content_length), 0) FROM tool_calls WHERE session_id = ?",
-		sessionID,
-	).Scan(&sum)
-	return sum, err
+	for rows.Next() {
+		var call ToolCall
+		if err := rows.Scan(
+			&call.ResultContent, &call.ResultContentLength,
+		); err != nil {
+			return 0, err
+		}
+		_ = sanitizeToolCall(&call)
+		sum += int64(call.ResultContentLength)
+	}
+	return sum, rows.Err()
+}
+
+// ToolDataFingerprint returns an exact fixed-point fingerprint for all tool
+// calls and chronological result events in one session.
+func (db *DB) ToolDataFingerprint(sessionID string) (string, error) {
+	callRows, err := db.getReader().Query(`
+		SELECT m.ordinal,
+			tc.tool_name, tc.category,
+			COALESCE(tc.tool_use_id, ''),
+			COALESCE(tc.input_json, ''),
+			COALESCE(tc.skill_name, ''),
+			COALESCE(tc.result_content_length, 0),
+			COALESCE(tc.result_content, ''),
+			COALESCE(tc.subagent_session_id, '')
+		FROM tool_calls tc
+		JOIN messages m ON m.id = tc.message_id
+		WHERE tc.session_id = ?
+		ORDER BY m.ordinal, tc.id`, sessionID)
+	if err != nil {
+		return "", err
+	}
+	defer callRows.Close()
+	var calls []ToolCallFingerprintRow
+	lastOrdinal := -1
+	callIndex := 0
+	for callRows.Next() {
+		var row ToolCallFingerprintRow
+		if err := callRows.Scan(
+			&row.MessageOrdinal,
+			&row.Call.ToolName, &row.Call.Category,
+			&row.Call.ToolUseID, &row.Call.InputJSON,
+			&row.Call.SkillName, &row.Call.ResultContentLength,
+			&row.Call.ResultContent, &row.Call.SubagentSessionID,
+		); err != nil {
+			return "", err
+		}
+		if row.MessageOrdinal != lastOrdinal {
+			lastOrdinal = row.MessageOrdinal
+			callIndex = 0
+		}
+		row.CallIndex = callIndex
+		callIndex++
+		calls = append(calls, row)
+	}
+	if err := callRows.Err(); err != nil {
+		return "", err
+	}
+
+	eventRows, err := db.getReader().Query(`
+		SELECT tool_call_message_ordinal, call_index,
+			COALESCE(tool_use_id, ''), COALESCE(agent_id, ''),
+			COALESCE(subagent_session_id, ''), source, status,
+			content, content_length, COALESCE(timestamp, ''),
+			event_index
+		FROM tool_result_events
+		WHERE session_id = ?
+		ORDER BY tool_call_message_ordinal, call_index, event_index`,
+		sessionID)
+	if err != nil {
+		return "", err
+	}
+	defer eventRows.Close()
+	var events []ToolResultEventFingerprintRow
+	for eventRows.Next() {
+		var row ToolResultEventFingerprintRow
+		if err := eventRows.Scan(
+			&row.MessageOrdinal, &row.CallIndex,
+			&row.Event.ToolUseID, &row.Event.AgentID,
+			&row.Event.SubagentSessionID, &row.Event.Source,
+			&row.Event.Status, &row.Event.Content,
+			&row.Event.ContentLength, &row.Event.Timestamp,
+			&row.Event.EventIndex,
+		); err != nil {
+			return "", err
+		}
+		events = append(events, row)
+	}
+	if err := eventRows.Err(); err != nil {
+		return "", err
+	}
+	return ComputeToolDataFingerprint(calls, events, true), nil
 }
 
 // GetMessageByOrdinal returns a single message by session ID and ordinal.

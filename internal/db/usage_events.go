@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -65,6 +66,7 @@ func (db *DB) ensureUsageEventsSchemaLocked(w *sql.DB) error {
 func (db *DB) ReplaceSessionUsageEvents(
 	sessionID string, events []UsageEvent,
 ) error {
+	events, _ = SanitizedUsageEvents(events)
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -144,8 +146,9 @@ func (db *DB) UsageEventFingerprints(
 	if len(sessionIDs) == 0 {
 		return out, nil
 	}
+	emptyFingerprint := ComputeUsageEventFingerprint(nil, true)
 	for _, id := range sessionIDs {
-		out[id] = ""
+		out[id] = emptyFingerprint
 	}
 
 	const batchSize = 900
@@ -185,7 +188,7 @@ func (db *DB) appendUsageEventFingerprints(
 	}
 	defer rows.Close()
 
-	builders := make(map[string]*strings.Builder)
+	eventsBySession := make(map[string][]UsageEvent)
 	for rows.Next() {
 		var sessionID string
 		var ordinal sql.NullInt64
@@ -204,39 +207,42 @@ func (db *DB) appendUsageEventFingerprints(
 		); err != nil {
 			return err
 		}
-		b := builders[sessionID]
-		if b == nil {
-			b = &strings.Builder{}
-			builders[sessionID] = b
+		event := UsageEvent{
+			Source: source, Model: model,
+			InputTokens: inputTokens, OutputTokens: outputTokens,
+			CacheCreationInputTokens: cacheCreationInputTokens,
+			CacheReadInputTokens:     cacheReadInputTokens,
+			ReasoningTokens:          reasoningTokens,
+			CostStatus:               costStatus, CostSource: costSource,
+			DedupKey: dedupKey.String,
 		}
-		occurred := ""
+		if ordinal.Valid {
+			value := int(ordinal.Int64)
+			event.MessageOrdinal = &value
+		}
+		if cost.Valid {
+			value := cost.Float64
+			event.CostUSD = &value
+		}
 		if occurredAt.Valid {
-			occurred = occurredAt.String
+			event.OccurredAt = occurredAt.String
 		}
-		fmt.Fprintf(b,
-			"%t|%d|%d:%s|%d:%s|%d|%d|%d|%d|%d|%t|%g|%d:%s|%d:%s|%d:%s|%d:%s;",
-			ordinal.Valid,
-			ordinal.Int64,
-			len(source), source,
-			len(model), model,
-			inputTokens,
-			outputTokens,
-			cacheCreationInputTokens,
-			cacheReadInputTokens,
-			reasoningTokens,
-			cost.Valid,
-			cost.Float64,
-			len(costStatus), costStatus,
-			len(costSource), costSource,
-			len(occurred), occurred,
-			len(dedupKey.String), dedupKey.String,
+		eventsBySession[sessionID] = append(
+			eventsBySession[sessionID], event,
 		)
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	for id, b := range builders {
-		out[id] += b.String()
+	ids := make([]string, 0, len(eventsBySession))
+	for id := range eventsBySession {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		out[id] = ComputeUsageEventFingerprint(
+			eventsBySession[id], true,
+		)
 	}
 	return nil
 }

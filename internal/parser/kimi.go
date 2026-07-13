@@ -380,6 +380,7 @@ func ParseKimiSession(
 		HasTotalOutputTokens:        hasTotalOutputTokens,
 		HasPeakContextTokens:        hasPeakContextTokens,
 		aggregateTokenPresenceKnown: true,
+		AggregateTokenSource:        TokenAggregateSummary,
 		File: FileInfo{
 			Path:  path,
 			Size:  info.Size(),

@@ -204,6 +204,7 @@ func ParseDroidSession(path, project, machine string) (*ParseResult, error) {
 		sess.HasPeakContextTokens = true
 		sess.PeakContextTokens = meta.inputTokens + meta.cacheCreationTokens + meta.cacheReadTokens
 		sess.aggregateTokenPresenceKnown = true
+		sess.AggregateTokenSource = TokenAggregateSummary
 	}
 	return &ParseResult{Session: sess, Messages: messages, UsageEvents: usage}, nil
 }

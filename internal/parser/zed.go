@@ -354,6 +354,12 @@ func buildZedParseResult(
 		PeakContextTokens:    meta.peakContextTokens,
 		HasTotalOutputTokens: meta.hasTokenUsage,
 		HasPeakContextTokens: meta.hasTokenUsage,
+		AggregateTokenSource: func() TokenAggregateSource {
+			if meta.hasTokenUsage {
+				return TokenAggregateSummary
+			}
+			return TokenAggregateUnknown
+		}(),
 		File: FileInfo{
 			Path:  ZedSQLiteVirtualPath(dbPath, row.id),
 			Size:  info.Size(),

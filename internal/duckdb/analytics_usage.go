@@ -1952,20 +1952,24 @@ func duckUsageCTE(f db.UsageFilter, sessionID string) (string, []any) {
 		usage_normalized AS (
 			SELECT *,
 				CASE
-					WHEN source = 'message' THEN COALESCE(TRY_CAST(json_extract_string(token_json, '$.input_tokens') AS BIGINT), 0)
-					ELSE input_tokens
+					WHEN source = 'message' THEN LEAST(2000000, GREATEST(0, COALESCE(TRY_CAST(json_extract_string(token_json, '$.input_tokens') AS BIGINT), 0)))
+					WHEN source IN ('session', 'droid-settings', 'shutdown') THEN GREATEST(0, input_tokens)
+					ELSE LEAST(2000000, GREATEST(0, input_tokens))
 				END AS input_tokens_norm,
 				CASE
-					WHEN source = 'message' THEN COALESCE(TRY_CAST(json_extract_string(token_json, '$.output_tokens') AS BIGINT), 0)
-					ELSE output_tokens
+					WHEN source = 'message' THEN LEAST(2000000, GREATEST(0, COALESCE(TRY_CAST(json_extract_string(token_json, '$.output_tokens') AS BIGINT), 0)))
+					WHEN source IN ('session', 'droid-settings', 'shutdown') THEN GREATEST(0, output_tokens)
+					ELSE LEAST(2000000, GREATEST(0, output_tokens))
 				END AS output_tokens_norm,
 				CASE
-					WHEN source = 'message' THEN COALESCE(TRY_CAST(json_extract_string(token_json, '$.cache_creation_input_tokens') AS BIGINT), 0)
-					ELSE cache_create
+					WHEN source = 'message' THEN LEAST(2000000, GREATEST(0, COALESCE(TRY_CAST(json_extract_string(token_json, '$.cache_creation_input_tokens') AS BIGINT), 0)))
+					WHEN source IN ('session', 'droid-settings', 'shutdown') THEN GREATEST(0, cache_create)
+					ELSE LEAST(2000000, GREATEST(0, cache_create))
 				END AS cache_create_norm,
 				CASE
-					WHEN source = 'message' THEN COALESCE(TRY_CAST(json_extract_string(token_json, '$.cache_read_input_tokens') AS BIGINT), 0)
-					ELSE cache_read
+					WHEN source = 'message' THEN LEAST(2000000, GREATEST(0, COALESCE(TRY_CAST(json_extract_string(token_json, '$.cache_read_input_tokens') AS BIGINT), 0)))
+					WHEN source IN ('session', 'droid-settings', 'shutdown') THEN GREATEST(0, cache_read)
+					ELSE LEAST(2000000, GREATEST(0, cache_read))
 				END AS cache_read_norm,
 				CASE
 					WHEN claude_message_id != '' AND claude_request_id != ''

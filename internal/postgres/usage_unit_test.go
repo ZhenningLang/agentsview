@@ -63,6 +63,42 @@ func newUsageProbeDB(
 	return pg
 }
 
+func TestPGUsageRowTokensMatchSQLiteContract(t *testing.T) {
+	message := pgDailyUsageScanRow{
+		usageSource: "message",
+		tokenJSON: `{"input_tokens":9000000,"output_tokens":-1,` +
+			`"cache_creation_input_tokens":3000000,` +
+			`"cache_read_input_tokens":4000000}`,
+	}
+	in, out, create, read := pgUsageRowTokens(message)
+	assert.Equal(t, db.MaxPlausibleTokens, in)
+	assert.Zero(t, out)
+	assert.Equal(t, db.MaxPlausibleTokens, create)
+	assert.Equal(t, db.MaxPlausibleTokens, read)
+
+	for _, source := range []string{
+		"generation", "session", "droid-settings", "shutdown",
+	} {
+		row := pgDailyUsageScanRow{
+			usageSource: source,
+			inputTokens: 9_000_000, outputTokens: -1,
+			cacheCreationInputTokens: 3_000_000,
+			cacheReadInputTokens:     4_000_000,
+		}
+		in, out, create, read = pgUsageRowTokens(row)
+		if db.UsageSourceIsSessionSummary(source) {
+			assert.Equal(t, 9_000_000, in, source)
+			assert.Equal(t, 3_000_000, create, source)
+			assert.Equal(t, 4_000_000, read, source)
+		} else {
+			assert.Equal(t, db.MaxPlausibleTokens, in, source)
+			assert.Equal(t, db.MaxPlausibleTokens, create, source)
+			assert.Equal(t, db.MaxPlausibleTokens, read, source)
+		}
+		assert.Zero(t, out, source)
+	}
+}
+
 func (usageProbeDriver) Open(name string) (driver.Conn, error) {
 	usageProbeStatesMu.Lock()
 	state := usageProbeStates[name]

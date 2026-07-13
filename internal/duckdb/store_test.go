@@ -1611,6 +1611,104 @@ func TestDailyUsageActiveSinceUsesSessionActivity(t *testing.T) {
 	assert.Equal(t, 2, got.Totals.OutputTokens)
 }
 
+func TestDailyUsageClampsHistoricalRowsAndPreservesSessionSummaries(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+	const timestamp = "2026-01-20T00:00:00.000Z"
+	eventOnlyMessage := func(sessionID, content string) db.Message {
+		msg := syncMessage(
+			sessionID, 0, "assistant", content, timestamp,
+		)
+		msg.Model = ""
+		msg.TokenUsage = nil
+		msg.ContextTokens = 0
+		msg.OutputTokens = 0
+		msg.HasContextTokens = false
+		msg.HasOutputTokens = false
+		return msg
+	}
+	writes := []db.SessionBatchWrite{
+		{
+			Session: syncSession(
+				"duck-usage-dirty-message", "alpha", "dirty message",
+				timestamp, 1,
+			),
+			Messages: []db.Message{syncMessage(
+				"duck-usage-dirty-message", 0, "assistant",
+				"dirty message", timestamp,
+			)},
+			DataVersion: 1, ReplaceMessages: true,
+		},
+		{
+			Session: syncSession(
+				"duck-usage-dirty-generation", "alpha", "dirty generation",
+				timestamp, 1,
+			),
+			Messages: []db.Message{eventOnlyMessage(
+				"duck-usage-dirty-generation", "dirty generation",
+			)},
+			UsageEvents: []db.UsageEvent{{
+				SessionID: "duck-usage-dirty-generation",
+				Source:    "generation", Model: "claude-test",
+				InputTokens: 1, OutputTokens: 1,
+				OccurredAt: timestamp, DedupKey: "generation",
+			}},
+			DataVersion: 1, ReplaceMessages: true,
+		},
+		{
+			Session: syncSession(
+				"duck-usage-droid-summary", "alpha", "droid summary",
+				timestamp, 1,
+			),
+			Messages: []db.Message{eventOnlyMessage(
+				"duck-usage-droid-summary", "droid summary",
+			)},
+			UsageEvents: []db.UsageEvent{{
+				SessionID: "duck-usage-droid-summary",
+				Source:    "droid-settings", Model: "claude-test",
+				InputTokens: 9_000_000, OutputTokens: -1,
+				CacheCreationInputTokens: 3_000_000,
+				CacheReadInputTokens:     4_000_000,
+				OccurredAt:               timestamp, DedupKey: "droid-summary",
+			}},
+			DataVersion: 1, ReplaceMessages: true,
+		},
+	}
+	_, err := local.WriteSessionBatchAtomic(writes)
+	require.NoError(t, err)
+
+	syncer := newTestSync(
+		t, filepath.Join(t.TempDir(), "usage-clamp.duckdb"),
+		local, SyncOptions{},
+	)
+	_, err = syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+
+	_, err = syncer.DB().ExecContext(ctx, `
+		UPDATE messages
+		SET model = 'claude-test',
+			token_usage = '{"input_tokens":9000000,"output_tokens":-1,"cache_creation_input_tokens":3000000,"cache_read_input_tokens":4000000}'
+		WHERE session_id = 'duck-usage-dirty-message';
+		UPDATE usage_events
+		SET input_tokens = 9000000,
+			output_tokens = -1,
+			cache_creation_input_tokens = 3000000,
+			cache_read_input_tokens = 4000000
+		WHERE session_id = 'duck-usage-dirty-generation';
+	`)
+	require.NoError(t, err)
+
+	store := NewStoreFromDB(syncer.DB())
+	got, err := store.GetDailyUsage(ctx, db.UsageFilter{
+		From: "2026-01-20", To: "2026-01-20", Timezone: "UTC",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 13_000_000, got.Totals.InputTokens)
+	assert.Zero(t, got.Totals.OutputTokens)
+	assert.Equal(t, 7_000_000, got.Totals.CacheCreationTokens)
+	assert.Equal(t, 8_000_000, got.Totals.CacheReadTokens)
+}
+
 func hourOfWeekMessages(cells []db.HourOfWeekCell, dow, hour int) int {
 	for _, cell := range cells {
 		if cell.DayOfWeek == dow && cell.Hour == hour {

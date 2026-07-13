@@ -18,6 +18,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
@@ -2067,6 +2068,29 @@ func TestSessionFileInfo(t *testing.T) {
 	_, _, ok = d.GetSessionFileInfo("nonexistent")
 	assert.False(t, ok, "expected !ok for nonexistent")
 	assert.Empty(t, d.GetSessionFileHash("nonexistent"))
+}
+
+func TestSanitizeUTF8StripsUnsafeControlsAndIsIdempotent(t *testing.T) {
+	inputs := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain", in: "plain", want: "plain"},
+		{name: "preserved whitespace", in: "a\tb\nc\rd", want: "a\tb\nc\rd"},
+		{name: "terminal controls", in: "before\x1b]0;title\x07after", want: "before]0;titleafter"},
+		{name: "C1 controls", in: "a\u0085b\u009fc", want: "abc"},
+		{name: "nul and invalid UTF8", in: "a\x00b\xe2c", want: "abc"},
+	}
+
+	for _, tt := range inputs {
+		t.Run(tt.name, func(t *testing.T) {
+			once := SanitizeUTF8(tt.in)
+			assert.Equal(t, tt.want, once)
+			assert.Equal(t, once, SanitizeUTF8(once))
+			assert.True(t, utf8.ValidString(once))
+		})
+	}
 }
 
 func TestGetSessionFull(t *testing.T) {

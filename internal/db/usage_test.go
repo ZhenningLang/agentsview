@@ -30,6 +30,66 @@ func TestGetDailyUsageEmpty(t *testing.T) {
 	assert.Equal(t, 0.0, result.Totals.TotalCost, "TotalCost")
 }
 
+func TestUsageRowTokensClampMessageAndGenerationButPreserveSummaries(t *testing.T) {
+	message := dailyUsageScanRow{
+		usageSource: "message",
+		tokenJSON: `{"input_tokens":9000000,"output_tokens":-1,` +
+			`"cache_creation_input_tokens":3000000,` +
+			`"cache_read_input_tokens":4000000}`,
+	}
+	in, out, create, read := usageRowTokens(message)
+	assert.Equal(t, MaxPlausibleTokens, in)
+	assert.Zero(t, out)
+	assert.Equal(t, MaxPlausibleTokens, create)
+	assert.Equal(t, MaxPlausibleTokens, read)
+
+	generation := dailyUsageScanRow{
+		usageSource: "generation",
+		inputTokens: 9_000_000, outputTokens: -1,
+		cacheCreationInputTokens: 3_000_000,
+		cacheReadInputTokens:     4_000_000,
+	}
+	in, out, create, read = usageRowTokens(generation)
+	assert.Equal(t, MaxPlausibleTokens, in)
+	assert.Zero(t, out)
+	assert.Equal(t, MaxPlausibleTokens, create)
+	assert.Equal(t, MaxPlausibleTokens, read)
+
+	for _, source := range []string{"session", "droid-settings", "shutdown"} {
+		summary := dailyUsageScanRow{
+			usageSource: source,
+			inputTokens: 9_000_000, outputTokens: -1,
+			cacheCreationInputTokens: 3_000_000,
+			cacheReadInputTokens:     4_000_000,
+		}
+		in, out, create, read = usageRowTokens(summary)
+		assert.Equal(t, 9_000_000, in, source)
+		assert.Zero(t, out, source)
+		assert.Equal(t, 3_000_000, create, source)
+		assert.Equal(t, 4_000_000, read, source)
+	}
+}
+
+func TestAddMessageToCacheTotalsClampsHistoricalTokenJSON(t *testing.T) {
+	totals := map[string]*sessionCacheTotals{}
+	pricing := map[string]modelRates{
+		"model": {input: 1, output: 1, cacheCreation: 1, cacheRead: 1},
+	}
+	addMessageToCacheTotals(
+		totals, "session", "model",
+		`{"input_tokens":9000000,"output_tokens":-1,`+
+			`"cache_creation_input_tokens":3000000,`+
+			`"cache_read_input_tokens":4000000}`,
+		pricing,
+	)
+
+	require.Contains(t, totals, "session")
+	assert.Equal(t, int64(MaxPlausibleTokens), totals["session"].inputTok)
+	assert.Equal(t, int64(MaxPlausibleTokens), totals["session"].cacheCreateT)
+	assert.Equal(t, int64(MaxPlausibleTokens), totals["session"].cacheReadT)
+	assert.InDelta(t, 6.0, totals["session"].dollarsSpent, 1e-9)
+}
+
 func TestUsageRowQueryPushesDateBoundsIntoUnion(t *testing.T) {
 	query, args := usageRowQuery(UsageFilter{
 		From:             "2024-06-01",
@@ -167,7 +227,8 @@ func TestUsageEventsReplaceAndList(t *testing.T) {
 	require.NoError(t, err, "UsageEventFingerprints")
 	require.NotEmpty(t, fps["hermes:event"],
 		"expected non-empty usage event fingerprint")
-	require.Equal(t, "", fps["missing"], "missing fingerprint")
+	require.Equal(t, ComputeUsageEventFingerprint(nil, true),
+		fps["missing"], "missing fingerprint")
 
 	err = d.ReplaceSessionUsageEvents("hermes:event", nil)
 	require.NoError(t, err, "ReplaceSessionUsageEvents clear")
