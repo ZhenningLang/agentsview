@@ -719,7 +719,7 @@ func (db *DB) DeleteParserExcludedSessions(ids []string) (int, error) {
 			continue
 		}
 		res, err := tx.Exec(
-			"DELETE FROM sessions WHERE id = ?", id,
+			"DELETE FROM sessions WHERE id = ? AND deleted_at IS NULL", id,
 		)
 		if err != nil {
 			return 0, fmt.Errorf(
@@ -916,6 +916,19 @@ func (db *DB) GetSessionFileInfo(
 	return s.Int64, m.Int64, true
 }
 
+// GetSessionFileHash returns the stored content fingerprint for a session.
+// Empty means the row is missing or was written before hashes were tracked.
+func (db *DB) GetSessionFileHash(id string) string {
+	var hash sql.NullString
+	err := db.getReader().QueryRow(
+		"SELECT file_hash FROM sessions WHERE id = ?", id,
+	).Scan(&hash)
+	if err != nil || !hash.Valid {
+		return ""
+	}
+	return hash.String
+}
+
 // GetSessionFilePath returns the stored file_path for a session,
 // or empty string if not found or NULL.
 func (db *DB) GetSessionFilePath(id string) string {
@@ -927,6 +940,43 @@ func (db *DB) GetSessionFilePath(id string) string {
 		return ""
 	}
 	return fp.String
+}
+
+// SessionIDsByFilePath returns non-excluded session IDs derived from one
+// stored source path, including trashed rows. Snapshot deletion still protects
+// rows that remain trashed, while including them here closes the race where a
+// stale fork is restored between parsing and the snapshot transaction.
+func (db *DB) SessionIDsByFilePath(path string) ([]string, error) {
+	rows, err := db.getReader().Query(`
+		SELECT s.id
+		FROM sessions s
+		LEFT JOIN excluded_sessions e ON e.id = s.id
+		WHERE s.file_path = ?
+		  AND e.id IS NULL
+		ORDER BY s.id`, path)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"querying active sessions for source %s: %w", path, err,
+		)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf(
+				"scanning active session for source %s: %w", path, err,
+			)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf(
+			"iterating active sessions for source %s: %w", path, err,
+		)
+	}
+	return ids, nil
 }
 
 // BumpLocalModifiedAt stamps the current time as local_modified_at so
@@ -1240,6 +1290,26 @@ func (db *DB) UpdateSessionIncremental(
 	totalOutputTokens, peakContextTokens int,
 	hasTotalOutputTokens, hasPeakContextTokens bool,
 ) error {
+	return db.UpdateSessionIncrementalWithHash(
+		id, endedAt, msgCount, userMsgCount,
+		fileSize, fileMtime,
+		totalOutputTokens, peakContextTokens,
+		hasTotalOutputTokens, hasPeakContextTokens, "",
+	)
+}
+
+// UpdateSessionIncrementalWithHash is UpdateSessionIncremental plus an
+// optional refreshed content fingerprint. An empty hash preserves the stored
+// value for callers that do not fingerprint their incremental source.
+func (db *DB) UpdateSessionIncrementalWithHash(
+	id string,
+	endedAt *string,
+	msgCount, userMsgCount int,
+	fileSize, fileMtime int64,
+	totalOutputTokens, peakContextTokens int,
+	hasTotalOutputTokens, hasPeakContextTokens bool,
+	fileHash string,
+) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 
@@ -1268,6 +1338,7 @@ func (db *DB) UpdateSessionIncremental(
 			is_automated = ?,
 			file_size = ?,
 			file_mtime = ?,
+			file_hash = COALESCE(NULLIF(?, ''), file_hash),
 			total_output_tokens = ?,
 			peak_context_tokens = ?,
 			has_total_output_tokens = ?,
@@ -1275,7 +1346,7 @@ func (db *DB) UpdateSessionIncremental(
 			termination_status = NULL
 		WHERE id = ?`,
 		endedAt, msgCount, userMsgCount, isAutomated,
-		fileSize, fileMtime,
+		fileSize, fileMtime, fileHash,
 		totalOutputTokens, peakContextTokens,
 		hasTotalOutputTokens, hasPeakContextTokens, id,
 	)

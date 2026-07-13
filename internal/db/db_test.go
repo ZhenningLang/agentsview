@@ -2062,9 +2062,11 @@ func TestSessionFileInfo(t *testing.T) {
 	require.True(t, ok, "expected ok")
 	assert.Equal(t, int64(1024), gotSize, "got size=")
 	assert.Equal(t, int64(1700000000), gotMtime, "got mtime=")
+	assert.Equal(t, "abc123def456", d.GetSessionFileHash("s1"))
 
 	_, _, ok = d.GetSessionFileInfo("nonexistent")
 	assert.False(t, ok, "expected !ok for nonexistent")
+	assert.Empty(t, d.GetSessionFileHash("nonexistent"))
 }
 
 func TestGetSessionFull(t *testing.T) {
@@ -4079,6 +4081,119 @@ func TestCopySessionMetadataFrom(t *testing.T) {
 	assert.Equal(t, 1, starCount, "stars after")
 }
 
+func TestCopySessionMetadataPinFollowsSourceUUID(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	srcPath := filepath.Join(dir, "src.db")
+	srcDB, err := Open(srcPath)
+	requireNoError(t, err, "Open src")
+	insertSession(t, srcDB, "s1", "proj")
+	insertMessages(t, srcDB,
+		Message{
+			SessionID: "s1", Ordinal: 0, Role: "user",
+			Content: "first", SourceUUID: "uuid-first",
+		},
+		Message{
+			SessionID: "s1", Ordinal: 1, Role: "assistant",
+			Content: "answer", SourceUUID: "uuid-answer",
+		},
+	)
+	srcMessages, err := srcDB.GetAllMessages(ctx, "s1")
+	requireNoError(t, err, "GetAllMessages src")
+	note := "keep with answer"
+	_, err = srcDB.PinMessage("s1", srcMessages[1].ID, &note)
+	requireNoError(t, err, "PinMessage src")
+	srcDB.Close()
+
+	dstPath := filepath.Join(dir, "dst.db")
+	dstDB, err := Open(dstPath)
+	requireNoError(t, err, "Open dst")
+	defer dstDB.Close()
+	insertSession(t, dstDB, "s1", "proj")
+	insertMessages(t, dstDB,
+		Message{
+			SessionID: "s1", Ordinal: 0, Role: "user",
+			Content: "first", SourceUUID: "uuid-first",
+		},
+		Message{
+			SessionID: "s1", Ordinal: 1, Role: "user",
+			Content: "[compact]", SourceUUID: "uuid-boundary",
+			IsCompactBoundary: true,
+		},
+		Message{
+			SessionID: "s1", Ordinal: 2, Role: "assistant",
+			Content: "answer", SourceUUID: "uuid-answer",
+		},
+	)
+
+	requireNoError(t, dstDB.CopySessionMetadataFrom(srcPath),
+		"CopySessionMetadataFrom")
+	pins, err := dstDB.ListPinnedMessages(ctx, "s1", "")
+	requireNoError(t, err, "ListPinnedMessages")
+	require.Len(t, pins, 1)
+	assert.Equal(t, 2, pins[0].Ordinal)
+	if assert.NotNil(t, pins[0].Note) {
+		assert.Equal(t, note, *pins[0].Note)
+	}
+}
+
+func TestCopySessionMetadataLegacyPinFallsBackToOrdinal(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	srcPath := filepath.Join(dir, "src.db")
+	srcDB, err := Open(srcPath)
+	requireNoError(t, err, "Open src")
+	insertSession(t, srcDB, "s1", "proj")
+	insertMessages(t, srcDB, userMsg("s1", 0, "legacy"))
+	srcMessages, err := srcDB.GetAllMessages(ctx, "s1")
+	requireNoError(t, err, "GetAllMessages src")
+	_, err = srcDB.PinMessage("s1", srcMessages[0].ID, nil)
+	requireNoError(t, err, "PinMessage src")
+	requireNoError(t, srcDB.Close(), "close src")
+
+	raw, err := sql.Open("sqlite3", srcPath)
+	requireNoError(t, err, "raw open")
+	_, err = raw.Exec(`
+		CREATE TABLE messages_new (
+			id INTEGER PRIMARY KEY,
+			session_id TEXT NOT NULL,
+			ordinal INTEGER NOT NULL,
+			role TEXT NOT NULL,
+			content TEXT NOT NULL DEFAULT '',
+			timestamp TEXT,
+			has_thinking INTEGER NOT NULL DEFAULT 0,
+			has_tool_use INTEGER NOT NULL DEFAULT 0,
+			content_length INTEGER NOT NULL DEFAULT 0
+		);
+		INSERT INTO messages_new
+			(id, session_id, ordinal, role, content, timestamp,
+			 has_thinking, has_tool_use, content_length)
+		SELECT id, session_id, ordinal, role, content, timestamp,
+			has_thinking, has_tool_use, content_length
+		FROM messages;
+		DROP TABLE messages;
+		ALTER TABLE messages_new RENAME TO messages;
+	`)
+	requireNoError(t, err, "recreate legacy messages")
+	requireNoError(t, raw.Close(), "close raw")
+
+	dstPath := filepath.Join(dir, "dst.db")
+	dstDB, err := Open(dstPath)
+	requireNoError(t, err, "Open dst")
+	defer dstDB.Close()
+	insertSession(t, dstDB, "s1", "proj")
+	insertMessages(t, dstDB, userMsg("s1", 0, "legacy"))
+
+	requireNoError(t, dstDB.CopySessionMetadataFrom(srcPath),
+		"CopySessionMetadataFrom")
+	pins, err := dstDB.ListPinnedMessages(ctx, "s1", "")
+	requireNoError(t, err, "ListPinnedMessages")
+	require.Len(t, pins, 1)
+	assert.Equal(t, 0, pins[0].Ordinal)
+}
+
 func TestCopySessionMetadataCopiesFromSource(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
@@ -4885,6 +5000,27 @@ func TestUpdateSessionIncremental(t *testing.T) {
 		"RelationshipType cleared")
 	require.NotNil(t, got.FileHash, "FileHash cleared")
 	assert.Equal(t, "abc123", *got.FileHash, "FileHash")
+}
+
+func TestUpdateSessionIncrementalWithHash(t *testing.T) {
+	d := testDB(t)
+	insertSession(t, d, "inc-hash", "project", func(s *Session) {
+		s.FileHash = new("old-hash")
+	})
+
+	err := d.UpdateSessionIncrementalWithHash(
+		"inc-hash", nil, 1, 1, 100, 200,
+		0, 0, false, false, "new-hash",
+	)
+	requireNoError(t, err, "incremental update with hash")
+	assert.Equal(t, "new-hash", d.GetSessionFileHash("inc-hash"))
+
+	err = d.UpdateSessionIncrementalWithHash(
+		"inc-hash", nil, 1, 1, 100, 200,
+		0, 0, false, false, "",
+	)
+	requireNoError(t, err, "incremental update preserving hash")
+	assert.Equal(t, "new-hash", d.GetSessionFileHash("inc-hash"))
 }
 
 func TestSyncState_GetSetRoundtrip(t *testing.T) {

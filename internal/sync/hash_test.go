@@ -92,6 +92,39 @@ func TestComputeFileHash(t *testing.T) {
 	}
 }
 
+func TestComputeFileHashPrefix(t *testing.T) {
+	path := createTempFile(t, []byte("hello world\n"))
+
+	tests := []struct {
+		name string
+		size int64
+		want string
+	}{
+		{name: "empty prefix", size: 0, want: emptyInputHash},
+		{name: "partial prefix", size: 5, want: mustHash(t, "hello")},
+		{name: "full file", size: 12, want: helloWorldHash},
+		{name: "longer than file", size: 99, want: helloWorldHash},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ComputeFileHashPrefix(path, tt.size)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+
+	_, err := ComputeFileHashPrefix(path, -1)
+	require.Error(t, err)
+}
+
+func mustHash(t *testing.T, input string) string {
+	t.Helper()
+	hash, err := ComputeHash(strings.NewReader(input))
+	require.NoError(t, err)
+	return hash
+}
+
 func TestComputeHash_ReaderError(t *testing.T) {
 	errInjected := errors.New("injected error")
 	reader := &failingReader{err: errInjected}

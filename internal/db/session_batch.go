@@ -99,6 +99,98 @@ func (db *DB) WriteSessionBatch(
 	return result, nil
 }
 
+// WriteSessionSnapshot atomically writes every session currently derived from
+// one source file, then removes stale active sessions that the same source no
+// longer produces. Intentional user exclusions and trashed rows are preserved;
+// any other write failure rolls back both the writes and stale-row deletion.
+func (db *DB) WriteSessionSnapshot(
+	writes []SessionBatchWrite,
+	staleIDs []string,
+	parserExcludedIDs []string,
+) (SessionBatchResult, error) {
+	var result SessionBatchResult
+	if len(writes) == 0 && len(staleIDs) == 0 && len(parserExcludedIDs) == 0 {
+		return result, nil
+	}
+
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	tx, err := db.getWriter().Begin()
+	if err != nil {
+		return result, fmt.Errorf("beginning source snapshot tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for i, write := range writes {
+		savepoint := fmt.Sprintf("source_snapshot_%d", i)
+		if _, err := tx.Exec("SAVEPOINT " + savepoint); err != nil {
+			return result, fmt.Errorf(
+				"creating savepoint %s: %w", savepoint, err,
+			)
+		}
+
+		messagesWritten, err := writeOneSessionBatchTx(tx, write)
+		switch {
+		case err == nil:
+			if _, err := tx.Exec("RELEASE SAVEPOINT " + savepoint); err != nil {
+				return result, fmt.Errorf(
+					"releasing savepoint %s: %w", savepoint, err,
+				)
+			}
+			result.WrittenSessions++
+			result.WrittenMessages += messagesWritten
+		case errors.Is(err, ErrSessionExcluded),
+			errors.Is(err, ErrSessionTrashed):
+			if rerr := rollbackSavepoint(tx, savepoint); rerr != nil {
+				return result, rerr
+			}
+			result.ExcludedSessions++
+			result.ExcludedIDs = append(
+				result.ExcludedIDs, write.Session.ID,
+			)
+		default:
+			result.WrittenSessions = 0
+			result.WrittenMessages = 0
+			result.FailedSessions++
+			result.Errors = append(result.Errors, err)
+			return result, err
+		}
+	}
+
+	for _, id := range staleIDs {
+		if id == "" {
+			continue
+		}
+		if _, err := tx.Exec(`
+			DELETE FROM sessions
+			WHERE id = ?
+			  AND deleted_at IS NULL
+			  AND id NOT IN (SELECT id FROM excluded_sessions)`, id); err != nil {
+			return result, fmt.Errorf(
+				"deleting stale source session %s: %w", id, err,
+			)
+		}
+	}
+	for _, id := range parserExcludedIDs {
+		if id == "" {
+			continue
+		}
+		if _, err := tx.Exec(
+			"DELETE FROM sessions WHERE id = ? AND deleted_at IS NULL", id,
+		); err != nil {
+			return result, fmt.Errorf(
+				"deleting parser-excluded source session %s: %w", id, err,
+			)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return result, fmt.Errorf("committing source snapshot tx: %w", err)
+	}
+	return result, nil
+}
+
 // WriteSessionBatchAtomic writes all sessions in one
 // transaction. Any rejected or failed row rolls back the whole
 // batch.

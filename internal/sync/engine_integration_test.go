@@ -1083,6 +1083,82 @@ func TestResyncAllExcludesExistingClaudeUsageProbe(t *testing.T) {
 		"parser exclusions must not become permanent user deletions")
 }
 
+func TestResyncAllPreservesTrashedClaudeUsageProbe(t *testing.T) {
+	env := setupTestEnv(t)
+	const sessionID = "trashed-usage-probe"
+	usageCmd := "<command-name>/usage</command-name>\n" +
+		"            <command-message>usage</command-message>\n" +
+		"            <command-args></command-args>"
+	content := testjsonl.ClaudeUserJSON(usageCmd, tsEarly)
+	path := env.writeClaudeSession(
+		t, "ClaudeProbe", sessionID+".jsonl", content,
+	)
+
+	size := int64(len(content))
+	mtime := time.Now().Add(-time.Hour).UnixNano()
+	firstMessage := "/usage"
+	startedAt := tsEarly
+	require.NoError(t, env.db.UpsertSession(db.Session{
+		ID: sessionID, Project: "ClaudeProbe", Machine: "local",
+		Agent: string(parser.AgentClaude), FirstMessage: &firstMessage,
+		StartedAt: &startedAt, EndedAt: &startedAt,
+		MessageCount: 1, UserMessageCount: 1,
+		FilePath: &path, FileSize: &size, FileMtime: &mtime,
+	}))
+	require.NoError(t, env.db.InsertMessages([]db.Message{{
+		SessionID: sessionID, Ordinal: 0, Role: "user",
+		Content: usageCmd, ContentLength: len(usageCmd),
+	}}))
+	require.NoError(t, env.db.SoftDeleteSession(sessionID))
+
+	stats := env.engine.ResyncAll(context.Background(), nil)
+	require.False(t, stats.Aborted, "ResyncAll aborted: %+v", stats)
+	full, err := env.db.GetSessionFull(context.Background(), sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, full)
+	assert.NotNil(t, full.DeletedAt)
+	assertMessageContent(t, env.db, sessionID, usageCmd)
+}
+
+func TestResyncAllAbortsWhenTrashedCopyFails(t *testing.T) {
+	env := setupTestEnv(t)
+	content := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "trash must survive").
+		AddClaudeAssistant(tsEarlyS1, "reply").
+		String()
+	env.writeClaudeSession(
+		t, "test-proj", "trash-copy-failure.jsonl", content,
+	)
+	env.engine.SyncAll(context.Background(), nil)
+	require.NoError(t, env.db.SoftDeleteSession("trash-copy-failure"))
+	require.NoError(t, env.db.CloseConnections())
+
+	raw, err := sql.Open("sqlite3", env.db.Path())
+	require.NoError(t, err)
+	_, err = raw.Exec(`
+		DROP TABLE tool_calls;
+		CREATE TABLE tool_calls (
+			id INTEGER PRIMARY KEY,
+			message_id INTEGER NOT NULL,
+			session_id TEXT NOT NULL,
+			tool_name TEXT NOT NULL,
+			category TEXT NOT NULL
+		);
+	`)
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+	require.NoError(t, env.db.Reopen())
+
+	stats := env.engine.ResyncAll(context.Background(), nil)
+	assert.True(t, stats.Aborted, "trash copy failure must abort resync")
+	full, err := env.db.GetSessionFull(
+		context.Background(), "trash-copy-failure",
+	)
+	require.NoError(t, err)
+	require.NotNil(t, full)
+	assert.NotNil(t, full.DeletedAt)
+}
+
 func TestSyncEngineCodex(t *testing.T) {
 	env := setupTestEnv(t)
 
@@ -4532,10 +4608,140 @@ func TestSyncSingleSessionCursorNestedLayoutPreservesProject(
 func TestSyncForkDetection(t *testing.T) {
 	env := setupTestEnv(t)
 
-	// Main branch: a->b->c->d->e->f->g->h->k->l (5 user turns)
-	// Fork from b: i->j (1 user turn on fork branch)
-	// First branch from b has 4 user turns (c,e,g,k) > 3 = large gap
-	content := testjsonl.NewSessionBuilder().
+	content := claudeForkFixture()
+
+	env.writeClaudeSession(t, "test-proj", "parent-uuid.jsonl", content)
+	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1, Synced: 2, Skipped: 0})
+
+	assertSessionMessageCount(t, env.db, "parent-uuid", 10)
+	assertSessionMessageCount(t, env.db, "parent-uuid-i", 2)
+
+	assertSessionState(t, env.db, "parent-uuid-i", func(sess *db.Session) {
+		require.NotNil(t, sess.ParentSessionID, "fork parent = nil, want parent-uuid")
+		assert.Equal(t, "parent-uuid", *sess.ParentSessionID, "fork parent = %v, want parent-uuid", sess.ParentSessionID)
+		assert.Equal(t, "fork", sess.RelationshipType, "fork relationship_type = %q, want fork", sess.RelationshipType)
+	})
+}
+
+func TestSyncForkRewriteReconcilesSourceSnapshot(t *testing.T) {
+	env := setupTestEnv(t)
+	path := env.writeClaudeSession(
+		t, "test-proj", "fork-rewrite.jsonl", claudeForkFixture(),
+	)
+	env.engine.SyncAll(context.Background(), nil)
+	assertSessionMessageCount(t, env.db, "fork-rewrite", 10)
+	assertSessionMessageCount(t, env.db, "fork-rewrite-i", 2)
+
+	replacement := testjsonl.NewSessionBuilder().
+		AddClaudeUserWithUUID(tsEarly, "replacement-start", "a", "").
+		AddClaudeAssistantWithUUID(tsEarlyS1, "replacement-ok", "b", "a").
+		AddClaudeUserWithUUID(tsEarlyS5, "replacement-step", "c", "b").
+		AddClaudeAssistantWithUUID("2024-01-01T10:00:06Z", "replacement-done", "d", "c").
+		String()
+	require.NoError(t, os.WriteFile(path, []byte(replacement), 0o644))
+
+	env.engine.SyncPaths([]string{path})
+
+	assertMessageContent(t, env.db, "fork-rewrite",
+		"replacement-start", "replacement-ok",
+		"replacement-step", "replacement-done")
+	staleFork, err := env.db.GetSession(
+		context.Background(), "fork-rewrite-i",
+	)
+	require.NoError(t, err)
+	assert.Nil(t, staleFork, "disappeared fork must not remain active")
+}
+
+func TestResyncAllReconcilesLiveForkAndPreservesMissingSource(t *testing.T) {
+	env := setupTestEnv(t)
+	forkPath := env.writeClaudeSession(
+		t, "test-proj", "fork-resync.jsonl", claudeForkFixture(),
+	)
+	orphanPath := env.writeClaudeSession(
+		t, "test-proj", "missing-source.jsonl",
+		testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsEarly, "archived prompt").
+			AddClaudeAssistant(tsEarlyS1, "archived reply").
+			String(),
+	)
+	env.engine.SyncAll(context.Background(), nil)
+	assertSessionMessageCount(t, env.db, "fork-resync-i", 2)
+	assertSessionMessageCount(t, env.db, "missing-source", 2)
+
+	replacement := testjsonl.NewSessionBuilder().
+		AddClaudeUserWithUUID(tsEarly, "current prompt", "a", "").
+		AddClaudeAssistantWithUUID(tsEarlyS1, "current reply", "b", "a").
+		String()
+	require.NoError(t, os.WriteFile(forkPath, []byte(replacement), 0o644))
+	require.NoError(t, os.Remove(orphanPath))
+
+	stats := env.engine.ResyncAll(context.Background(), nil)
+	require.False(t, stats.Aborted, "ResyncAll aborted: %+v", stats)
+	assert.Equal(t, 1, stats.OrphanedCopied,
+		"only the missing-source session should be copied as orphan")
+	assertMessageContent(t, env.db, "fork-resync", "current prompt", "current reply")
+	staleFork, err := env.db.GetSession(context.Background(), "fork-resync-i")
+	require.NoError(t, err)
+	assert.Nil(t, staleFork, "live source snapshot must not resurrect stale fork")
+	assertMessageContent(t, env.db, "missing-source", "archived prompt", "archived reply")
+}
+
+func TestRemoteSyncReconcilesForkSourceSnapshot(t *testing.T) {
+	database := dbtest.OpenTestDB(t)
+	firstRoot := t.TempDir()
+	secondRoot := t.TempDir()
+	logicalPath := "host:/home/test/.claude/projects/proj/remote-fork.jsonl"
+	rewriter := func(string) string { return logicalPath }
+
+	firstPath := filepath.Join(firstRoot, "proj", "remote-fork.jsonl")
+	dbtest.WriteTestFile(t, firstPath, []byte(claudeForkFixture()))
+	firstEngine := sync.NewEngine(database, sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentClaude: {firstRoot},
+		},
+		Machine:      "host",
+		IDPrefix:     "host~",
+		PathRewriter: rewriter,
+		Ephemeral:    true,
+	})
+	runSyncAndAssert(t, firstEngine, sync.SyncStats{
+		TotalSessions: 1, Synced: 2,
+	})
+	assertSessionMessageCount(t, database, "host~remote-fork-i", 2)
+
+	replacement := testjsonl.NewSessionBuilder().
+		AddClaudeUserWithUUID(tsEarly, "remote current", "a", "").
+		AddClaudeAssistantWithUUID(tsEarlyS1, "remote reply", "b", "a").
+		String()
+	secondPath := filepath.Join(secondRoot, "proj", "remote-fork.jsonl")
+	dbtest.WriteTestFile(t, secondPath, []byte(replacement))
+	secondEngine := sync.NewEngine(database, sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentClaude: {secondRoot},
+		},
+		Machine:      "host",
+		IDPrefix:     "host~",
+		PathRewriter: rewriter,
+		Ephemeral:    true,
+	})
+	runSyncAndAssert(t, secondEngine, sync.SyncStats{
+		TotalSessions: 1, Synced: 1,
+	})
+
+	assertMessageContent(t, database, "host~remote-fork",
+		"remote current", "remote reply")
+	staleFork, err := database.GetSession(
+		context.Background(), "host~remote-fork-i",
+	)
+	require.NoError(t, err)
+	assert.Nil(t, staleFork)
+}
+
+func claudeForkFixture() string {
+	// Main branch: a->b->c->d->e->f->g->h->k->l (5 user turns).
+	// Fork from b: i->j. The main side has a large enough gap for
+	// the parser to preserve the shorter branch as a fork session.
+	return testjsonl.NewSessionBuilder().
 		AddClaudeUserWithUUID("2024-01-01T10:00:00Z", "start", "a", "").
 		AddClaudeAssistantWithUUID("2024-01-01T10:00:01Z", "ok", "b", "a").
 		AddClaudeUserWithUUID("2024-01-01T10:00:02Z", "step2", "c", "b").
@@ -4549,18 +4755,6 @@ func TestSyncForkDetection(t *testing.T) {
 		AddClaudeUserWithUUID("2024-01-01T10:01:00Z", "fork-start", "i", "b").
 		AddClaudeAssistantWithUUID("2024-01-01T10:01:01Z", "fork-ok", "j", "i").
 		String()
-
-	env.writeClaudeSession(t, "test-proj", "parent-uuid.jsonl", content)
-	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1, Synced: 2, Skipped: 0})
-
-	assertSessionMessageCount(t, env.db, "parent-uuid", 10)
-	assertSessionMessageCount(t, env.db, "parent-uuid-i", 2)
-
-	assertSessionState(t, env.db, "parent-uuid-i", func(sess *db.Session) {
-		require.NotNil(t, sess.ParentSessionID, "fork parent = nil, want parent-uuid")
-		assert.Equal(t, "parent-uuid", *sess.ParentSessionID, "fork parent = %v, want parent-uuid", sess.ParentSessionID)
-		assert.Equal(t, "fork", sess.RelationshipType, "fork relationship_type = %q, want fork", sess.RelationshipType)
-	})
 }
 
 func TestSyncSmallGapRetry(t *testing.T) {
@@ -5903,14 +6097,17 @@ func TestIncrementalSync_ClaudeAppend(t *testing.T) {
 		assert.Equal(t, "inc-test", m.SessionID, "msgs[%d].SessionID = %q, want inc-test", i, m.SessionID)
 	}
 
-	// Metadata preserved (file_hash not cleared).
+	// Incremental append refreshes file_hash so same-stat rewrite
+	// detection compares against the current file contents.
 	updated, err := env.db.GetSessionFull(
 		context.Background(), "inc-test",
 	)
 	require.NoError(t, err, "GetSessionFull after incremental")
-	require.NotNil(t, updated.FileHash, "file_hash = nil, want %q (preserved)", origHash)
-	assert.Equal(t, origHash, *updated.FileHash,
-		"file_hash = %v, want %q (preserved)", updated.FileHash, origHash)
+	require.NotNil(t, updated.FileHash, "file_hash = nil after incremental append")
+	assert.NotEqual(t, origHash, *updated.FileHash)
+	wantHash, err := sync.ComputeFileHash(path)
+	require.NoError(t, err)
+	assert.Equal(t, wantHash, *updated.FileHash)
 	assert.True(t, updated.HasTotalOutputTokens, "HasTotalOutputTokens = false, want true")
 	assert.True(t, updated.HasPeakContextTokens, "HasPeakContextTokens = false, want true")
 	assert.Equal(t, 200, updated.TotalOutputTokens, "TotalOutputTokens = %d, want 200", updated.TotalOutputTokens)
@@ -5919,6 +6116,125 @@ func TestIncrementalSync_ClaudeAppend(t *testing.T) {
 	assert.True(t, msgs[1].HasOutputTokens, "assistant HasOutputTokens = false, want true")
 	assert.Equal(t, 200, msgs[1].OutputTokens, "assistant OutputTokens = %d, want 200", msgs[1].OutputTokens)
 	assert.Equal(t, 500, msgs[1].ContextTokens, "assistant ContextTokens = %d, want 500", msgs[1].ContextTokens)
+}
+
+func TestIncrementalSync_ClaudeSameStatInPlaceRewrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("same-inode assertion is not available on Windows")
+	}
+	env := setupTestEnv(t)
+
+	original := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("first", tsZero),
+	)
+	replacement := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("other", tsZero),
+	)
+	require.Len(t, replacement, len(original), "fixture must preserve file size")
+
+	path := env.writeClaudeSession(t, "proj", "same-stat.jsonl", original)
+	env.engine.SyncAll(context.Background(), nil)
+	before, err := os.Stat(path)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(path, []byte(replacement), 0o644))
+	require.NoError(t, os.Chtimes(path, before.ModTime(), before.ModTime()))
+	after, err := os.Stat(path)
+	require.NoError(t, err)
+	assert.Equal(t, before.Size(), after.Size())
+	assert.Equal(t, before.ModTime().UnixNano(), after.ModTime().UnixNano())
+
+	env.engine.SyncPaths([]string{path})
+
+	msgs := fetchMessages(t, env.db, "same-stat")
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "other", msgs[0].Content)
+}
+
+func TestIncrementalSync_ClaudePathRewriterSameStatContentGuard(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("identity tracking is not available on Windows")
+	}
+
+	original := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("first", tsZero),
+	)
+	changed := testjsonl.JoinJSONL(
+		testjsonl.ClaudeUserJSON("other", tsZero),
+	)
+	require.Len(t, changed, len(original))
+
+	tests := []struct {
+		name        string
+		second      string
+		wantSynced  int
+		wantSkipped int
+		wantContent string
+	}{
+		{
+			name:        "unchanged re-download skips",
+			second:      original,
+			wantSkipped: 1,
+			wantContent: "first",
+		},
+		{
+			name:        "same-stat rewrite replaces",
+			second:      changed,
+			wantSynced:  1,
+			wantContent: "other",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			database := dbtest.OpenTestDB(t)
+			firstRoot := t.TempDir()
+			secondRoot := t.TempDir()
+			logicalPath := "host:/home/test/.claude/projects/proj/remote.jsonl"
+			rewriter := func(string) string { return logicalPath }
+
+			firstPath := filepath.Join(firstRoot, "proj", "remote.jsonl")
+			dbtest.WriteTestFile(t, firstPath, []byte(original))
+			firstInfo, err := os.Stat(firstPath)
+			require.NoError(t, err)
+			firstEngine := sync.NewEngine(database, sync.EngineConfig{
+				AgentDirs: map[parser.AgentType][]string{
+					parser.AgentClaude: {firstRoot},
+				},
+				Machine:      "host",
+				IDPrefix:     "host~",
+				PathRewriter: rewriter,
+				Ephemeral:    true,
+			})
+			runSyncAndAssert(t, firstEngine, sync.SyncStats{
+				TotalSessions: 1,
+				Synced:        1,
+			})
+
+			secondPath := filepath.Join(secondRoot, "proj", "remote.jsonl")
+			dbtest.WriteTestFile(t, secondPath, []byte(tt.second))
+			require.NoError(t,
+				os.Chtimes(secondPath, firstInfo.ModTime(), firstInfo.ModTime()))
+			secondEngine := sync.NewEngine(database, sync.EngineConfig{
+				AgentDirs: map[parser.AgentType][]string{
+					parser.AgentClaude: {secondRoot},
+				},
+				Machine:      "host",
+				IDPrefix:     "host~",
+				PathRewriter: rewriter,
+				Ephemeral:    true,
+			})
+			runSyncAndAssert(t, secondEngine, sync.SyncStats{
+				TotalSessions: 1,
+				Synced:        tt.wantSynced,
+				Skipped:       tt.wantSkipped,
+			})
+
+			assertMessageContent(
+				t, database, "host~remote", tt.wantContent,
+			)
+		})
+	}
 }
 
 // TestIncrementalSync_ClaudeFileReplaced verifies that when a
@@ -5980,6 +6296,7 @@ func TestIncrementalSync_ClaudeFileReplaced(t *testing.T) {
 	require.NoError(t, err, "stat replacement")
 	require.NotNil(t, full.FileSize, "file_size = nil, want %d (full-parse size)", newInfo.Size())
 	assert.Equal(t, newInfo.Size(), *full.FileSize, "file_size = %v, want %d (full-parse size)", *full.FileSize, newInfo.Size())
+	assertMessageContent(t, env.db, "replaced", "second", "third")
 }
 
 // TestIncrementalSync_ClaudeMidStreamSplitFallsBackToFullParse covers
@@ -6184,6 +6501,47 @@ func TestIncrementalSync_CodexAppend(t *testing.T) {
 	for i, m := range msgs {
 		assert.Equal(t, "codex:inc-cx", m.SessionID, "msgs[%d].SessionID = %q, want codex:inc-cx", i, m.SessionID)
 	}
+}
+
+func TestIncrementalSync_CodexCustomToolOutputUpdatesStoredCall(t *testing.T) {
+	env := setupTestEnv(t)
+
+	call := `{"timestamp":"2026-07-08T03:20:43.339Z","type":"response_item","payload":{"type":"custom_tool_call","status":"completed","call_id":"call_abc","name":"apply_patch","input":"*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch"}}`
+	initial := testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON(
+			"inc-cx-custom", "/tmp/proj", "codex_cli_rs", tsEarly,
+		),
+		testjsonl.CodexMsgJSON("user", "apply the patch", tsEarlyS1),
+		call,
+	)
+	path := env.writeCodexSession(
+		t, filepath.Join("2024", "01", "01"),
+		"rollout-20240101-inc-cx-custom.jsonl", initial,
+	)
+	env.engine.SyncAll(context.Background(), nil)
+
+	msgs := fetchMessages(t, env.db, "codex:inc-cx-custom")
+	require.Len(t, msgs, 2)
+	require.Len(t, msgs[1].ToolCalls, 1)
+	assert.Empty(t, msgs[1].ToolCalls[0].ResultEvents)
+
+	output := `{"timestamp":"2026-07-08T03:20:43.376Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_abc","output":"Exit code: 0\nOutput:\nSuccess."}}`
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err)
+	_, err = f.WriteString(output + "\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	env.engine.SyncPaths([]string{path})
+
+	msgs = fetchMessages(t, env.db, "codex:inc-cx-custom")
+	require.Len(t, msgs, 2)
+	require.Len(t, msgs[1].ToolCalls, 1)
+	require.Len(t, msgs[1].ToolCalls[0].ResultEvents, 1)
+	assert.Equal(t, "custom_tool_call_output",
+		msgs[1].ToolCalls[0].ResultEvents[0].Source)
+	assert.Equal(t, "Exit code: 0\nOutput:\nSuccess.",
+		msgs[1].ToolCalls[0].ResultEvents[0].Content)
 }
 
 func TestIncrementalSync_CodexSubagentAppendFallsBackToFullParse(t *testing.T) {

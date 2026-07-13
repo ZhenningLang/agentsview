@@ -162,6 +162,79 @@ func TestWriteSessionBatchCommitsGoodRowsAndSkipsBadRows(t *testing.T) {
 	assert.Nil(t, excluded, "excluded session should not be written")
 }
 
+func TestWriteSessionSnapshotReconcilesStaleRowsAtomically(t *testing.T) {
+	t.Run("deletes stale active rows but preserves trash", func(t *testing.T) {
+		d := testDB(t)
+		insertSession(t, d, "stale", "proj")
+		insertSession(t, d, "trashed-stale", "proj")
+		insertSession(t, d, "trashed-parser-excluded", "proj")
+		require.NoError(t, d.SoftDeleteSession("trashed-stale"))
+		require.NoError(t, d.SoftDeleteSession("trashed-parser-excluded"))
+
+		result, err := d.WriteSessionSnapshot(
+			[]SessionBatchWrite{{
+				Session: Session{
+					ID: "current", Project: "proj",
+					Machine: defaultMachine, Agent: defaultAgent,
+					MessageCount: 1, UserMessageCount: 1,
+				},
+				Messages:        []Message{userMsg("current", 0, "current")},
+				DataVersion:     CurrentDataVersion(),
+				ReplaceMessages: true,
+			}},
+			[]string{"stale", "trashed-stale"},
+			[]string{"trashed-parser-excluded"},
+		)
+		require.NoError(t, err)
+		assert.Equal(t, 1, result.WrittenSessions)
+
+		stale, err := d.GetSessionFull(context.Background(), "stale")
+		require.NoError(t, err)
+		assert.Nil(t, stale)
+		trashed, err := d.GetSessionFull(context.Background(), "trashed-stale")
+		require.NoError(t, err)
+		require.NotNil(t, trashed)
+		assert.NotNil(t, trashed.DeletedAt)
+		parserExcludedTrash, err := d.GetSessionFull(
+			context.Background(), "trashed-parser-excluded",
+		)
+		require.NoError(t, err)
+		require.NotNil(t, parserExcludedTrash)
+		assert.NotNil(t, parserExcludedTrash.DeletedAt)
+	})
+
+	t.Run("write failure preserves stale rows", func(t *testing.T) {
+		d := testDB(t)
+		insertSession(t, d, "stale", "proj")
+		insertSession(t, d, "parser-excluded", "proj")
+
+		_, err := d.WriteSessionSnapshot(
+			[]SessionBatchWrite{{
+				Session: Session{
+					ID: "current", Project: "proj",
+					Machine: defaultMachine, Agent: defaultAgent,
+					MessageCount: 1, UserMessageCount: 1,
+				},
+				Messages: []Message{userMsg("missing-session", 0, "broken")},
+			}},
+			[]string{"stale"}, []string{"parser-excluded"},
+		)
+		require.Error(t, err)
+
+		stale, getErr := d.GetSessionFull(context.Background(), "stale")
+		require.NoError(t, getErr)
+		assert.NotNil(t, stale)
+		excluded, getErr := d.GetSessionFull(
+			context.Background(), "parser-excluded",
+		)
+		require.NoError(t, getErr)
+		assert.NotNil(t, excluded)
+		current, getErr := d.GetSessionFull(context.Background(), "current")
+		require.NoError(t, getErr)
+		assert.Nil(t, current)
+	})
+}
+
 func TestMigration_ThinkingTextColumn(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.db")

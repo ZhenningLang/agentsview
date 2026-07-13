@@ -24,7 +24,21 @@ func buildResolveScript() string {
 		}
 		for _, rel := range def.DefaultDirs {
 			defaultDir := "$HOME/" + rel
-			if def.EnvVar != "" {
+			if def.DefaultRootEnvVar != "" {
+				rootTail := remoteDefaultRootTail(rel)
+				fmt.Fprintf(&b, "dir=\"${%s:-}\"; root=\"${%s:-}\"; ",
+					def.EnvVar, def.DefaultRootEnvVar)
+				if rootTail != "" {
+					fmt.Fprintf(&b,
+						"[ -z \"$dir\" ] && [ -n \"$root\" ] && dir=\"$root/%s\"; ",
+						rootTail)
+				} else {
+					b.WriteString("[ -z \"$dir\" ] && [ -n \"$root\" ] && dir=\"$root\"; ")
+				}
+				fmt.Fprintf(&b,
+					"[ -n \"$dir\" ] || dir=\"%s\"; [ -d \"$dir\" ] && echo \"%s:$dir\"\n",
+					defaultDir, string(def.Type))
+			} else if def.EnvVar != "" {
 				// env var overrides default
 				fmt.Fprintf(&b,
 					"dir=\"${%s:-%s}\"; "+
@@ -48,6 +62,14 @@ func buildResolveScript() string {
 	// dir doesn't exist, which would make sh exit non-zero.
 	b.WriteString("true\n")
 	return b.String()
+}
+
+func remoteDefaultRootTail(rel string) string {
+	cleaned := strings.TrimPrefix(strings.TrimSpace(rel), "/")
+	if _, tail, ok := strings.Cut(cleaned, "/"); ok && tail != "" {
+		return tail
+	}
+	return ""
 }
 
 // parseResolvedDirs parses script output into a map of agent type

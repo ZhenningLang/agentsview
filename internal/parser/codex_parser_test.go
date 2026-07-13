@@ -166,6 +166,52 @@ func TestParseCodexSession_FunctionCalls(t *testing.T) {
 		assert.Contains(t, msgs[1].ToolCalls[0].InputJSON, "Begin Patch")
 	})
 
+	t.Run("custom tool call preserves patch and output", func(t *testing.T) {
+		call := `{"timestamp":"2026-07-08T03:20:43.339Z","type":"response_item","payload":{"type":"custom_tool_call","status":"completed","call_id":"call_abc","name":"apply_patch","input":"*** Begin Patch\n*** Add File: hello.txt\n+hello\n*** End Patch"}}`
+		output := `{"timestamp":"2026-07-08T03:20:43.376Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_abc","output":"Exit code: 0\nOutput:\nSuccess."}}`
+		content := testjsonl.JoinJSONL(
+			testjsonl.CodexSessionMetaJSON("fc-custom-tool", "/tmp", "user", tsEarly),
+			testjsonl.CodexMsgJSON("user", "apply the patch", tsEarlyS1),
+			call,
+			output,
+		)
+
+		_, msgs := runCodexParserTest(t, "test.jsonl", content, false)
+
+		require.Len(t, msgs, 2)
+		assertToolCalls(t, msgs[1].ToolCalls, []ParsedToolCall{{
+			ToolUseID: "call_abc",
+			ToolName:  "apply_patch",
+			Category:  "Edit",
+		}})
+		assert.Contains(t, msgs[1].ToolCalls[0].InputJSON, "Begin Patch")
+		assertToolResultEvents(t, msgs[1].ToolCalls[0].ResultEvents, []ParsedToolResultEvent{{
+			ToolUseID: "call_abc",
+			Source:    "custom_tool_call_output",
+			Status:    "completed",
+			Content:   "Exit code: 0\nOutput:\nSuccess.",
+		}})
+	})
+
+	t.Run("unknown custom response item remains ignored", func(t *testing.T) {
+		unknown := `{"timestamp":"2026-07-08T03:20:43.339Z","type":"response_item","payload":{"type":"custom_tool_callish","call_id":"call_abc","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"}}`
+		content := testjsonl.JoinJSONL(
+			testjsonl.CodexSessionMetaJSON("fc-unknown-custom", "/tmp", "user", tsEarly),
+			testjsonl.CodexMsgJSON("user", "apply the patch", tsEarlyS1),
+			unknown,
+		)
+
+		_, msgs := runCodexParserTest(t, "test.jsonl", content, false)
+
+		require.Len(t, msgs, 1)
+		assert.False(t, msgs[0].HasToolUse)
+	})
+
+	t.Run("custom tool output requests full incremental parse", func(t *testing.T) {
+		line := `{"timestamp":"2026-07-08T03:20:43.376Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_abc","output":"Success."}}`
+		assert.True(t, codexIncrementalNeedsFullParse(line))
+	})
+
 	t.Run("write_stdin formats with session and chars", func(t *testing.T) {
 		content := loadFixture(t, "codex/fc_stdin.jsonl")
 		_, msgs := runCodexParserTest(t, "test.jsonl", content, false)

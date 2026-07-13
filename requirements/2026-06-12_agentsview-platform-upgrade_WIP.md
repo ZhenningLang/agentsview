@@ -81,6 +81,7 @@ The 2026-07-13 audit is maintained in Chinese as the decision SSOT:
 
 - `docs/upstream-convergence-audit-2026-07-13.md`
 - `docs/upstream-convergence-audit-2026-07-13.html`
+- `docs/specs/upstream-convergence-slice-0-1.md`
 
 Locked direction: converge by behavior contract and capability module, not by
 directly merging `upstream/main` or blindly cherry-picking all upstream

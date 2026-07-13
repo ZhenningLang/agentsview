@@ -147,6 +147,7 @@ func TestSetEnvVarsAffectingService(t *testing.T) {
 	// must never appear here even when set.
 	env := map[string]string{
 		"AGENTSVIEW_PG_SCHEMA":  "staging",
+		"CLAUDE_CONFIG_DIR":     "/tmp/claude-root",
 		"CLAUDE_PROJECTS_DIR":   "/tmp/claude",
 		"AGENTSVIEW_PG_URL":     "postgres://from-env",
 		"AGENTSVIEW_PG_MACHINE": "", // set-but-empty should be ignored
@@ -157,6 +158,7 @@ func TestSetEnvVarsAffectingService(t *testing.T) {
 	}
 	got := setEnvVarsAffectingService(lookup)
 	assert.Contains(t, got, "AGENTSVIEW_PG_SCHEMA")
+	assert.Contains(t, got, "CLAUDE_CONFIG_DIR")
 	assert.Contains(t, got, "CLAUDE_PROJECTS_DIR")
 	assert.NotContains(t, got, "AGENTSVIEW_PG_URL")
 	assert.NotContains(t, got, "AGENTSVIEW_PG_MACHINE",

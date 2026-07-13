@@ -80,7 +80,7 @@ type EngineConfig struct {
 // Engine orchestrates session file discovery and sync.
 type Engine struct {
 	db                      *db.DB
-	openCodeArchiveStore    db.Store
+	resyncArchiveStore      db.Store
 	agentDirs               map[parser.AgentType][]string
 	machine                 string
 	blockedResultCategories map[string]bool
@@ -1582,8 +1582,19 @@ func (e *Engine) ResyncAll(
 	trashedCopied := 0
 	if n, err := newDB.CopyTrashedDataFrom(origPath); err != nil {
 		log.Printf("resync: pre-sync copy trashed sessions: %v", err)
-		// Non-fatal: worst case, trashed sessions are reparsed
-		// and then re-marked as trashed by metadata copy.
+		newDB.Close()
+		removeTempDB(tempPath)
+		restoreSkipCache()
+		stats = SyncStats{
+			Aborted: true,
+			Warnings: []string{
+				"resync failed: copy trashed sessions: " + err.Error(),
+			},
+		}
+		e.mu.Lock()
+		e.lastSyncStats = stats
+		e.mu.Unlock()
+		return stats
 	} else if n > 0 {
 		trashedCopied = n
 		log.Printf("resync: pre-sync copied %d trashed sessions", n)
@@ -1619,13 +1630,13 @@ func (e *Engine) ResyncAll(
 	}
 
 	// 3. Point engine at newDB and sync into it.
-	e.openCodeArchiveStore = origDB
+	e.resyncArchiveStore = origDB
 	e.db = newDB
 	stats = e.syncAllLocked(
 		ctx, onProgress, time.Time{}, syncWriteBulk,
 	)
 	e.db = origDB // restore immediately
-	e.openCodeArchiveStore = nil
+	e.resyncArchiveStore = nil
 
 	// Abort swap when the fresh DB would be worse than the
 	// original:
@@ -3118,7 +3129,7 @@ func (e *Engine) collectAndBatch(
 		excludedSessionIDs := e.applyIDPrefixToSessionIDs(
 			r.excludedSessionIDs,
 		)
-		if len(excludedSessionIDs) > 0 {
+		if len(excludedSessionIDs) > 0 && !r.sourceSnapshot {
 			if _, err := e.db.DeleteParserExcludedSessions(
 				excludedSessionIDs,
 			); err != nil {
@@ -3131,7 +3142,7 @@ func (e *Engine) collectAndBatch(
 				excludedSessionIDs...,
 			)
 		}
-		if len(r.results) == 0 && r.incremental == nil {
+		if len(r.results) == 0 && r.incremental == nil && !r.sourceSnapshot {
 			if len(r.excludedSessionIDs) > 0 {
 				stats.filesOK++
 				stats.parserExcludedFiles++
@@ -3150,7 +3161,42 @@ func (e *Engine) collectAndBatch(
 		}
 		stats.filesOK++
 
-		if r.incremental != nil {
+		if r.sourceSnapshot {
+			if len(pending) > 0 {
+				writtenSessions, writtenMessages, failedWrites :=
+					e.writeBatch(pending, writeMode, false)
+				stats.RecordSynced(writtenSessions)
+				for range failedWrites {
+					stats.RecordFailed()
+				}
+				progress.MessagesIndexed += writtenMessages
+				stats.messagesIndexed = progress.MessagesIndexed
+				pending = pending[:0]
+			}
+
+			writtenSessions, writtenMessages, failedWrites :=
+				e.writeSourceSnapshot(
+					r.results, r.staleSessionIDs,
+					excludedSessionIDs, r.needsRetry,
+				)
+			stats.RecordSynced(writtenSessions)
+			for range failedWrites {
+				stats.RecordFailed()
+			}
+			if failedWrites == 0 {
+				if len(r.results) == 0 && len(excludedSessionIDs) > 0 {
+					stats.parserExcludedFiles++
+				}
+				stats.parserExcludedIDs = append(
+					stats.parserExcludedIDs,
+					mergeUniqueStrings(
+						r.staleSessionIDs, excludedSessionIDs,
+					)...,
+				)
+			}
+			progress.MessagesIndexed += writtenMessages
+			stats.messagesIndexed = progress.MessagesIndexed
+		} else if r.incremental != nil {
 			if err := e.writeIncremental(r.incremental); err != nil {
 				log.Printf("%v", err)
 				stats.RecordFailed()
@@ -3234,6 +3280,7 @@ type incrementalUpdate struct {
 	userMsgCount         int // total (old + new)
 	fileSize             int64
 	fileMtime            int64
+	fileHash             string
 	totalOutputTokens    int // absolute (old + new)
 	peakContextTokens    int // absolute max(old, new)
 	hasTotalOutputTokens bool
@@ -3249,6 +3296,8 @@ type processResult struct {
 	incremental        *incrementalUpdate
 	cacheSkip          bool
 	needsRetry         bool
+	staleSessionIDs    []string
+	sourceSnapshot     bool
 	// forceReplace requests full message replacement on write,
 	// even when the existing rows would otherwise be left in
 	// place. Set when a fall-through to full parse is recovering
@@ -3577,7 +3626,11 @@ func (e *Engine) processClaude(
 
 	sessionID := strings.TrimSuffix(info.Name(), ".jsonl")
 
-	if e.shouldSkipFile(sessionID, info) {
+	statMatches := e.shouldSkipFile(sessionID, info)
+	contentChanged := statMatches && e.claudeContentChanged(
+		e.idPrefix+sessionID, file.Path, info.Size(),
+	)
+	if statMatches && !contentChanged {
 		sess, _ := e.db.GetSession(
 			ctx, e.idPrefix+sessionID,
 		)
@@ -3600,8 +3653,6 @@ func (e *Engine) processClaude(
 	if ok {
 		return res
 	}
-	forceReplace := res.forceReplace
-
 	// Determine project name from cwd if possible
 	project := parser.GetProjectName(file.Project)
 	cwd, gitBranch := parser.ExtractClaudeProjectHints(
@@ -3637,11 +3688,70 @@ func (e *Engine) processClaude(
 
 	parser.InferRelationshipTypes(results)
 
+	staleIDs, err := e.staleClaudeSourceSessionIDs(file.Path, results)
+	if err != nil {
+		return processResult{err: err}
+	}
+
 	return processResult{
 		results:            results,
 		excludedSessionIDs: excludedIDs,
-		forceReplace:       forceReplace,
+		forceReplace:       true,
+		staleSessionIDs:    staleIDs,
+		sourceSnapshot: len(results) > 1 || len(staleIDs) > 0 ||
+			(len(results) > 0 && len(excludedIDs) > 0),
 	}
+}
+
+func (e *Engine) staleClaudeSourceSessionIDs(
+	physicalPath string,
+	results []parser.ParseResult,
+) ([]string, error) {
+	logicalPath := physicalPath
+	if e.pathRewriter != nil {
+		logicalPath = e.pathRewriter(physicalPath)
+	}
+	sourceDB := e.db
+	if archive, ok := e.resyncArchiveStore.(*db.DB); ok {
+		sourceDB = archive
+	}
+	existingIDs, err := sourceDB.SessionIDsByFilePath(logicalPath)
+	if err != nil {
+		return nil, err
+	}
+	if len(existingIDs) == 0 {
+		return nil, nil
+	}
+
+	currentIDs := make(map[string]struct{}, len(results))
+	for _, result := range results {
+		currentIDs[e.idPrefix+result.Session.ID] = struct{}{}
+	}
+	staleIDs := make([]string, 0, len(existingIDs))
+	for _, id := range existingIDs {
+		if _, ok := currentIDs[id]; !ok {
+			staleIDs = append(staleIDs, id)
+		}
+	}
+	return staleIDs, nil
+}
+
+// claudeContentChanged is the final tie-breaker after size, mtime, and data
+// version match. It catches in-place rewrites that preserve all stat signals.
+// Legacy rows without a stored hash retain the previous stat-only behavior.
+func (e *Engine) claudeContentChanged(
+	fullID, path string, size int64,
+) bool {
+	storedHash := e.db.GetSessionFileHash(fullID)
+	if storedHash == "" {
+		return false
+	}
+	currentHash, err := ComputeFileHashPrefix(path, size)
+	if err != nil {
+		log.Printf("hash Claude freshness source %s: %v", path, err)
+		return false
+	}
+	return currentHash != storedHash
 }
 
 // incrementalParseFunc reads new JSONL lines from a file
@@ -3700,7 +3810,10 @@ func (e *Engine) tryIncrementalJSONL(
 
 	currentSize := info.Size()
 	if currentSize <= inc.FileSize {
-		return processResult{}, false
+		// Reaching this branch means the caller already decided the
+		// source is not fresh. A file that did not grow cannot be an
+		// append, so the full parse must replace old ordinals.
+		return processResult{forceReplace: true}, false
 	}
 
 	// If the file was replaced (different inode/device), fall
@@ -3720,7 +3833,7 @@ func (e *Engine) tryIncrementalJSONL(
 				inc.FileInode, curInode,
 				inc.FileDevice, curDevice,
 			)
-			return processResult{}, false
+			return processResult{forceReplace: true}, false
 		}
 	}
 
@@ -3758,6 +3871,19 @@ func (e *Engine) tryIncrementalJSONL(
 	// info.Size(), so partial lines at EOF are retried on
 	// the next sync.
 	newOffset := inc.FileSize + consumed
+	fileHash := ""
+	if agent == parser.AgentClaude {
+		if hash, hashErr := ComputeFileHashPrefix(
+			file.Path, newOffset,
+		); hashErr == nil {
+			fileHash = hash
+		} else {
+			log.Printf(
+				"incremental %s %s: refresh file hash: %v",
+				agent, file.Path, hashErr,
+			)
+		}
+	}
 
 	if len(newMsgs) == 0 {
 		// No new messages, but advance the offset past
@@ -3774,6 +3900,7 @@ func (e *Engine) tryIncrementalJSONL(
 					userMsgCount:         inc.UserMsgCount,
 					fileSize:             newOffset,
 					fileMtime:            info.ModTime().UnixNano(),
+					fileHash:             fileHash,
 					totalOutputTokens:    inc.TotalOutputTokens,
 					peakContextTokens:    inc.PeakContextTokens,
 					hasTotalOutputTokens: inc.HasTotalOutputTokens,
@@ -3843,6 +3970,7 @@ func (e *Engine) tryIncrementalJSONL(
 			userMsgCount:         inc.UserMsgCount + newUserCount,
 			fileSize:             newOffset,
 			fileMtime:            info.ModTime().UnixNano(),
+			fileHash:             fileHash,
 			totalOutputTokens:    totalOut,
 			peakContextTokens:    peakCtx,
 			hasTotalOutputTokens: hasTotalOut,
@@ -3867,11 +3995,13 @@ func (e *Engine) processCodex(
 			path, offset, startOrd, false,
 		)
 	}
-	if res, ok := e.tryIncrementalJSONL(
+	res, ok := e.tryIncrementalJSONL(
 		file, info, parser.AgentCodex, codexParseFn,
-	); ok {
+	)
+	if ok {
 		return res
 	}
+	forceReplace := res.forceReplace
 
 	sess, msgs, err := parser.ParseCodexSession(
 		file.Path, e.machine, false,
@@ -3894,6 +4024,7 @@ func (e *Engine) processCodex(
 		results: []parser.ParseResult{
 			{Session: *sess, Messages: msgs},
 		},
+		forceReplace: forceReplace,
 	}
 }
 
@@ -5286,6 +5417,54 @@ func (e *Engine) writeBatch(
 	return writtenSessions, writtenMessages, failedSessions
 }
 
+func (e *Engine) writeSourceSnapshot(
+	results []parser.ParseResult,
+	staleIDs []string,
+	parserExcludedIDs []string,
+	needsRetry bool,
+) (writtenSessions, writtenMessages, failedSessions int) {
+	resolveWorktreeProject := e.loadWorktreeProjectResolver()
+	writes := make([]db.SessionBatchWrite, 0, len(results))
+	for _, result := range results {
+		pw := pendingWrite{
+			sess:         result.Session,
+			msgs:         result.Messages,
+			usageEvents:  result.UsageEvents,
+			needsRetry:   needsRetry,
+			forceReplace: true,
+		}
+		s, msgs, ok := e.prepareSessionWrite(
+			pw, resolveWorktreeProject,
+		)
+		if !ok {
+			continue
+		}
+		update, findings := computeSignalsAndSecrets(s, msgs)
+		writes = append(writes, db.SessionBatchWrite{
+			Session:         s,
+			Messages:        msgs,
+			UsageEvents:     toDBUsageEvents(s.ID, result.UsageEvents),
+			Signals:         update,
+			Findings:        findings,
+			DataVersion:     dataVersionForWrite(pw),
+			ReplaceMessages: true,
+		})
+	}
+
+	result, err := e.db.WriteSessionSnapshot(
+		writes, staleIDs, parserExcludedIDs,
+	)
+	if err != nil {
+		log.Printf("write Claude source snapshot: %v", err)
+		failed := result.FailedSessions
+		if failed == 0 {
+			failed = max(len(writes), 1)
+		}
+		return 0, 0, failed
+	}
+	return result.WrittenSessions, result.WrittenMessages, 0
+}
+
 func (e *Engine) prepareSessionWrite(
 	pw pendingWrite,
 	resolveWorktreeProject worktreeProjectResolver,
@@ -5424,12 +5603,13 @@ func (e *Engine) writeIncremental(
 		)
 	}
 
-	if err := e.db.UpdateSessionIncremental(
+	if err := e.db.UpdateSessionIncrementalWithHash(
 		inc.sessionID, endedAt,
 		msgCount, userMsgCount,
 		inc.fileSize, inc.fileMtime,
 		inc.totalOutputTokens, inc.peakContextTokens,
 		inc.hasTotalOutputTokens, inc.hasPeakContextTokens,
+		inc.fileHash,
 	); err != nil {
 		return fmt.Errorf(
 			"incremental update %s: %w",
@@ -5569,7 +5749,7 @@ func (e *Engine) shouldPreserveOpenCodeArchive(
 	if agent != parser.AgentOpenCode {
 		return false
 	}
-	store := e.openCodeArchiveStore
+	store := e.resyncArchiveStore
 	if store == nil {
 		store = e.db
 	}
@@ -5732,6 +5912,24 @@ func (e *Engine) applyIDPrefixToSessionIDs(ids []string) []string {
 		prefixed[i] = e.idPrefix + id
 	}
 	return prefixed
+}
+
+func mergeUniqueStrings(groups ...[]string) []string {
+	seen := make(map[string]struct{})
+	var merged []string
+	for _, group := range groups {
+		for _, value := range group {
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			merged = append(merged, value)
+		}
+	}
+	return merged
 }
 
 // applyRemoteRewrites prefixes session IDs and rewrites

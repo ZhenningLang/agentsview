@@ -29,3 +29,21 @@ func ComputeFileHash(path string) (string, error) {
 	}
 	return hash, nil
 }
+
+// ComputeFileHashPrefix returns the SHA-256 hex digest of at most size bytes
+// from the start of path. A size larger than the file hashes the full file.
+func ComputeFileHashPrefix(path string, size int64) (string, error) {
+	if size < 0 {
+		return "", fmt.Errorf("hash prefix size must be non-negative: %d", size)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("opening %s: %w", path, err)
+	}
+	defer f.Close()
+	hash, err := ComputeHash(io.LimitReader(f, size))
+	if err != nil {
+		return "", fmt.Errorf("hashing prefix of %s: %w", path, err)
+	}
+	return hash, nil
+}

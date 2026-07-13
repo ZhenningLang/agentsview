@@ -47,6 +47,8 @@ func setupTestEnv(t *testing.T) string {
 	dir := t.TempDir()
 
 	t.Setenv("AGENTSVIEW_DATA_DIR", dir)
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	t.Setenv("CLAUDE_PROJECTS_DIR", "")
 	return dir
 }
 
@@ -566,6 +568,7 @@ func TestResolveDirs(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := setupTestEnv(t)
+			t.Setenv("CLAUDE_CONFIG_DIR", "")
 			writeConfig(t, dir, tt.config)
 			if tt.envValue != "" {
 				t.Setenv("CLAUDE_PROJECTS_DIR", tt.envValue)
@@ -586,6 +589,53 @@ func TestResolveDirs(t *testing.T) {
 			assert.Equal(t, tt.wantUserConfig, cfg.IsUserConfigured(parser.AgentClaude))
 		})
 	}
+}
+
+func TestResolveDirs_ClaudeConfigDir(t *testing.T) {
+	t.Run("re-roots implicit default", func(t *testing.T) {
+		dir := setupTestEnv(t)
+		root := t.TempDir()
+		t.Setenv("CLAUDE_CONFIG_DIR", root)
+		t.Setenv("CLAUDE_PROJECTS_DIR", "")
+		writeConfig(t, dir, map[string]any{})
+
+		cfg, err := LoadMinimal()
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{filepath.Join(root, "projects")},
+			cfg.ResolveDirs(parser.AgentClaude))
+		assert.False(t, cfg.IsUserConfigured(parser.AgentClaude))
+	})
+
+	t.Run("projects env wins", func(t *testing.T) {
+		dir := setupTestEnv(t)
+		t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+		t.Setenv("CLAUDE_PROJECTS_DIR", "/from/projects-env")
+		writeConfig(t, dir, map[string]any{})
+
+		cfg, err := LoadMinimal()
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"/from/projects-env"},
+			cfg.ResolveDirs(parser.AgentClaude))
+		assert.True(t, cfg.IsUserConfigured(parser.AgentClaude))
+	})
+
+	t.Run("config file wins", func(t *testing.T) {
+		dir := setupTestEnv(t)
+		t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+		t.Setenv("CLAUDE_PROJECTS_DIR", "")
+		writeConfig(t, dir, map[string]any{
+			"claude_project_dirs": []string{"/from/config"},
+		})
+
+		cfg, err := LoadMinimal()
+		require.NoError(t, err)
+
+		assert.Equal(t, []string{"/from/config"},
+			cfg.ResolveDirs(parser.AgentClaude))
+		assert.True(t, cfg.IsUserConfigured(parser.AgentClaude))
+	})
 }
 
 func TestResolveDataDir_DefaultAndEnvOverride(t *testing.T) {
