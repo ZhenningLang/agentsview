@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agentsview 上游收敛与模型演进审计（2026-07-13）</title>
+<style>
+:root { color-scheme: light; --bg: #f8fafc; --panel: #ffffff; --text: #111827; --muted: #64748b; --border: #dbe3ef; --accent: #1f4b99; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; line-height: 1.55; }
+main { max-width: 960px; margin: 0 auto; padding: 32px 20px 48px; }
+header { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 20px; margin-bottom: 18px; }
+section { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 22px; }
+h1, h2, h3, h4, h5, h6 { line-height: 1.2; margin: 1.4em 0 0.5em; }
+header h1 { margin-top: 0; }
+p { margin: 0.75em 0; }
+ul { padding-left: 1.4rem; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #0f172a; color: #e5e7eb; padding: 14px; border-radius: 10px; }
+table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; }
+th { background: #eef4ff; }
+.meta { color: var(--muted); font-size: 0.92rem; }
+.badge { display: inline-block; background: #e0ecff; color: var(--accent); border-radius: 999px; padding: 2px 10px; font-size: 0.82rem; margin-right: 8px; }
+</style>
+</head>
+<body>
+<main>
+<header>
+<span class="badge">技术审计</span>
+<h1>Agentsview 上游收敛与模型演进审计（2026-07-13）</h1>
+<div class="meta">来源：/Users/zhenninglang/Projects/agentsview/docs/upstream-convergence-audit-2026-07-13.md</div>
+<div class="meta">生成时间：2026-07-13T09:39:20+00:00</div>
+</header>
+<section>
+<h1>Agentsview 上游收敛与模型演进审计（2026-07-13）</h1>
+<blockquote>[推断] 本报告中的建议、优先级和迁移路线，是基于已核实 Git、代码与官方文档证据形成的工程裁决，不是上游承诺。</blockquote>
+<h2>1. 一页结论</h2>
+<p>这个 fork 需要继续演进。原因不是“模型名字更新了”：模型字段是普通字符串，新模型 ID 通常可以透传。真正需要处理的是 Claude/Codex 会话格式、token 与 pricing、OpenAI generation API，以及上游已经替换的 parser 底座。</p>
+<p>不建议直接 merge。fork 独有 124 个提交，上游独有 335 个提交，双方都深改了 parser、sync、schema、server 和 frontend，涉及 1,508 个上游变更文件。</p>
+<p>也不建议逐个 cherry-pick 335 个提交。这会把同一套架构迁移拆成大量相互依赖的小补丁，长期维护成本太高。</p>
+<p>“智能合并”的单位应该是行为合同和能力模块。先建立真实样本与 parse-diff 验收，再替换底座。</p>
+<h2>2. 模型更新到底影响哪里</h2>
+<p>模型名字段在 fork 里是普通字符串，不是枚举。新模型 ID，例如 <code>claude-sonnet-5</code>、<code>gpt-5.6-terra</code>，通常不会因为模型名本身导致 parser 或存储失败。</p>
+<p>风险主要在三个地方。</p>
+<p><strong>Content block 解析。</strong> Claude parser 只显式处理 <code>text</code>、<code>thinking</code>、<code>tool_use</code>、<code>tool_result</code> 四种 block（<code>internal/parser/content.go:17-90</code>）。Codex parser 的顶层记录、response item、content block 也使用固定分支（<code>internal/parser/codex.go</code>）。新 block 类型或新 token 字段更容易造成消息消失、统计遗漏或 enrichment 产出为空。</p>
+<p><strong>Pricing fallback。</strong> <code>internal/pricing/fallback.go:3-133</code> 没有 <code>gpt-5.6</code>、<code>gpt-5.6-terra</code>、<code>gpt-5.6-luna</code>、<code>claude-sonnet-5</code>。每日 usage 对无法定价的模型按零费率累计，但没有充分暴露“成本不完整”；单 session usage 会暴露 unpriced model。两条路径语义不一致。</p>
+<p><strong>LLM enrichment。</strong> 当前实现固定调用 <code>chat/completions</code>，请求固定发送 <code>response_format: json_object</code> 与 <code>temperature: 0.2</code>，响应只读取 <code>choices[0].message.content</code>（<code>internal/llm/client.go:53-86,168-180,204-218</code>）。HTTP 429 不在 retry 条件内（<code>internal/llm/client.go:242-247</code>）。OpenAI 官方文档说明 Chat Completions 仍受支持，但新项目推荐 Responses API。</p>
+<p>是否需要原生 Anthropic Messages API 是产品边界，不是 Claude 模型发布自动带来的需求。</p>
+<h2>3. fork 与上游分叉程度</h2>
+<table><thead><tr><th>维度</th><th>数据</th></tr></thead><tbody><tr><td>共同基线</td><td><code>56218f2</code>（2026-06-12）</td></tr><tr><td>fork HEAD</td><td><code>9451552</code>，独有 124 个提交</td></tr><tr><td>上游 HEAD</td><td><code>2066ea3</code>，独有 335 个提交</td></tr><tr><td>上游改动</td><td>1,508 个文件，约 +407,087 / -33,925 行</td></tr></tbody></table>
+<p>双方都深改了 parser、sync、schema、server 和 frontend。上游完成了 provider facade 整体迁移、conversation-unit semantic search、read-only MCP server、stable export contract。fork 则增加了 memory、Kilo、Droid、LLM enrichment、skill governance 和 vault 等能力。</p>
+<p>上游 <code>internal/skills</code> 与 fork <code>internal/skills</code> 路径相同，但领域语义不同。这是明确的命名冲突。</p>
+<p>上游 recall 表和生命周期不能直接作为第二套 memory 系统引入。可以借鉴 ranking、evidence window、context safety，但数据合同必须继续服从 fork 的 raw-preserving memory 设计。</p>
+<h2>4. 建议引入清单</h2>
+<h3>现在做（Slice 0）</h3>
+<table><thead><tr><th>上游提交或能力</th><th>理由</th><th>引入方式</th></tr></thead><tbody><tr><td><code>800c19b6</code> parser output validation</td><td>集中校验 parser 输出，减少静默数据损失</td><td>手工移植，适配 fork 类型和三后端合同</td></tr><tr><td><code>ccf2c4da</code> LiteLLM offline pricing</td><td>替换手写 fallback，缩小新模型定价缺口</td><td>引入 snapshot 与生成链，保留 fork custom pricing</td></tr><tr><td>Cost completeness</td><td>让每日 usage 暴露 unpriced model，与单 session 语义对齐</td><td>fork 自行实现</td></tr><tr><td><code>293342a2</code>、<code>1fc423a7</code>、<code>9bee8a3c</code>、<code>a4584de4</code>、<code>87cf12e1</code></td><td>Codex fork replay、late token、goal context、custom tool 的正确性修复</td><td>以上游提交为行为来源，在 fork 上手工移植</td></tr><tr><td><code>18f3aceb</code></td><td>支持 <code>CLAUDE_CONFIG_DIR</code></td><td>手工移植</td></tr><tr><td><code>16707586</code></td><td>Claude 文件 stat 未变化但内容原地改写时用 hash 检测</td><td>手工移植</td></tr><tr><td><code>59a4d055</code></td><td>Claude companion layout、路径 containment、外置 tool result 数据保真</td><td>手工移植，不依赖 provider facade</td></tr><tr><td>DOMPurify <code>3.4.11</code></td><td>跟进上游安全更新</td><td>fork 直接升级依赖并验证前端</td></tr></tbody></table>
+<p>这些条目不是先把 <code>upstream/main</code> 合进来。提交号只用来定位上游行为，实现在 fork 当前代码上重做。</p>
+<h3>底座迁移（Slice 2）</h3>
+<table><thead><tr><th>上游提交或能力</th><th>裁决</th></tr></thead><tbody><tr><td>Provider facade 迁移链：<code>6c8407ec</code>、<code>1039ef66</code>、<code>736e782f</code>、<code>8a4ae8c5</code>、<code>9fd61a07</code>、<code>ebee2ccc</code>、<code>98ef093c</code>、<code>56e3d0f0</code></td><td>作为整体架构迁移，不零散 cherry-pick；迁移前必须先有脱敏真实 corpus 和 parse-diff 基线</td></tr></tbody></table>
+<h3>协议演进（Slice 3）</h3>
+<table><thead><tr><th>能力</th><th>裁决</th></tr></thead><tbody><tr><td>OpenAI Responses adapter</td><td>可独立于 parser provider facade 实现；给 enrichment 增加显式 Responses adapter，同时保留 Chat Completions</td></tr><tr><td>Anthropic Messages adapter</td><td>暂不默认引入；只有直连 Anthropic API 成为产品需求时再立项</td></tr></tbody></table>
+<h3>底座稳定后做（Slice 4）</h3>
+<table><thead><tr><th>上游提交或能力</th><th>裁决</th></tr></thead><tbody><tr><td><code>16e63c74</code> read-only MCP server</td><td>价值明确，待 SessionService 与权限边界稳定后引入</td></tr><tr><td><code>725a3d0c</code>、<code>94f1488f</code> stable export/evidence contract</td><td>待 parser、pricing、project identity 和三后端合同稳定后引入</td></tr><tr><td><code>6c25213e</code>、<code>43c1e826</code> semantic/hybrid search</td><td>用上游 conversation-unit embeddings 与 citations 替换 fork 的 session-level in-memory semantic search；只能保留一个 session vector SSOT</td></tr><tr><td>daemon、HTTP remote sync、i18n/kit-ui shell</td><td>分别处理后台 worker 生命周期、私密数据排除和 fork 页面重接线后再引入</td></tr></tbody></table>
+<h3>明确不做</h3>
+<table><thead><tr><th>项目</th><th>理由</th></tr></thead><tbody><tr><td>直接 merge <code>upstream/main</code></td><td>变更范围与语义冲突不可控</td></tr><tr><td>第二套 memory store</td><td>fork 已有完整 memory 合同，上游 recall 表语义冲突</td></tr><tr><td>照抄上游 data version</td><td>fork 有自己的 schema migration 路径</td></tr><tr><td>同时保留两套 session vector 生命周期</td><td>会出现索引 SSOT、刷新时机和查询结果竞争</td></tr><tr><td>默默改变 orphan subagent 策略</td><td>现有 fork 测试与上游行为不同，需要单独产品决策</td></tr></tbody></table>
+<h2>5. 智能合并方法</h2>
+<p>合并单位不是 commit，而是行为合同和能力模块。</p>
+<p>每个合并单元需要经过四步：</p>
+<ol><li>从上游提交中提取目标行为、数据合同和测试场景。</li><li>在 fork 分支上手工实现，处理命名冲突、schema 差异和三后端 parity。</li><li>用 parse-diff（上游 <code>4592129b</code> 及后续）对脱敏真实 session corpus 做重解析比对。</li><li>验证 memory、Kilo、Droid、LLM enrichment 等 fork 合同没有退化。</li></ol>
+<p>没有真实样本的合并属于盲改，不进入底座迁移。</p>
+<h2>6. 分阶段路线</h2>
+<p><strong>Slice 0：基础修补。</strong> 引入 parser validation、offline pricing、cost completeness、Claude/Codex P0 correctness、<code>CLAUDE_CONFIG_DIR</code>、Claude companion layout、DOMPurify 更新。这些能力可以逐项手工移植。</p>
+<p><strong>Slice 1：建立验收基础设施。</strong> 建立脱敏真实 session corpus，接入 parse-diff 和 anomaly evidence。这是后续底座替换的质量门。</p>
+<p><strong>Slice 2：底座迁移。</strong> 整体迁移 provider facade，不先合并 <code>upstream/main</code>。Kilo 使用上游 OpenCode-family provider，同时保持 <code>agent = &quot;kilo&quot;</code>、<code>kilo:</code> ID 与 resume command；Droid 适配成新 provider。</p>
+<p><strong>Slice 3：协议演进。</strong> 给 enrichment 增加显式 OpenAI Responses adapter，同时保留 Chat Completions。是否支持 Anthropic Messages API 另做产品决策。</p>
+<p><strong>Slice 4：能力引入。</strong> 底座稳定后引入 MCP、export/evidence contract，再评估 semantic/recall、daemon、remote sync、i18n/UI shell。</p>
+<h2>7. 不可牺牲合同</h2>
+<ul><li><strong>Memory raw-preserving：</strong> assist-mem、CC-native、cross-agent 原始来源不被 canonical 替代；canonical 保留 provenance 与 covered refs。</li><li><strong>Kilo 身份：</strong> <code>agent = &quot;kilo&quot;</code>、稳定 <code>kilo:</code> ID 前缀、resume command。</li><li><strong>Droid 身份：</strong> <code>agent = &quot;droid&quot;</code>、稳定 <code>droid:</code> ID 前缀、settings token usage、tool metadata、session context events。</li><li><strong><code>llm_title</code> 唯一性：</strong> <code>llm_title</code> 是唯一生成标题字段，不引入竞争字段。</li><li><strong>安全边界：</strong> LLM key 不明文返回，配置写入保留严格权限，执行端点保持本地可写模式边界。</li><li><strong>领域隔离：</strong> memory、skill governance、vault 不污染 session/message facts。</li><li><strong>显式 opt-in：</strong> backup、synthesis、enrichment 等外部调用或写文件行为保持显式 opt-in。</li></ul>
+<h2>8. 验收标准</h2>
+<ol><li>相关 Go 与前端测试通过；Go 改动额外运行 <code>go fmt ./...</code> 和 <code>go vet ./...</code>。</li><li>涉及 PostgreSQL/Cockroach 查询、schema、pricing、usage、search、export parity 的 Slice 必须运行 <code>make test-postgres</code>；其他 Slice 记录不适用依据。</li><li>parse-diff 对脱敏 corpus 的重解析结果不存在未解释差异；任何行为差异都要有预先批准的 contract case 和证据。</li><li>不可牺牲合同以自动化 acceptance test 为主，人工抽样为补充。</li><li>前端 session 列表、详情、搜索、analytics 进行 Playwright 或人工可观察验收。</li><li>Slice 2 额外要求 Kilo 与 Droid 在迁移前后的解析结果字段级一致。</li><li>SQLite 与 PostgreSQL/Cockroach 在受影响的查询、pricing、usage、search、export 路径保持可观察行为一致。</li></ol>
+<h2>9. 证据与来源</h2>
+<table><thead><tr><th>编号</th><th>来源</th><th>用途</th></tr></thead><tbody><tr><td>E1</td><td><code>git merge-base HEAD upstream/main</code> = <code>56218f2</code></td><td>共同基线</td></tr><tr><td>E2</td><td><code>git rev-list --left-right --count HEAD...upstream/main</code> = <code>124 335</code></td><td>双方独有提交数</td></tr><tr><td>E3</td><td><code>git diff --stat HEAD...upstream/main</code></td><td>上游文件变更统计</td></tr><tr><td>E4</td><td><code>internal/parser/content.go:17-90</code></td><td>Claude content block 分支</td></tr><tr><td>E5</td><td><code>internal/parser/codex.go</code></td><td>Codex 解析分支</td></tr><tr><td>E6</td><td><code>internal/pricing/fallback.go:3-133</code></td><td>定价 fallback 覆盖范围</td></tr><tr><td>E7</td><td><code>internal/llm/client.go:53-86,168-180,204-218,242-247</code></td><td>enrichment 实现与 retry 边界</td></tr><tr><td>E8</td><td><code>https://developers.openai.com/api/docs/models</code></td><td>OpenAI 当前模型列表</td></tr><tr><td>E9</td><td><code>https://developers.openai.com/api/docs/guides/migrate-to-responses</code></td><td>Responses API 官方迁移说明</td></tr><tr><td>E10</td><td><code>https://platform.claude.com/docs/en/about-claude/models/overview</code></td><td>Anthropic 当前模型列表与能力说明</td></tr><tr><td>E11</td><td>第 4 节列出的上游提交</td><td>可移植能力与架构来源</td></tr></tbody></table>
+<h2>10. 下一步裁决</h2>
+<p>[推断] 最稳的下一步不是开始 provider facade 迁移，而是先完成 Slice 0 与 Slice 1。这样可以先拿到数据正确性收益，也能为后续大迁移建立可证伪的反馈环。</p>
+<p>等 corpus 与 parse-diff 基线稳定后，再把 provider facade 作为独立大型交付推进。</p>
+</section>
+</main>
+</body>
+</html>

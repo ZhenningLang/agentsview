@@ -74,3 +74,15 @@ Because the browser cannot attach to or resume an interactive terminal process, 
 3. Resume command API/UI.
 4. Manual session title override API/UI.
 5. Final acceptance and documentation update.
+
+## Upstream Convergence Audit
+
+The 2026-07-13 audit is maintained in Chinese as the decision SSOT:
+
+- `docs/upstream-convergence-audit-2026-07-13.md`
+- `docs/upstream-convergence-audit-2026-07-13.html`
+
+Locked direction: converge by behavior contract and capability module, not by
+directly merging `upstream/main` or blindly cherry-picking all upstream
+commits. Preserve the fork's memory, Kilo, Droid, LLM-secret, and side-effect
+contracts during every migration slice.
