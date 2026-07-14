@@ -196,9 +196,19 @@ func runPGPushWatch(cfg PGPushConfig) {
 		return
 	}
 
+	lastFullAudit := time.Time{}
+	// Keep the startup catch-up as a full audit because the file watcher is not
+	// armed yet. Later pushes use stat-only scans, with a daily full audit to
+	// catch same-stat rewrites from missed events or unwatched roots.
 	pusher := &pgPusher{
 		localSync: func(c context.Context) error {
-			engine.SyncAll(c, nil)
+			now := time.Now()
+			if fullSyncAuditDue(lastFullAudit, now) {
+				engine.SyncAll(c, nil)
+				lastFullAudit = now
+			} else {
+				engine.SyncAllStatOnly(c, nil)
+			}
 			return nil
 		},
 		connect: func() (pgTarget, error) {
@@ -252,6 +262,11 @@ func runPGPushWatch(cfg PGPushConfig) {
 		},
 	)
 	defer stopWatcher()
+	// Catch writes that landed after the startup sync but before watcher setup.
+	lastFullAudit = time.Time{}
+	if err := pusher.push(ctx, reasonStartup, false); err != nil {
+		log.Printf("pg watch: post-watch catch-up push failed: %v", err)
+	}
 	if len(unwatchedDirs) > 0 {
 		log.Printf(
 			"pg watch: %d root(s) not watched; relying on the %s floor for coverage",

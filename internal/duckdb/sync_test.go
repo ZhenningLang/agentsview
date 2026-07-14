@@ -46,6 +46,51 @@ func TestSyncFullPushCreatesExpectedRows(t *testing.T) {
 	assert.Equal(t, "alpha first", firstMessage)
 }
 
+func TestSyncFullPushBlanksUnparseableMessageTimestamp(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+	sessionID := "duck-invalid-timestamp"
+	message := syncMessage(
+		sessionID, 0, "user", "hello", "not-a-timestamp",
+	)
+	_, err := local.WriteSessionBatchAtomic([]db.SessionBatchWrite{{
+		Session: syncSession(
+			sessionID, "alpha", "hello",
+			"2026-01-10T00:00:00.000Z", 1,
+		),
+		Messages:        []db.Message{message},
+		DataVersion:     1,
+		ReplaceMessages: true,
+	}})
+	require.NoError(t, err)
+
+	err = local.Update(func(tx *sql.Tx) error {
+		_, updateErr := tx.Exec(
+			`UPDATE messages SET timestamp = ? WHERE session_id = ?`,
+			"not-a-timestamp", sessionID,
+		)
+		return updateErr
+	})
+	require.NoError(t, err)
+	stored, err := local.GetAllMessages(ctx, sessionID)
+	require.NoError(t, err)
+	require.Len(t, stored, 1)
+	assert.Equal(t, "not-a-timestamp", stored[0].Timestamp)
+
+	syncer := newTestSync(
+		t, filepath.Join(t.TempDir(), "mirror.duckdb"), local, SyncOptions{},
+	)
+	_, err = syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+
+	var timestamp sql.NullTime
+	require.NoError(t, syncer.DB().QueryRowContext(ctx,
+		`SELECT timestamp FROM messages WHERE session_id = ?`,
+		sessionID,
+	).Scan(&timestamp))
+	assert.False(t, timestamp.Valid)
+}
+
 func TestSessionFingerprintsStoreDigestOnly(t *testing.T) {
 	ctx := context.Background()
 	local := newLocalDB(t)

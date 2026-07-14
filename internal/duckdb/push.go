@@ -182,6 +182,7 @@ func (s *Sync) replaceStarredSessions(
 func (s *Sync) pushSession(
 	ctx context.Context, tx *sql.Tx, sess db.Session,
 ) (int, error) {
+	_ = db.SanitizeSession(&sess)
 	if err := upsertSession(ctx, tx, sess, s.machine); err != nil {
 		return 0, err
 	}
@@ -195,6 +196,7 @@ func (s *Sync) pushSession(
 	if err != nil {
 		return 0, fmt.Errorf("reading local messages for %s: %w", sess.ID, err)
 	}
+	msgs, _ = db.SanitizedMessages(msgs)
 	if err := insertMessages(ctx, tx, msgs); err != nil {
 		return 0, err
 	}
@@ -655,6 +657,7 @@ func (s *Sync) replaceUsageEvents(
 	if err != nil {
 		return err
 	}
+	events, _ = db.SanitizedUsageEvents(events)
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM usage_events WHERE session_id = ?`,
 		sessionID,

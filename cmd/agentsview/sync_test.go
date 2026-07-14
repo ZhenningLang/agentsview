@@ -44,6 +44,24 @@ func TestRunRemoteHosts_AttemptsAllAndCollectsFailures(t *testing.T) {
 	assert.Equal(t, failBeta, failures[0].Err)
 }
 
+func TestFullSyncAuditDue(t *testing.T) {
+	now := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name string
+		last time.Time
+		want bool
+	}{
+		{name: "first periodic pass", want: true},
+		{name: "within daily interval", last: now.Add(-time.Hour), want: false},
+		{name: "daily audit due", last: now.Add(-fullSyncAuditInterval), want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, fullSyncAuditDue(tt.last, now))
+		})
+	}
+}
+
 func TestRunRemoteHosts_AllSucceedReturnsEmpty(t *testing.T) {
 	hosts := []config.RemoteHost{{Host: "alpha"}, {Host: "beta"}}
 	failures := runRemoteHosts(hosts, false, func(config.RemoteHost, bool) error {
@@ -180,6 +198,64 @@ func TestStartAssistMemSyncWatchesLedgerCreatedAfterStartup(t *testing.T) {
 		got, listErr := database.ListMemories(context.Background(), db.MemoryFilter{Source: db.SourceAssistMem})
 		return listErr == nil && len(got) == 2
 	}, 2*time.Second, 20*time.Millisecond)
+}
+
+func TestStartAssistMemSyncRearmsAfterLedgerDirectoryRename(t *testing.T) {
+	dataDir := t.TempDir()
+	memoryDir := filepath.Join(dataDir, "memory")
+	ledgerDir := filepath.Join(memoryDir, "ledger")
+	ledgerPath := filepath.Join(ledgerDir, "entries.jsonl")
+	relocatedDir := filepath.Join(memoryDir, "ledger-old")
+	require.NoError(t, os.MkdirAll(ledgerDir, 0o755))
+
+	first := `{"created_at":"2026-07-10T15:17:35Z","id":"first","scope":"global","source":"explicit","status":"active","text":"first memory","type":"entrypoint"}` + "\n"
+	require.NoError(t, os.WriteFile(ledgerPath, []byte(first), 0o644))
+
+	database, err := db.Open(filepath.Join(dataDir, "agentsview.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, database.Close()) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	rearmed := make(chan string, 4)
+	stop := startAssistMemSyncWithRearmHook(
+		ctx, config.Config{AssistMemLedger: ledgerPath}, database,
+		func(root string, watched bool) {
+			if !watched {
+				return
+			}
+			select {
+			case rearmed <- filepath.Clean(root):
+			default:
+			}
+		},
+	)
+	t.Cleanup(stop)
+	require.Equal(t, filepath.Clean(ledgerDir), <-rearmed)
+
+	require.Eventually(t, func() bool {
+		got, listErr := database.ListMemories(context.Background(), db.MemoryFilter{Source: db.SourceAssistMem})
+		return listErr == nil && len(got) == 1
+	}, 2*time.Second, 20*time.Millisecond)
+
+	require.NoError(t, os.Rename(ledgerDir, relocatedDir))
+	require.Eventually(t, func() bool {
+		select {
+		case root := <-rearmed:
+			return root == filepath.Clean(memoryDir)
+		default:
+			return false
+		}
+	}, 3*time.Second, 20*time.Millisecond)
+	require.NoError(t, os.MkdirAll(ledgerDir, 0o755))
+
+	second := `{"created_at":"2026-07-10T15:18:35Z","id":"second","scope":"global","source":"explicit","status":"active","text":"second memory","type":"entrypoint"}` + "\n"
+	require.NoError(t, os.WriteFile(ledgerPath, []byte(first+second), 0o644))
+
+	require.Eventually(t, func() bool {
+		got, listErr := database.ListMemories(context.Background(), db.MemoryFilter{Source: db.SourceAssistMem})
+		return listErr == nil && len(got) == 2
+	}, 3*time.Second, 20*time.Millisecond)
 }
 
 func TestSerialRunnerDoesNotOverlapAssistMemSyncs(t *testing.T) {

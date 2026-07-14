@@ -515,10 +515,12 @@ func (s *Sync) sessionFingerprints(
 	}
 	out := make(map[string]string, len(sessions))
 	for _, sess := range sessions {
+		_ = db.SanitizeSession(&sess)
 		msgs, err := s.local.GetAllMessages(ctx, sess.ID)
 		if err != nil {
 			return nil, fmt.Errorf("message fingerprint %s: %w", sess.ID, err)
 		}
+		msgs, _ = db.SanitizedMessages(msgs)
 		findings, err := s.local.SessionSecretFindings(ctx, sess.ID)
 		if err != nil {
 			return nil, fmt.Errorf("secret finding fingerprint %s: %w", sess.ID, err)

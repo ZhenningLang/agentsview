@@ -44,6 +44,7 @@ var (
 
 const (
 	periodicSyncInterval  = 15 * time.Minute
+	fullSyncAuditInterval = 24 * time.Hour
 	telemetryPingInterval = 24 * time.Hour
 	unwatchedPollInterval = 2 * time.Minute
 	watcherDebounce       = 500 * time.Millisecond
@@ -206,7 +207,6 @@ func runServe(cfg config.Config) {
 			}
 		}()
 
-		go startPeriodicSync(engine, database)
 	}
 
 	// Seed model_pricing after any resync swap so the new DB
@@ -329,7 +329,6 @@ func runServe(cfg config.Config) {
 	fmt.Printf("Database: %s\n", cfg.DBPath)
 
 	startTelemetryPings(ctx, telemetryReporter)
-
 	if engine != nil {
 		stopWatcher, unwatchedDirs := startFileWatcher(
 			cfg, engine, func(paths []string) {
@@ -337,6 +336,10 @@ func runServe(cfg config.Config) {
 			},
 		)
 		defer stopWatcher()
+		// Close the startup-to-watcher event gap before switching routine
+		// periodic scans to stat-only freshness checks.
+		engine.SyncAll(ctx, nil)
+		go startPeriodicSync(engine, database, time.Now())
 		if len(unwatchedDirs) > 0 {
 			go startUnwatchedPoll(engine)
 		}
@@ -668,15 +671,26 @@ func startFileWatcher(
 }
 
 func startPeriodicSync(
-	engine *sync.Engine, database *db.DB,
+	engine *sync.Engine, database *db.DB, lastFullAudit time.Time,
 ) {
 	ticker := time.NewTicker(periodicSyncInterval)
 	defer ticker.Stop()
 	for range ticker.C {
 		log.Println("Running scheduled sync...")
-		engine.SyncAll(context.Background(), nil)
+		now := time.Now()
+		if fullSyncAuditDue(lastFullAudit, now) {
+			engine.SyncAll(context.Background(), nil)
+			lastFullAudit = now
+		} else {
+			engine.SyncAllStatOnly(context.Background(), nil)
+		}
 		recomputePendingSessions(engine, database)
 	}
+}
+
+func fullSyncAuditDue(lastFullAudit, now time.Time) bool {
+	return lastFullAudit.IsZero() ||
+		now.Sub(lastFullAudit) >= fullSyncAuditInterval
 }
 
 // startSkillSync runs the coding-skills catalog sync once at startup
@@ -780,6 +794,13 @@ func (r memoryResyncer) Resync(ctx context.Context) error {
 func startAssistMemSync(
 	ctx context.Context, cfg config.Config, database db.Store,
 ) func() {
+	return startAssistMemSyncWithRearmHook(ctx, cfg, database, nil)
+}
+
+func startAssistMemSyncWithRearmHook(
+	ctx context.Context, cfg config.Config, database db.Store,
+	onRearm func(root string, watched bool),
+) func() {
 	path := cfg.AssistMemLedgerPath()
 	writer, ok := database.(memory.Writer)
 	if path == "" || !ok {
@@ -804,7 +825,18 @@ func startAssistMemSync(
 	watcher, err := sync.NewWatcher(watcherDebounce, func(paths []string) {
 		for _, changed := range paths {
 			if pathChangeAffectsTarget(changed, path) {
-				watcher.WatchShallow(filepath.Dir(path))
+				root, watched := watchNearestExistingDir(
+					watcher, filepath.Dir(path),
+				)
+				if onRearm != nil {
+					onRearm(root, watched)
+				}
+				if !watched {
+					log.Printf(
+						"assist-mem watcher: could not watch an ancestor of %s",
+						path,
+					)
+				}
 				runner.Run()
 				return
 			}
@@ -814,8 +846,10 @@ func startAssistMemSync(
 	if err != nil {
 		log.Printf("assist-mem watcher: %v", err)
 	} else {
-		watchRoot := nearestExistingDir(filepath.Dir(path))
-		watched := watchRoot != "" && watcher.WatchShallow(watchRoot)
+		root, watched := watchNearestExistingDir(watcher, filepath.Dir(path))
+		if onRearm != nil {
+			onRearm(root, watched)
+		}
 		watcher.Start()
 		if watched {
 			stopWatcher = watcher.Stop
@@ -877,6 +911,13 @@ func nearestExistingDir(path string) string {
 		path = parent
 	}
 	return ""
+}
+
+func watchNearestExistingDir(
+	watcher *sync.Watcher, targetDir string,
+) (string, bool) {
+	root := nearestExistingDir(targetDir)
+	return root, root != "" && watcher.WatchShallow(root)
 }
 
 func pathChangeAffectsTarget(changed, target string) bool {
@@ -1214,6 +1255,6 @@ func startUnwatchedPoll(engine *sync.Engine) {
 	defer ticker.Stop()
 	for range ticker.C {
 		log.Println("Polling unwatched directories...")
-		engine.SyncAll(context.Background(), nil)
+		engine.SyncAllStatOnly(context.Background(), nil)
 	}
 }

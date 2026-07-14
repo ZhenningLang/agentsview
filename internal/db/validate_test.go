@@ -167,8 +167,7 @@ func TestValidateAndSanitizeSessionAndAggregateStats(t *testing.T) {
 	require.NotNil(t, s.SessionName)
 	assert.Equal(t, "name", *s.SessionName)
 	assert.Nil(t, s.StartedAt)
-	require.NotNil(t, s.EndedAt)
-	assert.Equal(t, ended, *s.EndedAt)
+	assert.Nil(t, s.EndedAt)
 	require.NotNil(t, s.TerminationStatus)
 	assert.Equal(t, "awaitinguser", *s.TerminationStatus)
 	assert.Equal(t, "", msgs[0].Role)
@@ -178,7 +177,7 @@ func TestValidateAndSanitizeSessionAndAggregateStats(t *testing.T) {
 		ControlCharsStripped: 10,
 		TokensClamped:        1,
 		RoleCoerced:          1,
-		TimestampsBlanked:    1,
+		TimestampsBlanked:    2,
 	}, stats)
 
 	assert.Equal(t, ValidationStats{}, ValidateAndSanitize(&s, msgs, events))

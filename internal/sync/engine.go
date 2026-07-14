@@ -294,7 +294,7 @@ func (e *Engine) SyncPaths(paths []string) {
 	}()
 	defer e.syncMu.Unlock()
 
-	results := e.startWorkers(context.Background(), files)
+	results := e.startWorkers(context.Background(), files, true)
 	stats = e.collectAndBatch(
 		context.Background(), results, len(files), len(files), nil,
 		syncWriteDefault,
@@ -1637,7 +1637,7 @@ func (e *Engine) ResyncAll(
 	e.resyncArchiveStore = origDB
 	e.db = newDB
 	stats = e.syncAllLocked(
-		ctx, onProgress, time.Time{}, syncWriteBulk,
+		ctx, onProgress, time.Time{}, syncWriteBulk, true,
 	)
 	e.db = origDB // restore immediately
 	e.resyncArchiveStore = nil
@@ -1984,7 +1984,26 @@ func (e *Engine) SyncAll(
 	}()
 	defer e.syncMu.Unlock()
 	stats = e.syncAllLocked(
-		ctx, onProgress, time.Time{}, syncWriteDefault,
+		ctx, onProgress, time.Time{}, syncWriteDefault, true,
+	)
+	return
+}
+
+// SyncAllStatOnly discovers all session files but trusts matching size, mtime,
+// and data version without reading unchanged Claude file contents. Use this for
+// periodic scans when filesystem watchers still audit changed paths.
+func (e *Engine) SyncAllStatOnly(
+	ctx context.Context, onProgress ProgressFunc,
+) (stats SyncStats) {
+	e.syncMu.Lock()
+	defer func() {
+		if stats.Synced > 0 {
+			e.emit("sessions")
+		}
+	}()
+	defer e.syncMu.Unlock()
+	stats = e.syncAllLocked(
+		ctx, onProgress, time.Time{}, syncWriteDefault, false,
 	)
 	return
 }
@@ -2007,14 +2026,14 @@ func (e *Engine) SyncAllSince(
 	}()
 	defer e.syncMu.Unlock()
 	stats = e.syncAllLocked(
-		ctx, onProgress, since, syncWriteDefault,
+		ctx, onProgress, since, syncWriteDefault, true,
 	)
 	return
 }
 
 func (e *Engine) syncAllLocked(
 	ctx context.Context, onProgress ProgressFunc, since time.Time,
-	writeMode syncWriteMode,
+	writeMode syncWriteMode, auditSameStat bool,
 ) SyncStats {
 	if ctx.Err() != nil {
 		return SyncStats{Aborted: true}
@@ -2078,7 +2097,7 @@ func (e *Engine) syncAllLocked(
 	}
 
 	tWorkers := time.Now()
-	results := e.startWorkers(ctx, all)
+	results := e.startWorkers(ctx, all, auditSameStat)
 	stats := e.collectAndBatch(
 		ctx, results, len(all), progressTotal, onProgress, writeMode,
 	)
@@ -3033,6 +3052,7 @@ func (e *Engine) syncOneOpenCode(
 func (e *Engine) startWorkers(
 	ctx context.Context,
 	files []parser.DiscoveredFile,
+	auditSameStat bool,
 ) <-chan syncJob {
 	workers := min(max(runtime.NumCPU(), 2), maxWorkers)
 	buffer := max(workers*2, 1)
@@ -3054,8 +3074,10 @@ func (e *Engine) startWorkers(
 					continue
 				}
 				results <- syncJob{
-					processResult: e.processFile(ctx, file),
-					path:          file.Path,
+					processResult: e.processFileWithPolicy(
+						ctx, file, auditSameStat,
+					),
+					path: file.Path,
 				}
 			}
 		})
@@ -3316,6 +3338,14 @@ func (e *Engine) processFile(
 	ctx context.Context,
 	file parser.DiscoveredFile,
 ) processResult {
+	return e.processFileWithPolicy(ctx, file, true)
+}
+
+func (e *Engine) processFileWithPolicy(
+	ctx context.Context,
+	file parser.DiscoveredFile,
+	auditSameStat bool,
+) processResult {
 
 	var info os.FileInfo
 	var err error
@@ -3378,7 +3408,7 @@ func (e *Engine) processFile(
 	var res processResult
 	switch file.Agent {
 	case parser.AgentClaude:
-		res = e.processClaude(ctx, file, info)
+		res = e.processClaude(ctx, file, info, auditSameStat)
 	case parser.AgentCodex:
 		res = e.processCodex(file, info)
 	case parser.AgentCopilot:
@@ -3627,12 +3657,13 @@ func (f fakeSnapshotInfo) Sys() any    { return nil }
 func (e *Engine) processClaude(
 	ctx context.Context,
 	file parser.DiscoveredFile, info os.FileInfo,
+	auditSameStat bool,
 ) processResult {
 
 	sessionID := strings.TrimSuffix(info.Name(), ".jsonl")
 
 	statMatches := e.shouldSkipFile(sessionID, info)
-	contentChanged := statMatches && e.claudeContentChanged(
+	contentChanged := statMatches && auditSameStat && e.claudeContentChanged(
 		e.idPrefix+sessionID, file.Path, info.Size(),
 	)
 	if statMatches && !contentChanged {
@@ -5190,6 +5221,8 @@ func computeFinalStreak(calls []signals.ToolCallRow) int {
 func (e *Engine) RecomputeSignals(
 	ctx context.Context, sessionID string,
 ) error {
+	e.syncMu.Lock()
+	defer e.syncMu.Unlock()
 	return e.recomputeSignalsFromDB(ctx, sessionID)
 }
 

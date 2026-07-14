@@ -6243,9 +6243,16 @@ func TestIncrementalSync_ClaudeSameStatInPlaceRewrite(t *testing.T) {
 	assert.Equal(t, before.Size(), after.Size())
 	assert.Equal(t, before.ModTime().UnixNano(), after.ModTime().UnixNano())
 
+	stats := env.engine.SyncAllStatOnly(context.Background(), nil)
+	assert.Zero(t, stats.Synced)
+	assert.Equal(t, 1, stats.Skipped)
+	msgs := fetchMessages(t, env.db, "same-stat")
+	require.Len(t, msgs, 1)
+	assert.Equal(t, "first", msgs[0].Content)
+
 	env.engine.SyncPaths([]string{path})
 
-	msgs := fetchMessages(t, env.db, "same-stat")
+	msgs = fetchMessages(t, env.db, "same-stat")
 	require.Len(t, msgs, 1)
 	assert.Equal(t, "other", msgs[0].Content)
 }

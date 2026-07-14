@@ -323,14 +323,16 @@ func clampTokens(value *int) bool {
 	return true
 }
 
-// BlankImplausibleTimestamp clears parseable timestamps outside 2000..2100.
+// BlankImplausibleTimestamp clears timestamps that cannot be parsed or fall
+// outside 2000..2100 so every storage backend observes the same empty value.
 func BlankImplausibleTimestamp(value *string) bool {
 	if *value == "" {
 		return false
 	}
 	timestamp, ok := ParseStoredTimestamp(*value)
 	if !ok {
-		return false
+		*value = ""
+		return true
 	}
 	year := timestamp.UTC().Year()
 	if year >= minPlausibleYear && year <= maxPlausibleYear {
