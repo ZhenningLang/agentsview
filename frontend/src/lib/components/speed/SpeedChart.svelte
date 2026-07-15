@@ -12,9 +12,15 @@
   const RIGHT = 16;
   const TOP = 28;
   const BOTTOM = 34;
+  // Below these point counts the chart labels values directly instead of
+  // relying on the tooltip alone.
+  const SPARSE_PER_SERIES = 16;
+  const SPARSE_TOTAL = 48;
+
   let container = $state<HTMLDivElement>();
   let width = $state(760);
-  let hovered = $state<{ key: string; p50: number | null; p95: number | null; n: number } | null>(null);
+  let hoverT = $state<number | null>(null);
+  let cursor = $state<{ x: number; y: number } | null>(null);
 
   $effect(() => {
     if (!container) return;
@@ -26,11 +32,23 @@
   });
 
   const allPoints = $derived(series.flatMap((item) => item.points));
+  const bucketTs = $derived(
+    [...new Set(allPoints.map((point) => point.t))].sort((a, b) => a - b),
+  );
   const minT = $derived(Math.min(...allPoints.map((point) => point.t)));
   const maxT = $derived(Math.max(...allPoints.map((point) => point.t), minT + 1));
   const maxY = $derived(Math.max(...allPoints.map((point) => point.p50 ?? 0), 1));
   const plotW = $derived(Math.max(width - LEFT - RIGHT, 1));
   const plotH = HEIGHT - TOP - BOTTOM;
+
+  const validCounts = $derived(
+    series.map((item) => item.points.filter((point) => point.p50 != null).length),
+  );
+  const sparse = $derived.by(() => {
+    const total = validCounts.reduce((sum, count) => sum + count, 0);
+    if (total === 0 || total > SPARSE_TOTAL) return false;
+    return validCounts.every((count) => count <= SPARSE_PER_SERIES);
+  });
 
   function x(t: number): number {
     return LEFT + ((t - minT) / Math.max(maxT - minT, 1)) * plotW;
@@ -57,11 +75,67 @@
       hour: "numeric",
     });
   }
-
-  function pointLabel(item: SpeedTrendSeries, point: SpeedTrendSeries["points"][number]): string {
-    const p50 = point.p50 == null ? "insufficient data" : `${point.p50.toFixed(1)} tok/s`;
-    return `${item.key}: p50 ${p50}, ${point.n} samples`;
+  function formatRate(value: number): string {
+    return value >= 100 ? value.toFixed(0) : value.toFixed(1);
   }
+
+  function nearestBucket(px: number): number | null {
+    if (bucketTs.length === 0) return null;
+    const t = minT + ((px - LEFT) / plotW) * (maxT - minT);
+    let best = bucketTs[0]!;
+    let bestDist = Math.abs(best - t);
+    for (const candidate of bucketTs) {
+      const dist = Math.abs(candidate - t);
+      if (dist < bestDist) {
+        best = candidate;
+        bestDist = dist;
+      }
+    }
+    return best;
+  }
+
+  function handleMove(event: MouseEvent) {
+    hoverT = nearestBucket(event.offsetX);
+    cursor = { x: event.clientX, y: event.clientY };
+  }
+  function handleLeave() {
+    hoverT = null;
+    cursor = null;
+  }
+
+  interface HoverRow {
+    key: string;
+    isOther: boolean;
+    color: string;
+    p50: number | null;
+    p95: number | null;
+    n: number;
+  }
+  const hoverRows = $derived.by((): HoverRow[] => {
+    if (hoverT == null) return [];
+    const rows: HoverRow[] = [];
+    series.forEach((item, index) => {
+      const point = item.points.find((candidate) => candidate.t === hoverT);
+      if (!point) return;
+      rows.push({
+        key: item.key,
+        isOther: item.is_other,
+        color: colors[index % colors.length]!,
+        p50: point.p50,
+        p95: point.p95,
+        n: point.n,
+      });
+    });
+    return rows;
+  });
+
+  const tooltipStyle = $derived.by(() => {
+    if (!cursor) return "";
+    const left = Math.min(cursor.x + 14, window.innerWidth - 230);
+    const estimated = 44 + hoverRows.length * 18;
+    const top = Math.min(cursor.y + 14, window.innerHeight - estimated);
+    return `left: ${left}px; top: ${top}px;`;
+  });
 </script>
 
 <div class="chart" bind:this={container}>
@@ -80,26 +154,73 @@
         {@const t = Math.round(minT + (maxT - minT) * ratio)}
         <text x={x(t)} y={HEIGHT - 8} class="x-label">{labelFor(t)}</text>
       {/each}
+      {#if hoverT != null}
+        <line
+          class="crosshair"
+          x1={x(hoverT)}
+          x2={x(hoverT)}
+          y1={TOP}
+          y2={TOP + plotH}
+        />
+      {/if}
       {#each series as item, index}
-        <path d={path(item.points)} fill="none" stroke={colors[index % colors.length]} stroke-width="2.5" stroke-linecap="round" />
-        {#each item.points as point}
-          <circle
-            cx={x(point.t)}
-            cy={point.p50 == null ? TOP + plotH : y(point.p50)}
-            r="6"
-            fill={point.p50 == null ? "var(--border-muted)" : "transparent"}
-            role="button"
-            tabindex="0"
-            aria-label={pointLabel(item, point)}
-            onmouseenter={() => hovered = { key: item.key, p50: point.p50, p95: point.p95, n: point.n }}
-            onmouseleave={() => hovered = null}
-          />
-        {/each}
+        {@const color = colors[index % colors.length]}
+        <path d={path(item.points)} fill="none" stroke={color} stroke-width="2.5" stroke-linecap="round" />
+        {#if sparse}
+          {#each item.points as point}
+            {#if point.p50 != null}
+              <circle class="dot" cx={x(point.t)} cy={y(point.p50)} r="3" fill={color} />
+              <text class="value-label" x={x(point.t)} y={y(point.p50) - 8} fill={color}>
+                {formatRate(point.p50)}
+              </text>
+            {/if}
+          {/each}
+        {/if}
+        {#if hoverT != null}
+          {@const hoverPoint = item.points.find((candidate) => candidate.t === hoverT)}
+          {#if hoverPoint && hoverPoint.p50 != null}
+            <circle class="marker" cx={x(hoverPoint.t)} cy={y(hoverPoint.p50)} r="4" fill={color} />
+          {/if}
+        {/if}
       {/each}
+      <rect
+        class="overlay"
+        role="presentation"
+        x={LEFT}
+        y={TOP}
+        width={plotW}
+        height={plotH}
+        onmousemove={handleMove}
+        onmouseleave={handleLeave}
+      />
     </svg>
   {/if}
-  {#if hovered}
-    <div class="tooltip"><strong>{hovered.key}</strong><br />p50 {hovered.p50?.toFixed(1) ?? "insufficient data"}<br />p95 {hovered.p95?.toFixed(1) ?? "insufficient data"}<br />n {hovered.n}</div>
+  <div class="legend">
+    {#each series as item, index}
+      <span class="legend-item">
+        <span class="swatch" style:background={colors[index % colors.length]}></span>
+        {item.key}{item.is_other ? " (combined)" : ""}
+      </span>
+    {/each}
+  </div>
+  {#if hoverT != null && cursor && hoverRows.length > 0}
+    <div class="tooltip" style={tooltipStyle}>
+      <div class="tooltip-time">{labelFor(hoverT)}</div>
+      {#each hoverRows as row}
+        <div class="tooltip-row">
+          <span class="swatch" style:background={row.color}></span>
+          <span class="tooltip-key">{row.key}{row.isOther ? " (combined)" : ""}</span>
+          {#if row.p50 == null}
+            <span class="tooltip-value muted">n={row.n} · insufficient</span>
+          {:else}
+            <span class="tooltip-value">
+              {formatRate(row.p50)} tok/s
+              <span class="muted">p95 {row.p95 == null ? "-" : formatRate(row.p95)} · n={row.n}</span>
+            </span>
+          {/if}
+        </div>
+      {/each}
+    </div>
   {/if}
 </div>
 
@@ -123,6 +244,15 @@
     stroke: var(--border-muted);
   }
 
+  .crosshair {
+    stroke: var(--border-default);
+    stroke-dasharray: 3 3;
+  }
+
+  .overlay {
+    fill: transparent;
+  }
+
   .label,
   .axis-title,
   .x-label {
@@ -140,6 +270,12 @@
     text-anchor: middle;
   }
 
+  .value-label {
+    font-size: 9.5px;
+    font-weight: 600;
+    text-anchor: middle;
+  }
+
   .empty {
     display: grid;
     height: 300px;
@@ -148,10 +284,33 @@
     place-items: center;
   }
 
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    padding: 8px 12px 10px;
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .swatch {
+    display: inline-block;
+    flex-shrink: 0;
+    width: 10px;
+    height: 3px;
+    border-radius: 2px;
+  }
+
   .tooltip {
-    position: absolute;
-    top: 28px;
-    right: 18px;
+    position: fixed;
+    z-index: 100;
+    min-width: 170px;
     padding: 8px 10px;
     border: 1px solid var(--border-default);
     border-radius: 6px;
@@ -160,5 +319,32 @@
     font-size: 11px;
     line-height: 1.5;
     pointer-events: none;
+  }
+
+  .tooltip-time {
+    margin-bottom: 4px;
+    color: var(--text-muted);
+    font-size: 10px;
+  }
+
+  .tooltip-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+
+  .tooltip-key {
+    font-weight: 600;
+  }
+
+  .tooltip-value {
+    margin-left: auto;
+    padding-left: 10px;
+  }
+
+  .muted {
+    color: var(--text-muted);
+    font-weight: 400;
   }
 </style>

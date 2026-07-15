@@ -91,11 +91,6 @@
     <div class="error">{speed.error}</div>
   {/if}
   <SpeedChart series={speed.response?.series ?? []} />
-  <div class="legend">
-    {#each speed.response?.series ?? [] as item}
-      <span>{item.key}{item.is_other ? " (combined)" : ""}</span>
-    {/each}
-  </div>
 </section>
 
 <style>
@@ -171,12 +166,4 @@
     font-size: 12px;
   }
 
-  .legend {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 10px;
-    padding-top: 10px;
-    color: var(--text-muted);
-    font-size: 11px;
-  }
 </style>
