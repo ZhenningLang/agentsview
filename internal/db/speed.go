@@ -1,6 +1,7 @@
 package db
 
 import (
+	"slices"
 	"sort"
 	"time"
 )
@@ -258,7 +259,7 @@ func speedTrendSeries(key string, isOther bool, samples []SpeedSample) SpeedTren
 	for bucket := range byBucket {
 		buckets = append(buckets, bucket)
 	}
-	sort.Slice(buckets, func(i, j int) bool { return buckets[i] < buckets[j] })
+	slices.Sort(buckets)
 	points := make([]SpeedPoint, 0, len(buckets))
 	for _, bucket := range buckets {
 		stats := AggregateSpeedStats(byBucket[bucket])

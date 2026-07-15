@@ -34,7 +34,7 @@ func (s *speedCountingStore) GetSpeedBaselineSessions(
 
 func TestEnrichSessionTimingSpeedUsesCacheAndExcludesCurrentSession(t *testing.T) {
 	rates := make([]db.SpeedSessionRate, 0, 11)
-	for index := 0; index < 11; index++ {
+	for index := range 11 {
 		rates = append(rates, db.SpeedSessionRate{
 			SessionID: string(rune('a' + index)),
 			TokPerSec: float64(index + 1),
@@ -94,7 +94,7 @@ func TestSessionTimingSpeedJSONStates(t *testing.T) {
 	}{
 		{"ineligible session", nil, `"speed":null`},
 		{"sparse baseline", &db.SessionSpeed{TokPerSec: 10, SampleN: 5, BaselineN: 9}, `"baseline_p50":null`},
-		{"measurable baseline", &db.SessionSpeed{TokPerSec: 10, SampleN: 5, BaselineP50: speedFloat(12), BaselineN: 10}, `"baseline_p50":12`},
+		{"measurable baseline", &db.SessionSpeed{TokPerSec: 10, SampleN: 5, BaselineP50: new(float64(12)), BaselineN: 10}, `"baseline_p50":12`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -104,5 +104,3 @@ func TestSessionTimingSpeedJSONStates(t *testing.T) {
 		})
 	}
 }
-
-func speedFloat(value float64) *float64 { return &value }
