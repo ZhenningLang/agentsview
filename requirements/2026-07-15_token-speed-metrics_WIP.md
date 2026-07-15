@@ -1,6 +1,6 @@
 # Token Speed Metrics Requirement
 
-Related specification: `.long-loop/20260715_requirement/spec.md`
+Related specification: `docs/specs/token-speed-metrics.md`
 
 ## Goal
 
@@ -25,5 +25,5 @@ claiming to measure token decoding speed.
 
 ## Acceptance Criteria
 
-- QA1-QA9 in `.long-loop/20260715_requirement/qa.md` pass through `verify.sh`.
+- QA1-QA9 in `docs/specs/token-speed-metrics-qa.md` pass through `verify.sh`.
 - Manual real-database checks QA10-QA12 are recorded before delivery.
