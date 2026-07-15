@@ -957,6 +957,89 @@ func TestGetAnalyticsVelocity_Metrics(t *testing.T) {
 	})
 }
 
+func TestGetAnalyticsVelocityOutputSpeedFieldsAndCohorts(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	base := time.Date(2024, time.June, 1, 9, 0, 0, 0, time.UTC)
+	seedVelocitySpeedSession(t, d, "speed-small", "claude", 5, base)
+	seedVelocitySpeedSession(t, d, "speed-large", "codex", 5, base.Add(time.Hour))
+	seedVelocitySpeedSession(t, d, "speed-sparse", "claude", 4, base.Add(2*time.Hour))
+
+	resp, err := d.GetAnalyticsVelocity(ctx, AnalyticsFilter{
+		From: "2024-06-01", To: "2024-06-01",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 14, resp.Overall.SpeedN)
+	require.NotNil(t, resp.Overall.OutputTokPerSecP50)
+	require.NotNil(t, resp.Overall.OutputTokPerSecP95)
+	assert.Equal(t, 10.0, *resp.Overall.OutputTokPerSecP50)
+	assert.Equal(t, 10.0, *resp.Overall.OutputTokPerSecP95)
+
+	byAgent := make(map[string]VelocityBreakdown)
+	for _, breakdown := range resp.ByAgent {
+		byAgent[breakdown.Label] = breakdown
+	}
+	assert.Equal(t, 9, byAgent["claude"].Overview.SpeedN)
+	require.NotNil(t, byAgent["claude"].Overview.OutputTokPerSecP50)
+	assert.Equal(t, 10.0, *byAgent["claude"].Overview.OutputTokPerSecP50)
+	assert.Equal(t, 5, byAgent["codex"].Overview.SpeedN)
+
+	bySize := make(map[string]VelocityBreakdown)
+	for _, breakdown := range resp.ByComplexity {
+		bySize[breakdown.Label] = breakdown
+	}
+	assert.Equal(t, 9, bySize["1-15"].Overview.SpeedN)
+	assert.Equal(t, 5, bySize["61+"].Overview.SpeedN)
+
+	filtered, err := d.GetAnalyticsVelocity(ctx, AnalyticsFilter{
+		From: "2024-06-01", To: "2024-06-01", Agent: "codex",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 5, filtered.Overall.SpeedN)
+	require.NotNil(t, filtered.Overall.OutputTokPerSecP50)
+	assert.Equal(t, 10.0, *filtered.Overall.OutputTokPerSecP50)
+}
+
+func TestGetAnalyticsVelocityOutputSpeedSparseCohortIsNull(t *testing.T) {
+	d := testDB(t)
+	seedVelocitySpeedSession(t, d, "speed-sparse", "claude", 4, time.Date(2024, time.June, 1, 9, 0, 0, 0, time.UTC))
+
+	resp, err := d.GetAnalyticsVelocity(context.Background(), AnalyticsFilter{
+		From: "2024-06-01", To: "2024-06-01",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, 4, resp.Overall.SpeedN)
+	assert.Nil(t, resp.Overall.OutputTokPerSecP50)
+	assert.Nil(t, resp.Overall.OutputTokPerSecP95)
+}
+
+func seedVelocitySpeedSession(
+	t *testing.T, d *DB, id, agent string, samples int, base time.Time,
+) {
+	t.Helper()
+	started := base.Format(time.RFC3339)
+	insertSession(t, d, id, "proj", func(session *Session) {
+		session.Agent = agent
+		session.StartedAt = &started
+		session.EndedAt = &started
+		session.MessageCount = samples + 1
+		if agent == "codex" {
+			session.MessageCount = 61
+		}
+	})
+	messages := []Message{{
+		SessionID: id, Ordinal: 0, Role: "user", Content: "q", ContentLength: 1, Timestamp: base.Format(time.RFC3339),
+	}}
+	for ordinal := 1; ordinal <= samples; ordinal++ {
+		messages = append(messages, Message{
+			SessionID: id, Ordinal: ordinal, Role: "assistant", Content: "output", ContentLength: 6,
+			Timestamp:    base.Add(time.Duration(ordinal) * 10 * time.Second).Format(time.RFC3339),
+			OutputTokens: 100, HasOutputTokens: true,
+		})
+	}
+	insertMessages(t, d, messages...)
+}
+
 func TestGetAnalyticsVelocity_EdgeCases(t *testing.T) {
 	ctx := context.Background()
 

@@ -116,18 +116,19 @@ func (c *analyticsProbeConn) QueryContext(
 		return &analyticsProbeRows{
 			columns: []string{
 				"session_id", "ordinal", "role",
-				"timestamp", "content_length",
+				"timestamp", "content_length", "output_tokens",
+				"has_output_tokens", "model",
 			},
 			values: [][]driver.Value{
 				{
 					"s1", int64(0), "user",
 					time.Date(2024, 6, 3, 9, 0, 0, 0, time.UTC),
-					int64(2),
+					int64(2), int64(0), false, "",
 				},
 				{
 					"s1", int64(1), "assistant",
 					time.Date(2024, 6, 3, 9, 0, 10, 0, time.UTC),
-					int64(5),
+					int64(5), int64(32), true, "claude-sonnet",
 				},
 			},
 		}, nil

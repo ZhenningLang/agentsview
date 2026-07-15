@@ -1625,6 +1625,9 @@ type velocityMsg struct {
 	ts            time.Time
 	valid         bool
 	contentLength int
+	outputTokens  int
+	hasOutput     bool
+	model         string
 }
 
 // queryVelocityMsgs fetches messages for a chunk of session
@@ -1639,7 +1642,8 @@ func (s *Store) queryVelocityMsgs(
 	ph := pgInPlaceholders(chunk, pb)
 	q := `SELECT session_id, ordinal, role,
 		timestamp,
-		content_length
+		content_length, output_tokens, has_output_tokens,
+		COALESCE(model, '')
 		FROM messages
 		WHERE session_id IN ` + ph + `
 		ORDER BY session_id, ordinal`
@@ -1657,9 +1661,12 @@ func (s *Store) queryVelocityMsgs(
 		var ordinal int
 		var role string
 		var ts *time.Time
-		var cl int
+		var cl, outputTokens int
+		var hasOutput bool
+		var model string
 		if err := rows.Scan(
-			&sid, &ordinal, &role, &ts, &cl,
+			&sid, &ordinal, &role, &ts, &cl, &outputTokens, &hasOutput,
+			&model,
 		); err != nil {
 			return fmt.Errorf(
 				"scanning velocity msg: %w", err,
@@ -1675,6 +1682,8 @@ func (s *Store) queryVelocityMsgs(
 			velocityMsg{
 				role: role, ts: t, valid: ok,
 				contentLength: cl,
+				outputTokens:  outputTokens, hasOutput: hasOutput,
+				model: model,
 			})
 	}
 	return rows.Err()
@@ -1702,6 +1711,7 @@ type velocityAccumulator struct {
 	totalToolCalls int
 	activeMinutes  float64
 	sessions       int
+	speedSamples   []db.SpeedSample
 }
 
 func (a *velocityAccumulator) computeOverview() db.VelocityOverview {
@@ -1734,6 +1744,10 @@ func (a *velocityAccumulator) computeOverview() db.VelocityOverview {
 			float64(a.totalToolCalls)/
 				a.activeMinutes*10) / 10
 	}
+	speed := db.AggregateSpeedStats(a.speedSamples)
+	v.OutputTokPerSecP50 = speed.P50
+	v.OutputTokPerSecP95 = speed.P95
+	v.SpeedN = speed.N
 	return v
 }
 
@@ -1899,6 +1913,14 @@ func (s *Store) GetAnalyticsVelocity(
 		for i := 1; i < len(msgs); i++ {
 			prev := msgs[i-1]
 			cur := msgs[i]
+			if sample, ok := db.NewSpeedSample(
+				db.SpeedMessage{Role: cur.role, Timestamp: cur.ts, TimestampValid: cur.valid, OutputTokens: cur.outputTokens, HasOutputTokens: cur.hasOutput, Model: cur.model},
+				db.SpeedMessage{Role: prev.role, Timestamp: prev.ts, TimestampValid: prev.valid},
+			); ok {
+				for _, a := range accums {
+					a.speedSamples = append(a.speedSamples, sample)
+				}
+			}
 			if !prev.valid || !cur.valid {
 				continue
 			}

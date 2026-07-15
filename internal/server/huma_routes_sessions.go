@@ -260,6 +260,9 @@ func (s *Server) humaSessionTiming(
 	if timing == nil {
 		return nil, apiError(http.StatusNotFound, "session not found")
 	}
+	if err := s.enrichSessionTimingSpeed(ctx, timing); err != nil {
+		return nil, internalError("session speed error", err)
+	}
 	return &jsonOutput[*db.SessionTiming]{Body: timing}, nil
 }
 
@@ -734,6 +737,9 @@ func (s *Server) humaWatchSession(
 		if t, err := s.db.GetSessionTiming(streamCtx, in.ID); err != nil {
 			log.Printf("session timing initial: %v", err)
 		} else if t != nil {
+			if err := s.enrichSessionTimingSpeed(streamCtx, t); err != nil {
+				log.Printf("session speed initial: %v", err)
+			}
 			stream.SendJSON("session.timing", t)
 		}
 		for {
@@ -748,6 +754,9 @@ func (s *Server) humaWatchSession(
 				if t, err := s.db.GetSessionTiming(streamCtx, in.ID); err != nil {
 					log.Printf("session timing update: %v", err)
 				} else if t != nil {
+					if err := s.enrichSessionTimingSpeed(streamCtx, t); err != nil {
+						log.Printf("session speed update: %v", err)
+					}
 					stream.SendJSON("session.timing", t)
 				}
 			case <-heartbeat.C:

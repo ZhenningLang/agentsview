@@ -795,6 +795,61 @@ func TestAnalyticsVelocityUsesMessageCyclesAndBreakdowns(t *testing.T) {
 	assert.Equal(t, "1-15", got.ByComplexity[0].Label)
 }
 
+func TestSpeedTrendAndSessionSpeed(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+	const sessionID = "duck-speed"
+	const start = "2026-01-22T00:00:00.000Z"
+	messages := make([]db.Message, 0, 6)
+	for ordinal := range 6 {
+		message := syncMessage(sessionID, ordinal, "assistant", "output", fmt.Sprintf("2026-01-22T00:00:%02d.000Z", ordinal*10))
+		message.OutputTokens = 100
+		message.HasOutputTokens = true
+		if ordinal == 0 {
+			message.Role = "user"
+			message.HasOutputTokens = false
+		}
+		messages = append(messages, message)
+	}
+	_, err := local.WriteSessionBatchAtomic([]db.SessionBatchWrite{{
+		Session:         syncSession(sessionID, "alpha", "speed", start, len(messages)),
+		Messages:        messages,
+		DataVersion:     1,
+		ReplaceMessages: true,
+	}})
+	require.NoError(t, err)
+
+	syncer := newTestSync(t, filepath.Join(t.TempDir(), "speed.duckdb"), local, SyncOptions{})
+	_, err = syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	store := NewStoreFromDB(syncer.DB())
+
+	trend, err := store.GetSpeedTrend(ctx, db.SpeedTrendQuery{
+		Since:     speedTestTime(t, "2026-01-22T00:00:00Z"),
+		Until:     speedTestTime(t, "2026-01-22T01:00:00Z"),
+		BucketSec: 3600,
+		GroupBy:   "agent",
+	})
+	require.NoError(t, err)
+	require.Len(t, trend.Series, 1)
+	require.Len(t, trend.Series[0].Points, 1)
+	assert.Equal(t, 5, trend.Series[0].Points[0].N)
+	require.NotNil(t, trend.Series[0].Points[0].P50)
+	assert.Equal(t, 10.0, *trend.Series[0].Points[0].P50)
+
+	result, err := store.GetSessionSpeed(ctx, sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, result.Speed)
+	assert.Equal(t, 10.0, result.Speed.TokPerSec)
+}
+
+func speedTestTime(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339, value)
+	require.NoError(t, err)
+	return parsed
+}
+
 func TestAnalyticsVelocitySingleMessageSessionsReturnArrays(t *testing.T) {
 	ctx := context.Background()
 	local := newLocalDB(t)

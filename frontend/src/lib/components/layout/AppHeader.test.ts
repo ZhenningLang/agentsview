@@ -224,6 +224,7 @@ describe("AppHeader export actions", () => {
     expect(labels).toEqual([
       "Sessions",
       "Usage",
+	  "Speed",
       "Memory",
       "Vault",
       "Skills",

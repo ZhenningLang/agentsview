@@ -317,6 +317,14 @@
         <Grid2x2Icon size="12" strokeWidth="2" aria-hidden="true" />
         Usage
       </button>
+		<button
+		  class="mobile-nav-btn"
+		  class:active={router.route === "speed"}
+		  onclick={() => mobileNav("speed")}
+		>
+		  <ChartColumnIcon size="12" strokeWidth="2" aria-hidden="true" />
+		  Speed
+		</button>
       <button
         class="mobile-nav-btn"
         class:active={router.route === "trends"}

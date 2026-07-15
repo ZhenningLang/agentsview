@@ -18,6 +18,7 @@
   import ConfirmDeleteModal from "./lib/components/modals/ConfirmDeleteModal.svelte";
   import AnalyticsPage from "./lib/components/analytics/AnalyticsPage.svelte";
   import UsagePage from "./lib/components/usage/UsagePage.svelte";
+	import SpeedPage from "./lib/components/speed/SpeedPage.svelte";
   import TrendsPage from "./lib/components/trends/TrendsPage.svelte";
   import InsightsPage from "./lib/components/insights/InsightsPage.svelte";
   import SkillsPage from "./lib/components/skills/SkillsPage.svelte";
@@ -413,6 +414,10 @@
 {#if router.route === "usage"}
   <div class="page-scroll">
     <UsagePage />
+  </div>
+{:else if router.route === "speed"}
+  <div class="page-scroll">
+    <SpeedPage />
   </div>
 {:else if router.route === "trends"}
   <div class="page-scroll">

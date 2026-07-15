@@ -43,6 +43,11 @@ type VersionInfo struct {
 
 const daemonService = "agentsview"
 
+const (
+	speedBaselineCacheTTL        = 5 * time.Minute
+	speedBaselineCacheMaxEntries = 64
+)
+
 // Server is the HTTP server that serves the SPA and REST API.
 type Server struct {
 	mu          gosync.RWMutex
@@ -85,8 +90,9 @@ type Server struct {
 	// usage analytics caches: short-TTL, filter-keyed result caches
 	// that spare the DB from re-scanning ~100k rows on every refresh.
 	// Backend-agnostic (they wrap s.db), so SQLite and PG share them.
-	dailyUsageCache  *ttlCache[db.DailyUsageResult]
-	topSessionsCache *ttlCache[[]db.TopSessionEntry]
+	dailyUsageCache    *ttlCache[db.DailyUsageResult]
+	topSessionsCache   *ttlCache[[]db.TopSessionEntry]
+	speedBaselineCache *ttlCache[[]db.SpeedSessionRate]
 
 	// basePath is a URL prefix for reverse-proxy deployments
 	// (e.g. "/agentsview"). When set, all routes are served
@@ -174,6 +180,9 @@ func New(
 		),
 		topSessionsCache: newTTLCache[[]db.TopSessionEntry](
 			usageCacheTTL, usageCacheMaxEntries,
+		),
+		speedBaselineCache: newTTLCache[[]db.SpeedSessionRate](
+			speedBaselineCacheTTL, speedBaselineCacheMaxEntries,
 		),
 	}
 	for _, opt := range opts {

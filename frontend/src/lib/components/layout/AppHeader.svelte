@@ -97,6 +97,7 @@
   const NAV_ITEMS: NavEntry[] = [
     { route: "sessions", label: "Sessions", icon: LayoutGridIcon },
     { route: "usage", label: "Usage", icon: Grid2x2Icon },
+	{ route: "speed", label: "Speed", icon: ChartColumnIcon },
     { route: "memory", label: "Memory", icon: FileTextIcon },
     { route: "vault", label: "Vault", icon: LockIcon },
     { route: "skills", label: "Skills", icon: WrenchIcon },

@@ -1974,6 +1974,9 @@ type velocityMsg struct {
 	ts            time.Time
 	valid         bool
 	contentLength int
+	outputTokens  int
+	hasOutput     bool
+	model         string
 }
 
 // queryVelocityMsgs fetches messages for a chunk of session IDs
@@ -1986,7 +1989,8 @@ func (db *DB) queryVelocityMsgs(
 ) error {
 	ph, args := inPlaceholders(chunk)
 	q := `SELECT session_id, ordinal, role,
-		timestamp, content_length
+		timestamp, content_length, output_tokens, has_output_tokens,
+		COALESCE(model, '')
 		FROM messages
 		WHERE session_id IN ` + ph + `
 		ORDER BY session_id, ordinal`
@@ -2003,9 +2007,11 @@ func (db *DB) queryVelocityMsgs(
 		var sid string
 		var ordinal int
 		var role, ts string
-		var cl int
+		var cl, outputTokens, hasOutput int
+		var model string
 		if err := rows.Scan(
-			&sid, &ordinal, &role, &ts, &cl,
+			&sid, &ordinal, &role, &ts, &cl, &outputTokens, &hasOutput,
+			&model,
 		); err != nil {
 			return fmt.Errorf(
 				"scanning velocity msg: %w", err,
@@ -2016,6 +2022,8 @@ func (db *DB) queryVelocityMsgs(
 			velocityMsg{
 				role: role, ts: t, valid: ok,
 				contentLength: cl,
+				outputTokens:  outputTokens, hasOutput: hasOutput == 1,
+				model: model,
 			})
 	}
 	return rows.Err()
@@ -2034,6 +2042,9 @@ type VelocityOverview struct {
 	MsgsPerActiveMin      float64     `json:"msgs_per_active_min"`
 	CharsPerActiveMin     float64     `json:"chars_per_active_min"`
 	ToolCallsPerActiveMin float64     `json:"tool_calls_per_active_min"`
+	OutputTokPerSecP50    *float64    `json:"output_tok_per_sec_p50"`
+	OutputTokPerSecP95    *float64    `json:"output_tok_per_sec_p95"`
+	SpeedN                int         `json:"speed_n"`
 }
 
 // VelocityBreakdown is velocity metrics for a subgroup.
@@ -2072,6 +2083,7 @@ type velocityAccumulator struct {
 	totalToolCalls int
 	activeMinutes  float64
 	sessions       int
+	speedSamples   []SpeedSample
 }
 
 // populateVelocityAccumulator fetches per-message timestamps and tool
@@ -2169,6 +2181,14 @@ func processSessionVelocity(
 	for i := 1; i < len(msgs); i++ {
 		prev := msgs[i-1]
 		cur := msgs[i]
+		if sample, ok := NewSpeedSample(
+			SpeedMessage{Role: cur.role, Timestamp: cur.ts, TimestampValid: cur.valid, OutputTokens: cur.outputTokens, HasOutputTokens: cur.hasOutput, Model: cur.model},
+			SpeedMessage{Role: prev.role, Timestamp: prev.ts, TimestampValid: prev.valid},
+		); ok {
+			for _, a := range accums {
+				a.speedSamples = append(a.speedSamples, sample)
+			}
+		}
 		if !prev.valid || !cur.valid {
 			continue
 		}
@@ -2291,6 +2311,10 @@ func (a *velocityAccumulator) computeOverview() VelocityOverview {
 		v.ToolCallsPerActiveMin = math.Round(
 			float64(a.totalToolCalls)/a.activeMinutes*10) / 10
 	}
+	speed := AggregateSpeedStats(a.speedSamples)
+	v.OutputTokPerSecP50 = speed.P50
+	v.OutputTokPerSecP95 = speed.P95
+	v.SpeedN = speed.N
 	return v
 }
 

@@ -15,6 +15,14 @@ export interface SessionTiming {
   by_category: CategoryTotal[];
   turns: TurnTiming[];
   running: boolean;
+	speed: SessionSpeed | null;
+}
+
+export interface SessionSpeed {
+	tok_per_sec: number;
+	sample_n: number;
+	baseline_p50: number | null;
+	baseline_n: number;
 }
 
 export interface CategoryTotal {

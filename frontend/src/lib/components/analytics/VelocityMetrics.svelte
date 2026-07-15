@@ -14,9 +14,17 @@
     return s > 0 ? `${m}m ${s}s` : `${m}m`;
   }
 
+  const speedHelp =
+    "Derived from message timestamp gaps. Includes first-token wait, queueing, and sometimes tool time. Best for comparing one agent over time; cross-agent comparisons are for reference only. Not a decoding rate.";
+
   function formatRate(val: number): string {
     if (val <= 0) return "-";
     return val.toFixed(1);
+  }
+
+  function formatSpeed(val: number | null): string {
+    if (val == null) return "insufficient data";
+    return `${val.toFixed(1)} tok/s`;
   }
 
   type Tab = "overall" | "agent" | "complexity";
@@ -72,6 +80,14 @@
       {@const o = velocity.overall}
       <div class="metrics-grid">
         <div class="metric-card">
+          <div class="metric-label" title={speedHelp}>Output speed p50 (approx.)</div>
+          <div class="metric-value">{formatSpeed(o.output_tok_per_sec_p50)}</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label" title={speedHelp}>Output speed p95 (approx.)</div>
+          <div class="metric-value">{formatSpeed(o.output_tok_per_sec_p95)}</div>
+        </div>
+		<div class="metric-card">
           <div class="metric-label">Turn Cycle (p50)</div>
           <div class="metric-value">
             {formatDuration(o.turn_cycle_sec.p50)}
@@ -123,6 +139,7 @@
           <span class="col-num">Cycle p90</span>
           <span class="col-num">Msgs/min</span>
           <span class="col-num">Tools/min</span>
+          <span class="col-num">tok/s p50 (approx.)</span>
         </div>
         {#each breakdowns as bd}
           <div class="breakdown-row">
@@ -140,6 +157,7 @@
             <span class="col-num">
               {formatRate(bd.overview.tool_calls_per_active_min)}
             </span>
+            <span class="col-num">{formatSpeed(bd.overview.output_tok_per_sec_p50)}</span>
           </div>
         {/each}
       </div>

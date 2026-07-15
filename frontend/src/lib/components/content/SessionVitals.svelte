@@ -222,6 +222,27 @@
   function scrollToTurn(turn: TurnTiming) {
     ui.scrollToOrdinal(turn.ordinal);
   }
+
+  function formatSpeed(value: number): string {
+    return value.toLocaleString(undefined, {
+      maximumFractionDigits: 1,
+    });
+  }
+
+  function speedTone(): "slow" | "very-slow" | "" {
+    if (!timing?.speed || timing.speed.baseline_p50 == null) return "";
+    const ratio = timing.speed.tok_per_sec / timing.speed.baseline_p50;
+    if (ratio < 0.5) return "very-slow";
+    if (ratio < 0.8) return "slow";
+    return "";
+  }
+
+  function speedLabel(): string {
+    const tone = speedTone();
+    if (tone === "very-slow") return "very slow";
+    if (tone === "slow") return "slow";
+    return "normal";
+  }
 </script>
 
 <div class="vital">
@@ -256,6 +277,29 @@
         </span>
       </header>
       <div class="stat-grid">
+        <div>
+          <div
+            class="lbl"
+            title="Derived from message timestamp gaps. Includes first-token wait, queueing, and sometimes tool time. Best for comparing one agent over time; cross-agent comparisons are for reference only. Not a decoding rate."
+          >
+            Output speed (approx.)
+          </div>
+          {#if timing.speed && timing.speed.baseline_p50 != null}
+            <div
+              class="val speed"
+              class:slow={speedTone() === "slow"}
+              class:very-slow={speedTone() === "very-slow"}
+            >
+              {formatSpeed(timing.speed.tok_per_sec)} tok/s (approx.) · {speedLabel()} vs 30d median
+            </div>
+          {:else if timing.speed}
+            <div class="val muted speed">
+              {formatSpeed(timing.speed.tok_per_sec)} tok/s (approx.) · insufficient baseline
+            </div>
+          {:else}
+            <div class="val muted">insufficient data</div>
+          {/if}
+        </div>
         <div>
           <div class="lbl">tool calls</div>
           <div class="val">{timing.tool_call_count}</div>
@@ -612,6 +656,10 @@
   }
   .stat-grid .val { color: var(--text-primary); }
   .stat-grid .val.slow { color: var(--slow-fg); }
+  .stat-grid .val.speed.slow { color: var(--accent-amber); }
+  .stat-grid .val.speed.very-slow { color: var(--accent-red); }
+  .stat-grid .val.muted { color: var(--text-muted); }
+  .stat-grid .val.speed { font-size: 10px; }
   .stat-grid .val.live {
     color: var(--running-fg);
     animation: duration-pulse 1.6s ease-in-out infinite;

@@ -1,6 +1,9 @@
 package db
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ErrReadOnly is returned by write methods on read-only store
 // implementations (e.g. the PostgreSQL reader).
@@ -35,6 +38,8 @@ type Store interface {
 
 	// Timing.
 	GetSessionTiming(ctx context.Context, sessionID string) (*SessionTiming, error)
+	GetSessionSpeed(ctx context.Context, sessionID string) (SessionSpeedResult, error)
+	GetSpeedBaselineSessions(ctx context.Context, agent string, since, until time.Time) ([]SpeedSessionRate, error)
 
 	// Search.
 	HasFTS() bool
@@ -64,6 +69,7 @@ type Store interface {
 	GetAnalyticsSessionShape(ctx context.Context, f AnalyticsFilter) (SessionShapeResponse, error)
 	GetAnalyticsTools(ctx context.Context, f AnalyticsFilter) (ToolsAnalyticsResponse, error)
 	GetAnalyticsVelocity(ctx context.Context, f AnalyticsFilter) (VelocityResponse, error)
+	GetSpeedTrend(ctx context.Context, q SpeedTrendQuery) (SpeedTrendResponse, error)
 	GetAnalyticsTopSessions(ctx context.Context, f AnalyticsFilter, metric string) (TopSessionsResponse, error)
 	GetAnalyticsSignals(ctx context.Context, f AnalyticsFilter) (SignalsAnalyticsResponse, error)
 	GetTrendsTerms(ctx context.Context, f AnalyticsFilter, terms []TrendTermInput, granularity string) (TrendsTermsResponse, error)

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -715,6 +716,85 @@ func TestAnalyticsVelocity(t *testing.T) {
 		resp := decode[db.VelocityResponse](t, w)
 		assert.Len(t, resp.ByAgent, stats.Agents)
 	})
+}
+
+func TestAnalyticsSpeedTrend(t *testing.T) {
+	te := setup(t)
+	const sessionID = "speed-trend"
+	started := "2026-07-14T10:00:00Z"
+	te.seedSession(t, sessionID, "speed", 6, func(session *db.Session) {
+		session.Agent = "claude"
+		session.StartedAt = &started
+		session.EndedAt = &started
+	})
+	te.seedMessages(t, sessionID, 6, func(ordinal int, message *db.Message) {
+		message.Timestamp = time.Date(2026, time.July, 14, 10, 0, ordinal*10, 0, time.UTC).Format(time.RFC3339)
+		if ordinal > 0 {
+			message.Role = "assistant"
+			message.OutputTokens = 100
+			message.HasOutputTokens = true
+			message.Model = "claude-test"
+		}
+	})
+
+	valid := "/api/v1/analytics/speed-trend?since=2026-07-14T00:00:00Z&until=2026-07-15T00:00:00Z&bucket=hour&group_by=agent"
+	w := te.get(t, valid)
+	assertStatus(t, w, http.StatusOK)
+	response := decode[db.SpeedTrendResponse](t, w)
+	assert.Equal(t, int64(3600), response.BucketSec)
+	require.Len(t, response.Series, 1)
+	require.Len(t, response.Series[0].Points, 1)
+	assert.Equal(t, 5, response.Series[0].Points[0].N)
+	require.NotNil(t, response.Series[0].Points[0].P50)
+
+	t.Run("defaults and unknown agent return contract shapes", func(t *testing.T) {
+		defaults := te.get(t, "/api/v1/analytics/speed-trend")
+		assertStatus(t, defaults, http.StatusOK)
+		defaultResponse := decode[db.SpeedTrendResponse](t, defaults)
+		assert.Equal(t, int64(3600), defaultResponse.BucketSec)
+		assert.Equal(t, "agent", defaultResponse.GroupBy)
+		assert.WithinDuration(t, time.Now().UTC(), defaultResponse.Until, 5*time.Second)
+		assert.WithinDuration(t, defaultResponse.Until.Add(-7*24*time.Hour), defaultResponse.Since, 5*time.Second)
+
+		unknown := te.get(t, valid+"&agent=unknown-agent")
+		assertStatus(t, unknown, http.StatusOK)
+		assert.Empty(t, decode[db.SpeedTrendResponse](t, unknown).Series)
+	})
+
+	t.Run("retains sparse buckets with null percentiles", func(t *testing.T) {
+		sparseID := "speed-trend-sparse"
+		te.seedSession(t, sparseID, "speed", 5, func(session *db.Session) {
+			session.Agent = "sparse"
+			session.StartedAt = &started
+			session.EndedAt = &started
+		})
+		te.seedMessages(t, sparseID, 5, func(ordinal int, message *db.Message) {
+			message.Timestamp = time.Date(2026, time.July, 14, 11, 0, ordinal*10, 0, time.UTC).Format(time.RFC3339)
+			if ordinal > 0 {
+				message.Role = "assistant"
+				message.OutputTokens = 100
+				message.HasOutputTokens = true
+			}
+		})
+		sparse := te.get(t, valid+"&agent=sparse")
+		assertStatus(t, sparse, http.StatusOK)
+		result := decode[db.SpeedTrendResponse](t, sparse)
+		require.Len(t, result.Series, 1)
+		require.Len(t, result.Series[0].Points, 1)
+		assert.Equal(t, 4, result.Series[0].Points[0].N)
+		assert.Nil(t, result.Series[0].Points[0].P50)
+		assert.Nil(t, result.Series[0].Points[0].P95)
+	})
+
+	for _, path := range []string{
+		"/api/v1/analytics/speed-trend?bucket=week",
+		"/api/v1/analytics/speed-trend?group_by=project",
+		"/api/v1/analytics/speed-trend?since=bad",
+		"/api/v1/analytics/speed-trend?since=2026-07-15T00:00:00Z&until=2026-07-14T00:00:00Z",
+		"/api/v1/analytics/speed-trend?since=2026-01-01T00:00:00Z&until=2026-07-01T00:00:00Z",
+	} {
+		assertStatus(t, te.get(t, path), http.StatusBadRequest)
+	}
 }
 
 func TestAnalyticsTools(t *testing.T) {

@@ -116,6 +116,9 @@ export interface VelocityOverview {
   msgs_per_active_min: number;
   chars_per_active_min: number;
   tool_calls_per_active_min: number;
+	output_tok_per_sec_p50: number | null;
+	output_tok_per_sec_p95: number | null;
+	speed_n: number;
 }
 
 export interface VelocityBreakdown {
@@ -128,6 +131,30 @@ export interface VelocityResponse {
   overall: VelocityOverview;
   by_agent: VelocityBreakdown[];
   by_complexity: VelocityBreakdown[];
+}
+
+export type SpeedBucket = "15m" | "hour" | "day";
+export type SpeedGroupBy = "agent" | "model";
+
+export interface SpeedPoint {
+	t: number;
+	p50: number | null;
+	p95: number | null;
+	n: number;
+}
+
+export interface SpeedTrendSeries {
+	key: string;
+	is_other: boolean;
+	points: SpeedPoint[];
+}
+
+export interface SpeedTrendResponse {
+	bucket_sec: number;
+	group_by: SpeedGroupBy;
+	since: string;
+	until: string;
+	series: SpeedTrendSeries[];
 }
 
 export interface TopSession {

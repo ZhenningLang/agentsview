@@ -19,6 +19,7 @@ func (s *Server) registerAnalyticsRoutes() {
 	get(s, group, "/hour-of-week", "Get analytics by hour of week", s.humaAnalyticsHourOfWeek)
 	get(s, group, "/sessions", "Get session shape analytics", s.humaAnalyticsSessionShape)
 	get(s, group, "/velocity", "Get velocity analytics", s.humaAnalyticsVelocity)
+	get(s, group, "/speed-trend", "Get approximate output speed trend", s.humaSpeedTrend)
 	get(s, group, "/tools", "Get tool analytics", s.humaAnalyticsTools)
 	get(s, group, "/top-sessions", "Get top sessions", s.humaAnalyticsTopSessions)
 	get(s, group, "/signals", "Get signal analytics", s.humaAnalyticsSignals)
@@ -59,6 +60,17 @@ type analyticsHeatmapInput struct {
 type analyticsTopSessionsInput struct {
 	AnalyticsFilterInput
 	Metric topSessionMetric `query:"metric" enum:"messages,duration,output_tokens" default:"messages" doc:"Ranking metric"`
+}
+
+type speedBucket string
+type speedGroupBy string
+
+type speedTrendInput struct {
+	Since   string       `query:"since" format:"date-time" doc:"Range start RFC3339 timestamp"`
+	Until   string       `query:"until" format:"date-time" doc:"Range end RFC3339 timestamp"`
+	Bucket  speedBucket  `query:"bucket" enum:"15m,hour,day" default:"hour" doc:"Time bucket"`
+	GroupBy speedGroupBy `query:"group_by" enum:"agent,model" default:"agent" doc:"Series grouping"`
+	Agent   string       `query:"agent" doc:"Filter by agent"`
 }
 
 func analyticsFilterFromInput(in AnalyticsFilterInput) (db.AnalyticsFilter, error) {
@@ -199,6 +211,53 @@ func (s *Server) humaAnalyticsVelocity(
 		return nil, internalError("analytics error", err)
 	}
 	return &jsonOutput[db.VelocityResponse]{Body: result}, nil
+}
+
+func (s *Server) humaSpeedTrend(ctx context.Context, in *speedTrendInput) (*jsonOutput[db.SpeedTrendResponse], error) {
+	now := time.Now().UTC()
+	until := now
+	var err error
+	if in.Until != "" {
+		until, err = time.Parse(time.RFC3339Nano, in.Until)
+		if err != nil {
+			return nil, apiError(http.StatusBadRequest, "invalid until: use RFC3339 timestamp")
+		}
+	}
+	since := until.AddDate(0, 0, -7)
+	if in.Since != "" {
+		since, err = time.Parse(time.RFC3339Nano, in.Since)
+		if err != nil {
+			return nil, apiError(http.StatusBadRequest, "invalid since: use RFC3339 timestamp")
+		}
+	}
+	if !since.Before(until) {
+		return nil, apiError(http.StatusBadRequest, "since must be before until")
+	}
+	if until.Sub(since) > 90*24*time.Hour {
+		return nil, apiError(http.StatusBadRequest, "range must not exceed 90 days")
+	}
+	bucketSec := int64(3600)
+	switch in.Bucket {
+	case "", "hour":
+	case "15m":
+		bucketSec = 900
+	case "day":
+		bucketSec = 86400
+	default:
+		return nil, apiError(http.StatusBadRequest, "invalid bucket")
+	}
+	groupBy := string(in.GroupBy)
+	if groupBy == "" {
+		groupBy = "agent"
+	}
+	if groupBy != "agent" && groupBy != "model" {
+		return nil, apiError(http.StatusBadRequest, "invalid group_by")
+	}
+	result, err := s.db.GetSpeedTrend(ctx, db.SpeedTrendQuery{Since: since, Until: until, BucketSec: bucketSec, GroupBy: groupBy, Agent: in.Agent})
+	if err != nil {
+		return nil, internalError("speed trend error", err)
+	}
+	return &jsonOutput[db.SpeedTrendResponse]{Body: result}, nil
 }
 
 func (s *Server) humaAnalyticsTools(

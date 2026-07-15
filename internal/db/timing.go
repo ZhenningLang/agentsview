@@ -24,6 +24,7 @@ type SessionTiming struct {
 	ByCategory      []CategoryTotal `json:"by_category"`
 	Turns           []TurnTiming    `json:"turns"`
 	Running         bool            `json:"running"`
+	Speed           *SessionSpeed   `json:"speed"`
 }
 
 type CategoryTotal struct {
