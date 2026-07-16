@@ -149,7 +149,7 @@ import (
 //
 // (17: Codex <skill> template filtering.)
 // (16: <turn_aborted> system messages.)
-const dataVersion = 37
+const dataVersion = 38
 
 const tokenCoverageRepairStatsKey = "token_coverage_repair_v1"
 

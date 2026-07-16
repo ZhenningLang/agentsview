@@ -73,7 +73,9 @@ func TestParseDroidSession_IncludesSettingsUsageEvent(t *testing.T) {
 	assert.Equal(t, "Droid Stats", sess.SessionName)
 	assert.Equal(t, "count droid usage", sess.FirstMessage)
 	assert.Equal(t, 4, sess.MessageCount)
-	assert.Equal(t, 2, sess.UserMessageCount)
+	// The tool_result carrier row has no typed text and is plumbing,
+	// not user input; only the real prompt counts.
+	assert.Equal(t, 1, sess.UserMessageCount)
 	assert.True(t, sess.HasTotalOutputTokens)
 	assert.Equal(t, 200, sess.TotalOutputTokens)
 	assert.True(t, sess.HasPeakContextTokens)
@@ -130,4 +132,28 @@ func TestParseDroidSession_SessionStartOnlyIsIgnored(t *testing.T) {
 	result, err := ParseDroidSession(path, "my_app", "test-machine")
 	require.NoError(t, err)
 	assert.Nil(t, result)
+}
+
+func TestParseDroidSession_SyntheticUserRowsExcludedFromCountAndFirstMessage(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "-Users-alice-Projects-tech-ops", "ses_exec.jsonl")
+	require.NoError(t, writeDroidTestFile(path, `{"type":"session_start","id":"ses_exec","title":"你是需求库查重器。","version":2,"cwd":"/Users/alice/Projects/tech-ops"}
+{"type":"message","id":"m1","timestamp":"2026-07-16T02:32:50.000Z","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>\nThe tools listed below are available in this environment.\n</system-reminder>"}]}}
+{"type":"message","id":"m2","timestamp":"2026-07-16T02:32:51.000Z","message":{"role":"user","content":[{"type":"text","text":"你是需求库查重器。只输出一个 JSON 对象。"}]}}
+{"type":"message","id":"m3","timestamp":"2026-07-16T02:33:10.000Z","message":{"role":"assistant","content":[{"type":"text","text":"{\"pairs\":[]}"}]}}
+{"type":"message","id":"m4","timestamp":"2026-07-16T02:33:11.000Z","message":{"role":"user","content":[]}}
+`))
+
+	result, err := ParseDroidSession(path, "tech_ops", "test-machine")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	sess := result.Session
+	// The tool-listing injection and the trailing empty user row are not
+	// user input: the payload prompt is the first message and the only
+	// counted user message, so the umc<=1 automation gate can apply.
+	assert.Equal(t, "你是需求库查重器。只输出一个 JSON 对象。", sess.FirstMessage)
+	assert.Equal(t, 1, sess.UserMessageCount)
+	// All rows are still preserved for display.
+	assert.GreaterOrEqual(t, sess.MessageCount, 4)
 }

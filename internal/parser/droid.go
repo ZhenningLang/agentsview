@@ -149,9 +149,18 @@ func ParseDroidSession(path, project, machine string) (*ParseResult, error) {
 			}
 			messages = append(messages, msg)
 			if role == RoleUser {
-				userCount++
-				if firstMsg == "" && strings.TrimSpace(content) != "" {
-					firstMsg = truncate(strings.ReplaceAll(content, "\n", " "), 300)
+				// Count only substantive user input. Droid writes the
+				// environment tool listing as a separate user row
+				// (<system-reminder> prefix) and emits empty user rows
+				// for tool plumbing; neither is something the caller
+				// typed, so they must not pollute user_message_count,
+				// first_message, or the automation classifier gate.
+				trimmed := strings.TrimSpace(content)
+				if trimmed != "" && !strings.HasPrefix(trimmed, "<system-reminder>") {
+					userCount++
+					if firstMsg == "" {
+						firstMsg = truncate(strings.ReplaceAll(content, "\n", " "), 300)
+					}
 				}
 			}
 		}
