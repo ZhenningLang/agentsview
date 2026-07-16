@@ -9,16 +9,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// speedMessagesWithLag mirrors the SQL contract: assistant rows only, each
+// carrying the timestamp of its direct predecessor of any role.
+func speedMessagesWithLag(msgs []SpeedMessage) []SpeedMessage {
+	out := make([]SpeedMessage, 0, len(msgs))
+	var lagTs time.Time
+	lagValid := false
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			m.PreviousTimestamp = lagTs
+			m.PreviousTimestampValid = lagValid
+			out = append(out, m)
+		}
+		lagTs, lagValid = m.Timestamp, m.TimestampValid
+	}
+	return out
+}
+
 func TestSpeedSamplesUseDirectOrdinalPredecessor(t *testing.T) {
 	base := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
-	samples := BuildSpeedSamples([]SpeedMessage{
+	samples := SpeedEventsFromMessages(speedMessagesWithLag([]SpeedMessage{
 		{SessionID: "s", Agent: "claude", Ordinal: 0, Role: "user", Timestamp: base, TimestampValid: true},
 		{SessionID: "s", Agent: "claude", Ordinal: 1, Role: "assistant", Timestamp: base.Add(10 * time.Second), TimestampValid: true, OutputTokens: 12, HasOutputTokens: true},
 		{SessionID: "s", Agent: "claude", Ordinal: 2, Role: "assistant", Timestamp: base.Add(20 * time.Second), TimestampValid: true, OutputTokens: 100, HasOutputTokens: true},
 		{SessionID: "s", Agent: "claude", Ordinal: 3, Role: "user", Timestamp: base.Add(30 * time.Second), TimestampValid: true},
 		{SessionID: "s", Agent: "claude", Ordinal: 4, Role: "assistant", Timestamp: base.Add(1830 * time.Second), TimestampValid: true, OutputTokens: 32, HasOutputTokens: true},
 		{SessionID: "s", Agent: "claude", Ordinal: 5, Role: "assistant", Timestamp: base.Add(3631 * time.Second), TimestampValid: true, OutputTokens: 64, HasOutputTokens: true},
-	})
+	}))
 
 	require.Len(t, samples, 2)
 	assert.InDelta(t, 10, samples[0].Rate, 1e-12)
@@ -43,10 +60,10 @@ func TestSpeedSamplesRejectInvalidWindowsAndCoverage(t *testing.T) {
 			current := tt.cur
 			current.SessionID = "s"
 			current.Ordinal = 1
-			samples := BuildSpeedSamples([]SpeedMessage{
+			samples := SpeedEventsFromMessages(speedMessagesWithLag([]SpeedMessage{
 				{SessionID: "s", Ordinal: 0, Role: "user", Timestamp: base, TimestampValid: true},
 				current,
-			})
+			}))
 			assert.Empty(t, samples)
 		})
 	}
@@ -239,4 +256,63 @@ func TestSQLiteSpeedTrendKeepsPreviousMessageOutsideRange(t *testing.T) {
 	assert.Equal(t, 5, trend.Series[0].Points[0].N)
 	require.NotNil(t, trend.Series[0].Points[0].P50)
 	assert.InDelta(t, 10, *trend.Series[0].Points[0].P50, 1e-9)
+}
+
+func TestSpeedEventsMergeSubSecondBursts(t *testing.T) {
+	base := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+	samples := SpeedEventsFromMessages(speedMessagesWithLag([]SpeedMessage{
+		{SessionID: "s", Agent: "claude", Ordinal: 0, Role: "user", Timestamp: base, TimestampValid: true},
+		{SessionID: "s", Agent: "claude", Ordinal: 1, Role: "assistant", Timestamp: base.Add(10 * time.Second), TimestampValid: true, OutputTokens: 40, HasOutputTokens: true, Model: "m1"},
+		{SessionID: "s", Agent: "claude", Ordinal: 2, Role: "assistant", Timestamp: base.Add(11 * time.Second), TimestampValid: true, OutputTokens: 60, HasOutputTokens: true, Model: "m1"},
+		{SessionID: "s", Agent: "claude", Ordinal: 3, Role: "assistant", Timestamp: base.Add(11500 * time.Millisecond), TimestampValid: true, HasOutputTokens: false},
+		{SessionID: "s", Agent: "claude", Ordinal: 4, Role: "user", Timestamp: base.Add(20 * time.Second), TimestampValid: true},
+		{SessionID: "s", Agent: "claude", Ordinal: 5, Role: "assistant", Timestamp: base.Add(40 * time.Second), TimestampValid: true, OutputTokens: 50, HasOutputTokens: true, Model: "m1"},
+	}))
+
+	require.Len(t, samples, 2)
+	// Burst: three rows within 2s gaps collapse into one event spanning
+	// user@0 -> last member at 11.5s.
+	assert.Equal(t, 100, samples[0].OutputTokens)
+	assert.InDelta(t, 100.0/11.5, samples[0].Rate, 1e-9)
+	// Next event starts fresh; its window runs from the burst's last row
+	// (the LAG predecessor at 20s is the user row).
+	assert.Equal(t, 50, samples[1].OutputTokens)
+	assert.InDelta(t, 50.0/20.0, samples[1].Rate, 1e-9)
+}
+
+func TestSpeedEventsMergeByRequestIDAcrossGap(t *testing.T) {
+	base := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+	samples := SpeedEventsFromMessages(speedMessagesWithLag([]SpeedMessage{
+		{SessionID: "s", Agent: "claude", Ordinal: 0, Role: "user", Timestamp: base, TimestampValid: true},
+		{SessionID: "s", Agent: "claude", Ordinal: 1, Role: "assistant", Timestamp: base.Add(10 * time.Second), TimestampValid: true, OutputTokens: 40, HasOutputTokens: true, RequestID: "r1"},
+		{SessionID: "s", Agent: "claude", Ordinal: 2, Role: "assistant", Timestamp: base.Add(15 * time.Second), TimestampValid: true, OutputTokens: 24, HasOutputTokens: true, RequestID: "r1"},
+	}))
+
+	require.Len(t, samples, 1)
+	assert.Equal(t, 64, samples[0].OutputTokens)
+	assert.InDelta(t, 64.0/15.0, samples[0].Rate, 1e-9)
+}
+
+func TestSpeedEventsMergedFragmentsReachTokenFloor(t *testing.T) {
+	base := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+	samples := SpeedEventsFromMessages(speedMessagesWithLag([]SpeedMessage{
+		{SessionID: "s", Agent: "claude", Ordinal: 0, Role: "user", Timestamp: base, TimestampValid: true},
+		{SessionID: "s", Agent: "claude", Ordinal: 1, Role: "assistant", Timestamp: base.Add(10 * time.Second), TimestampValid: true, OutputTokens: 20, HasOutputTokens: true},
+		{SessionID: "s", Agent: "claude", Ordinal: 2, Role: "assistant", Timestamp: base.Add(11 * time.Second), TimestampValid: true, OutputTokens: 15, HasOutputTokens: true},
+	}))
+
+	require.Len(t, samples, 1)
+	assert.Equal(t, 35, samples[0].OutputTokens)
+}
+
+func TestSpeedEventsDoNotMergeAcrossSessions(t *testing.T) {
+	base := time.Date(2026, time.July, 15, 12, 0, 0, 0, time.UTC)
+	samples := SpeedEventsFromMessages([]SpeedMessage{
+		{SessionID: "a", Agent: "claude", Role: "assistant", Timestamp: base.Add(10 * time.Second), TimestampValid: true, OutputTokens: 40, HasOutputTokens: true, PreviousTimestamp: base, PreviousTimestampValid: true},
+		{SessionID: "b", Agent: "claude", Role: "assistant", Timestamp: base.Add(10500 * time.Millisecond), TimestampValid: true, OutputTokens: 60, HasOutputTokens: true, PreviousTimestamp: base, PreviousTimestampValid: true},
+	})
+
+	require.Len(t, samples, 2)
+	assert.Equal(t, 40, samples[0].OutputTokens)
+	assert.Equal(t, 60, samples[1].OutputTokens)
 }

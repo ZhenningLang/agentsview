@@ -287,3 +287,44 @@ timing 三态:
   物化(backlog)。
 - DuckDB SQL 方言差异:epoch/时间函数不同,由 backendcontract 同
   fixture 断言兜底。
+
+## 7. v3 口径修订(burst 合并 + 并发标注,2026-07-16)
+
+用户确认后追加,消除并行造成的两类干扰:
+
+### 7.1 burst 合并(消除会话内假样本)
+
+30 天真实库探针:窗口 <2s 的样本占 6.5%,平均"速率" 530–1879 tok/s
+(最高 57k),系同一 API 响应拆行 / 并行 tool 消息亚秒间隔的测量伪影;
+Claude 30 天内 15% 的 assistant 行与前行共享同一 requestId。
+
+**合并规则(`SpeedEventsFromMessages`,三后端 + velocity 共用):**
+
+- 连续 assistant 行,间隔 < 2s(常量 `speedBurstGapSec`)归并为同一
+  生成事件;非空 `claude_request_id` 相同的行跨更大间隔也强制归并
+  (同一次 API 响应的碎片)。
+- 合并事件:token 求和(仅 has_output_tokens 行)、窗口 = 首成员的
+  LAG 前驱时间戳 → 末成员时间戳、model 取最后非空、bucket 取末成员。
+- 资格阈值(≥32 token、0<window≤1800s)在**合并后**判定,碎片可以
+  凑满阈值。
+- 无 requestId 的 agent 仅按 2s 间隔归并。
+
+### 7.2 并发标注(归因跨会话并行,不排除)
+
+30 天内 72% 活跃分钟有 ≥2 个 session 同时在写(29% ≥4,峰值 22)。
+跨会话并发导致的减速是真实体感,**不排除、只标注**:
+
+- `speed-trend` 响应新增 `concurrency: [{t, sessions}]`,按相同
+  bucket 统计全库(**忽略 agent 过滤**,机器级并行负载即混杂因子)
+  写入任意消息的 distinct session 数。
+- 前端:图底部灰色柱条(仅 sessions≥2 的桶,高度归一化,占绘图区
+  ≤18%),tooltip 追加 "N parallel sessions" 行,图例注记
+  "parallel sessions (all agents)"。
+
+### 7.3 契约与测试
+
+- `internal/backendcontract` speed 合同新增 burst session fixture
+  (2s 内碎片 + requestId 跨 3s 归并 → 单事件)与 concurrency 断言,
+  三后端同 fixture 同输出。
+- 影响面:trend / velocity 扩展 / SessionVitals(session_rate 与
+  baseline 均改用合并事件),同一函数,无口径分叉。

@@ -9,6 +9,12 @@ import (
 const (
 	minSpeedOutputTokens = 32
 	maxSpeedWindowSec    = 1800
+	// speedBurstGapSec merges consecutive assistant outputs whose
+	// timestamps are closer than this into one generation event. Session
+	// files split one API response into several rows (and log parallel
+	// tool turns back-to-back), so sub-second gaps measure write order,
+	// not generation speed.
+	speedBurstGapSec = 2.0
 )
 
 // SpeedMessage is the minimal ordered message representation needed to derive
@@ -26,6 +32,11 @@ type SpeedMessage struct {
 	HasOutputTokens        bool
 	PreviousTimestamp      time.Time
 	PreviousTimestampValid bool
+	// RequestID is the provider's per-response identifier when the
+	// parser exposes one (Claude only today). Rows sharing a request ID
+	// are fragments of a single API response and always merge into one
+	// generation event.
+	RequestID string
 }
 
 // SpeedSample is one qualifying assistant output observation.
@@ -72,13 +83,22 @@ type SpeedTrendQuery struct {
 	Agent     string
 }
 
+// SpeedConcurrencyPoint counts distinct sessions writing any message in a
+// bucket. It deliberately ignores the agent filter: machine-wide parallel
+// load is the confounder it exists to expose.
+type SpeedConcurrencyPoint struct {
+	T        int64 `json:"t"`
+	Sessions int   `json:"sessions"`
+}
+
 // SpeedTrendResponse is the response for the approximate output-speed trend.
 type SpeedTrendResponse struct {
-	BucketSec int64              `json:"bucket_sec"`
-	GroupBy   string             `json:"group_by"`
-	Since     time.Time          `json:"since"`
-	Until     time.Time          `json:"until"`
-	Series    []SpeedTrendSeries `json:"series"`
+	BucketSec   int64                   `json:"bucket_sec"`
+	GroupBy     string                  `json:"group_by"`
+	Since       time.Time               `json:"since"`
+	Until       time.Time               `json:"until"`
+	Series      []SpeedTrendSeries      `json:"series"`
+	Concurrency []SpeedConcurrencyPoint `json:"concurrency"`
 }
 
 // SessionSpeed is a ratio-of-sums for one session. Baseline fields are filled
@@ -104,55 +124,76 @@ type SpeedSessionRate struct {
 	TokPerSec float64
 }
 
-// NewSpeedSample applies the speed eligibility contract to a current message
-// and its direct ordinal predecessor. Callers must not pre-filter the ordered
-// sequence before selecting prev.
-func NewSpeedSample(current, prev SpeedMessage) (SpeedSample, bool) {
-	if current.Role != "assistant" || !current.HasOutputTokens ||
-		current.OutputTokens < minSpeedOutputTokens ||
-		!current.TimestampValid || !prev.TimestampValid {
-		return SpeedSample{}, false
-	}
-	window := current.Timestamp.Sub(prev.Timestamp).Seconds()
-	if window <= 0 || window > maxSpeedWindowSec {
-		return SpeedSample{}, false
-	}
-	return SpeedSample{
-		SessionID:    current.SessionID,
-		Agent:        current.Agent,
-		Model:        current.Model,
-		Rate:         float64(current.OutputTokens) / window,
-		OutputTokens: current.OutputTokens,
-		timestamp:    current.Timestamp,
-	}, true
-}
-
-// NewSpeedSampleWithPreviousTimestamp uses a SQL LAG result for the direct
-// ordinal predecessor. It keeps query implementations from reconstructing a
-// partial sequence in Go after a current-message time-window filter.
-func NewSpeedSampleWithPreviousTimestamp(current SpeedMessage) (SpeedSample, bool) {
-	return NewSpeedSample(current, SpeedMessage{
-		Timestamp:      current.PreviousTimestamp,
-		TimestampValid: current.PreviousTimestampValid,
-	})
-}
-
-// BuildSpeedSamples derives samples from complete ordinal sequences. Sessions
-// must be contiguous and ordered by ordinal, as all backend queries provide.
-func BuildSpeedSamples(messages []SpeedMessage) []SpeedSample {
-	samples := make([]SpeedSample, 0)
-	var prev SpeedMessage
-	hasPrev := false
-	for _, current := range messages {
-		if !hasPrev || current.SessionID != prev.SessionID {
-			prev = current
-			hasPrev = true
+// SpeedEventsFromMessages merges ordered assistant rows into generation
+// events and returns the qualifying speed samples. Rows must be contiguous
+// per session and ordered by ordinal, with PreviousTimestamp carrying the
+// SQL LAG over the session's full message sequence (any role).
+//
+// Merge rule: a row extends the open event when its gap to the previous
+// member is under speedBurstGapSec, or when both share a non-empty
+// RequestID (fragments of one API response). The merged event's window
+// runs from the first member's predecessor timestamp to the latest member
+// timestamp; eligibility (token floor, window bounds) applies post-merge.
+func SpeedEventsFromMessages(messages []SpeedMessage) []SpeedSample {
+	samples := make([]SpeedSample, 0, len(messages))
+	i := 0
+	for i < len(messages) {
+		first := messages[i]
+		if first.Role != "assistant" || !first.TimestampValid {
+			i++
 			continue
 		}
-		if sample, ok := NewSpeedSample(current, prev); ok {
-			samples = append(samples, sample)
+		windowStart := first.PreviousTimestamp
+		windowStartValid := first.PreviousTimestampValid
+		endTs := first.Timestamp
+		lastTs := first.Timestamp
+		lastReq := first.RequestID
+		tokens := 0
+		if first.HasOutputTokens {
+			tokens += first.OutputTokens
 		}
-		prev = current
+		model := first.Model
+
+		j := i + 1
+		for j < len(messages) {
+			next := messages[j]
+			if next.SessionID != first.SessionID ||
+				next.Role != "assistant" || !next.TimestampValid {
+				break
+			}
+			gap := next.Timestamp.Sub(lastTs).Seconds()
+			sameRequest := next.RequestID != "" && next.RequestID == lastReq
+			if gap >= speedBurstGapSec && !sameRequest {
+				break
+			}
+			if next.HasOutputTokens {
+				tokens += next.OutputTokens
+			}
+			if next.Model != "" {
+				model = next.Model
+			}
+			if next.Timestamp.After(endTs) {
+				endTs = next.Timestamp
+			}
+			lastTs = next.Timestamp
+			lastReq = next.RequestID
+			j++
+		}
+
+		if windowStartValid && tokens >= minSpeedOutputTokens {
+			window := endTs.Sub(windowStart).Seconds()
+			if window > 0 && window <= maxSpeedWindowSec {
+				samples = append(samples, SpeedSample{
+					SessionID:    first.SessionID,
+					Agent:        first.Agent,
+					Model:        model,
+					Rate:         float64(tokens) / window,
+					OutputTokens: tokens,
+					timestamp:    endTs,
+				})
+			}
+		}
+		i = j
 	}
 	return samples
 }

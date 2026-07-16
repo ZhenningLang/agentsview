@@ -42,10 +42,13 @@ describe("SpeedChart", () => {
     vi.unstubAllGlobals();
   });
 
-  function mountChart(series: typeof sparseSeries) {
+  function mountChart(
+    series: typeof sparseSeries,
+    concurrency: { t: number; sessions: number }[] = [],
+  ) {
     component = mount(SpeedChart, {
       target: document.body,
-      props: { series },
+      props: { series, concurrency, bucketSec: 3600 },
     });
   }
 
@@ -109,5 +112,29 @@ describe("SpeedChart", () => {
     overlay!.dispatchEvent(new MouseEvent("mouseleave"));
     await tick();
     expect(document.querySelector(".tooltip")).toBeNull();
+  });
+
+  it("renders concurrency bars for multi-session buckets and lists them in the tooltip", async () => {
+    mountChart(sparseSeries, [
+      { t: 1_752_562_800, sessions: 6 },
+      { t: 1_752_566_400, sessions: 1 },
+    ]);
+    await tick();
+
+    // Only the >=2 sessions bucket draws a bar; the solo bucket is noise.
+    expect(document.querySelectorAll("rect.concurrency-bar").length).toBe(1);
+    expect(document.querySelector(".legend-note")?.textContent).toContain(
+      "parallel sessions",
+    );
+
+    const overlay = document.querySelector<SVGRectElement>("rect.overlay");
+    overlay!.dispatchEvent(
+      new MouseEvent("mousemove", { bubbles: true, clientX: 60, clientY: 60 }),
+    );
+    await tick();
+    // jsdom offsetX resolves to the first bucket (t=1_752_562_800).
+    expect(document.querySelector(".tooltip-sessions")?.textContent).toContain(
+      "6 parallel sessions",
+    );
   });
 });

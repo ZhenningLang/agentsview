@@ -14,13 +14,18 @@ func (db *DB) GetSpeedTrend(
 	if err != nil {
 		return SpeedTrendResponse{}, err
 	}
+	concurrency, err := db.speedConcurrency(ctx, q.Since, q.Until, q.BucketSec)
+	if err != nil {
+		return SpeedTrendResponse{}, err
+	}
 	BucketSpeedSamples(samples, q.BucketSec)
 	return SpeedTrendResponse{
-		BucketSec: q.BucketSec,
-		GroupBy:   q.GroupBy,
-		Since:     q.Since,
-		Until:     q.Until,
-		Series:    AggregateSpeedTrend(samples, q.GroupBy),
+		BucketSec:   q.BucketSec,
+		GroupBy:     q.GroupBy,
+		Since:       q.Since,
+		Until:       q.Until,
+		Series:      AggregateSpeedTrend(samples, q.GroupBy),
+		Concurrency: concurrency,
 	}, nil
 }
 
@@ -31,6 +36,7 @@ func (db *DB) GetSessionSpeed(
 		WITH seq AS (
 			SELECT m.session_id, m.ordinal, m.role, m.timestamp,
 				m.output_tokens, m.has_output_tokens, m.model, s.agent,
+				m.claude_request_id,
 				LAG(m.timestamp) OVER (
 					PARTITION BY m.session_id ORDER BY m.ordinal
 				) AS prev_ts
@@ -40,17 +46,19 @@ func (db *DB) GetSessionSpeed(
 		)
 		SELECT session_id, ordinal, role, COALESCE(timestamp, ''),
 			output_tokens, has_output_tokens, COALESCE(model, ''), agent,
-			COALESCE(prev_ts, '')
+			COALESCE(claude_request_id, ''), COALESCE(prev_ts, '')
 		FROM seq
-		WHERE role = 'assistant'`, sessionID)
+		WHERE role = 'assistant'
+		ORDER BY session_id, ordinal`, sessionID)
 	if err != nil {
 		return SessionSpeedResult{}, fmt.Errorf("querying session speed: %w", err)
 	}
 	defer rows.Close()
-	samples, agent, err := scanSQLiteSpeedSamples(rows)
+	messages, agent, err := scanSQLiteSpeedMessages(rows)
 	if err != nil {
 		return SessionSpeedResult{}, err
 	}
+	samples := SpeedEventsFromMessages(messages)
 	return SessionSpeedResult{Agent: agent, Speed: SessionSpeedFromSamples(samples)}, nil
 }
 
@@ -79,6 +87,7 @@ func (db *DB) speedSamples(
 		), seq AS (
 			SELECT m.session_id, m.ordinal, m.role, m.timestamp,
 				m.output_tokens, m.has_output_tokens, m.model, s.agent,
+				m.claude_request_id,
 				LAG(m.timestamp) OVER (
 					PARTITION BY m.session_id ORDER BY m.ordinal
 				) AS prev_ts
@@ -88,11 +97,12 @@ func (db *DB) speedSamples(
 		)
 		SELECT session_id, ordinal, role, COALESCE(timestamp, ''),
 			output_tokens, has_output_tokens, COALESCE(model, ''), agent,
-			COALESCE(prev_ts, '')
+			COALESCE(claude_request_id, ''), COALESCE(prev_ts, '')
 		FROM seq
 		WHERE role = 'assistant'
 			AND julianday(timestamp) >= julianday(?)
-			AND julianday(timestamp) < julianday(?)`,
+			AND julianday(timestamp) < julianday(?)
+		ORDER BY session_id, ordinal`,
 		since.Format(time.RFC3339Nano), until.Format(time.RFC3339Nano),
 		agent, agent,
 		since.Format(time.RFC3339Nano), until.Format(time.RFC3339Nano))
@@ -100,40 +110,77 @@ func (db *DB) speedSamples(
 		return nil, fmt.Errorf("querying speed samples: %w", err)
 	}
 	defer rows.Close()
-	samples, _, err := scanSQLiteSpeedSamples(rows)
-	return samples, err
+	messages, _, err := scanSQLiteSpeedMessages(rows)
+	if err != nil {
+		return nil, err
+	}
+	return SpeedEventsFromMessages(messages), nil
 }
 
-func scanSQLiteSpeedSamples(rows *sql.Rows) ([]SpeedSample, string, error) {
-	samples := make([]SpeedSample, 0)
+func (db *DB) speedConcurrency(
+	ctx context.Context, since, until time.Time, bucketSec int64,
+) ([]SpeedConcurrencyPoint, error) {
+	if bucketSec <= 0 {
+		return []SpeedConcurrencyPoint{}, nil
+	}
+	rows, err := db.getReader().QueryContext(ctx, `
+		SELECT
+			CAST(strftime('%s', timestamp) AS INTEGER) / ? * ? AS bucket,
+			COUNT(DISTINCT session_id) AS sessions
+		FROM messages
+		WHERE timestamp != ''
+			AND julianday(timestamp) >= julianday(?)
+			AND julianday(timestamp) < julianday(?)
+		GROUP BY bucket
+		ORDER BY bucket`,
+		bucketSec, bucketSec,
+		since.Format(time.RFC3339Nano), until.Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, fmt.Errorf("querying speed concurrency: %w", err)
+	}
+	defer rows.Close()
+	return scanSpeedConcurrency(rows)
+}
+
+func scanSpeedConcurrency(rows *sql.Rows) ([]SpeedConcurrencyPoint, error) {
+	points := make([]SpeedConcurrencyPoint, 0)
+	for rows.Next() {
+		var point SpeedConcurrencyPoint
+		if err := rows.Scan(&point.T, &point.Sessions); err != nil {
+			return nil, fmt.Errorf("scanning speed concurrency: %w", err)
+		}
+		points = append(points, point)
+	}
+	return points, rows.Err()
+}
+
+func scanSQLiteSpeedMessages(rows *sql.Rows) ([]SpeedMessage, string, error) {
+	messages := make([]SpeedMessage, 0)
 	agent := ""
 	for rows.Next() {
-		var current, previous SpeedMessage
+		var current SpeedMessage
 		var ordinal int
 		var timestamp, prevTimestamp string
 		var hasOutput int
 		if err := rows.Scan(
 			&current.SessionID, &ordinal, &current.Role, &timestamp,
 			&current.OutputTokens, &hasOutput, &current.Model, &current.Agent,
-			&prevTimestamp,
+			&current.RequestID, &prevTimestamp,
 		); err != nil {
 			return nil, "", fmt.Errorf("scanning speed sample: %w", err)
 		}
 		current.Ordinal = ordinal
 		current.HasOutputTokens = hasOutput == 1
 		current.Timestamp, current.TimestampValid = localTime(timestamp, time.UTC)
-		previous.Timestamp, previous.TimestampValid = localTime(prevTimestamp, time.UTC)
+		current.PreviousTimestamp, current.PreviousTimestampValid =
+			localTime(prevTimestamp, time.UTC)
 		if agent == "" {
 			agent = current.Agent
 		}
-		current.PreviousTimestamp = previous.Timestamp
-		current.PreviousTimestampValid = previous.TimestampValid
-		if sample, ok := NewSpeedSampleWithPreviousTimestamp(current); ok {
-			samples = append(samples, sample)
-		}
+		messages = append(messages, current)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", err
 	}
-	return samples, agent, nil
+	return messages, agent, nil
 }

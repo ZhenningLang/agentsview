@@ -1,11 +1,16 @@
 <script lang="ts">
-  import type { SpeedTrendSeries } from "../../api/types/analytics.js";
+  import type {
+    SpeedConcurrencyPoint,
+    SpeedTrendSeries,
+  } from "../../api/types/analytics.js";
 
   interface Props {
     series: SpeedTrendSeries[];
+    concurrency?: SpeedConcurrencyPoint[];
+    bucketSec?: number;
   }
 
-  let { series }: Props = $props();
+  let { series, concurrency = [], bucketSec = 3600 }: Props = $props();
   const colors = ["#2563eb", "#d97706", "#7c3aed", "#059669", "#db2777", "#0891b2", "#64748b", "#dc2626", "#52525b"];
   const HEIGHT = 300;
   const LEFT = 52;
@@ -40,6 +45,30 @@
   const maxY = $derived(Math.max(...allPoints.map((point) => point.p50 ?? 0), 1));
   const plotW = $derived(Math.max(width - LEFT - RIGHT, 1));
   const plotH = HEIGHT - TOP - BOTTOM;
+
+  // Concurrency track: bottom-anchored bars showing how many sessions were
+  // writing in each bucket, so slow readings can be attributed to parallel
+  // load. Buckets with a single session are omitted as visual noise.
+  const CONCURRENCY_TRACK_RATIO = 0.18;
+  const concurrencyBars = $derived.by(() => {
+    const busy = concurrency.filter(
+      (point) => point.sessions >= 2 && point.t >= minT && point.t <= maxT,
+    );
+    if (busy.length === 0) return [];
+    const maxSessions = Math.max(...busy.map((point) => point.sessions));
+    return busy.map((point) => ({
+      t: point.t,
+      sessions: point.sessions,
+      height: (point.sessions / maxSessions) * CONCURRENCY_TRACK_RATIO * plotH,
+    }));
+  });
+  const concurrencyByT = $derived(
+    new Map(concurrency.map((point) => [point.t, point.sessions])),
+  );
+  const barWidth = $derived.by(() => {
+    const width = x(minT + bucketSec) - x(minT);
+    return Math.max(1, Math.min(width, plotW));
+  });
 
   const validCounts = $derived(
     series.map((item) => item.points.filter((point) => point.p50 != null).length),
@@ -154,6 +183,15 @@
         {@const t = Math.round(minT + (maxT - minT) * ratio)}
         <text x={x(t)} y={HEIGHT - 8} class="x-label">{labelFor(t)}</text>
       {/each}
+      {#each concurrencyBars as bar}
+        <rect
+          class="concurrency-bar"
+          x={x(bar.t)}
+          y={TOP + plotH - bar.height}
+          width={barWidth}
+          height={bar.height}
+        />
+      {/each}
       {#if hoverT != null}
         <line
           class="crosshair"
@@ -202,6 +240,12 @@
         {item.key}{item.is_other ? " (combined)" : ""}
       </span>
     {/each}
+    {#if concurrencyBars.length > 0}
+      <span class="legend-item legend-note">
+        <span class="swatch swatch-band"></span>
+        parallel sessions (all agents)
+      </span>
+    {/if}
   </div>
   {#if hoverT != null && cursor && hoverRows.length > 0}
     <div class="tooltip" style={tooltipStyle}>
@@ -220,6 +264,11 @@
           {/if}
         </div>
       {/each}
+      {#if concurrencyByT.has(hoverT)}
+        <div class="tooltip-sessions">
+          {concurrencyByT.get(hoverT)} parallel session{concurrencyByT.get(hoverT) === 1 ? "" : "s"}
+        </div>
+      {/if}
     </div>
   {/if}
 </div>
@@ -247,6 +296,29 @@
   .crosshair {
     stroke: var(--border-default);
     stroke-dasharray: 3 3;
+  }
+
+  .concurrency-bar {
+    fill: var(--border-muted);
+    opacity: 0.45;
+  }
+
+  .swatch-band {
+    height: 8px;
+    background: var(--border-muted);
+    opacity: 0.7;
+  }
+
+  .legend-note {
+    color: var(--text-muted);
+  }
+
+  .tooltip-sessions {
+    margin-top: 4px;
+    padding-top: 4px;
+    border-top: 1px solid var(--border-muted);
+    color: var(--text-muted);
+    font-size: 10px;
   }
 
   .overlay {

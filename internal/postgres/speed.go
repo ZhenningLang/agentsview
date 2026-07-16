@@ -13,13 +13,18 @@ func (s *Store) GetSpeedTrend(ctx context.Context, q db.SpeedTrendQuery) (db.Spe
 	if err != nil {
 		return db.SpeedTrendResponse{}, err
 	}
+	concurrency, err := s.speedConcurrency(ctx, q.Since, q.Until, q.BucketSec)
+	if err != nil {
+		return db.SpeedTrendResponse{}, err
+	}
 	db.BucketSpeedSamples(samples, q.BucketSec)
 	return db.SpeedTrendResponse{
-		BucketSec: q.BucketSec,
-		GroupBy:   q.GroupBy,
-		Since:     q.Since,
-		Until:     q.Until,
-		Series:    db.AggregateSpeedTrend(samples, q.GroupBy),
+		BucketSec:   q.BucketSec,
+		GroupBy:     q.GroupBy,
+		Since:       q.Since,
+		Until:       q.Until,
+		Series:      db.AggregateSpeedTrend(samples, q.GroupBy),
+		Concurrency: concurrency,
 	}, nil
 }
 
@@ -28,21 +33,25 @@ func (s *Store) GetSessionSpeed(ctx context.Context, sessionID string) (db.Sessi
 		WITH seq AS (
 			SELECT m.session_id, m.ordinal, m.role, m.timestamp,
 				m.output_tokens, m.has_output_tokens, m.model, s.agent,
+				m.claude_request_id,
 				LAG(m.timestamp) OVER (PARTITION BY m.session_id ORDER BY m.ordinal) AS prev_ts
 			FROM messages m JOIN sessions s ON s.id = m.session_id
 			WHERE m.session_id = $1
 		)
 		SELECT session_id, ordinal, role, timestamp, output_tokens,
-			has_output_tokens, COALESCE(model, ''), agent, prev_ts
-		FROM seq WHERE role = 'assistant'`, sessionID)
+			has_output_tokens, COALESCE(model, ''), agent,
+			COALESCE(claude_request_id, ''), prev_ts
+		FROM seq WHERE role = 'assistant'
+		ORDER BY session_id, ordinal`, sessionID)
 	if err != nil {
 		return db.SessionSpeedResult{}, fmt.Errorf("querying session speed: %w", err)
 	}
 	defer rows.Close()
-	samples, agent, err := scanSpeedRows(rows)
+	messages, agent, err := scanSpeedRows(rows)
 	if err != nil {
 		return db.SessionSpeedResult{}, err
 	}
+	samples := db.SpeedEventsFromMessages(messages)
 	return db.SessionSpeedResult{Agent: agent, Speed: db.SessionSpeedFromSamples(samples)}, nil
 }
 
@@ -64,35 +73,70 @@ func (s *Store) speedSamples(ctx context.Context, agent string, since, until tim
 		), seq AS (
 			SELECT m.session_id, m.ordinal, m.role, m.timestamp,
 				m.output_tokens, m.has_output_tokens, m.model, s.agent,
+				m.claude_request_id,
 				LAG(m.timestamp) OVER (PARTITION BY m.session_id ORDER BY m.ordinal) AS prev_ts
 			FROM messages m JOIN sessions s ON s.id = m.session_id
 			WHERE m.session_id IN (SELECT session_id FROM candidate_sessions)
 		)
 		SELECT session_id, ordinal, role, timestamp, output_tokens,
-			has_output_tokens, COALESCE(model, ''), agent, prev_ts
+			has_output_tokens, COALESCE(model, ''), agent,
+			COALESCE(claude_request_id, ''), prev_ts
 		FROM seq
-		WHERE role = 'assistant' AND timestamp >= $1 AND timestamp < $2`,
+		WHERE role = 'assistant' AND timestamp >= $1 AND timestamp < $2
+		ORDER BY session_id, ordinal`,
 		since, until, agent)
 	if err != nil {
 		return nil, fmt.Errorf("querying speed samples: %w", err)
 	}
 	defer rows.Close()
-	samples, _, err := scanSpeedRows(rows)
-	return samples, err
+	messages, _, err := scanSpeedRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	return db.SpeedEventsFromMessages(messages), nil
+}
+
+func (s *Store) speedConcurrency(ctx context.Context, since, until time.Time, bucketSec int64) ([]db.SpeedConcurrencyPoint, error) {
+	if bucketSec <= 0 {
+		return []db.SpeedConcurrencyPoint{}, nil
+	}
+	rows, err := s.pg.QueryContext(ctx, `
+		SELECT
+			FLOOR(EXTRACT(EPOCH FROM timestamp) / $1)::BIGINT * $1 AS bucket,
+			COUNT(DISTINCT session_id) AS sessions
+		FROM messages
+		WHERE timestamp IS NOT NULL AND timestamp >= $2 AND timestamp < $3
+		GROUP BY bucket
+		ORDER BY bucket`,
+		bucketSec, since, until)
+	if err != nil {
+		return nil, fmt.Errorf("querying speed concurrency: %w", err)
+	}
+	defer rows.Close()
+	points := make([]db.SpeedConcurrencyPoint, 0)
+	for rows.Next() {
+		var point db.SpeedConcurrencyPoint
+		if err := rows.Scan(&point.T, &point.Sessions); err != nil {
+			return nil, fmt.Errorf("scanning speed concurrency: %w", err)
+		}
+		points = append(points, point)
+	}
+	return points, rows.Err()
 }
 
 func scanSpeedRows(rows interface {
 	Next() bool
 	Scan(...any) error
 	Err() error
-}) ([]db.SpeedSample, string, error) {
-	samples := make([]db.SpeedSample, 0)
+}) ([]db.SpeedMessage, string, error) {
+	messages := make([]db.SpeedMessage, 0)
 	agent := ""
 	for rows.Next() {
 		var current db.SpeedMessage
 		var timestamp, prevTimestamp *time.Time
 		if err := rows.Scan(&current.SessionID, &current.Ordinal, &current.Role, &timestamp,
-			&current.OutputTokens, &current.HasOutputTokens, &current.Model, &current.Agent, &prevTimestamp); err != nil {
+			&current.OutputTokens, &current.HasOutputTokens, &current.Model, &current.Agent,
+			&current.RequestID, &prevTimestamp); err != nil {
 			return nil, "", fmt.Errorf("scanning speed sample: %w", err)
 		}
 		if timestamp != nil {
@@ -104,12 +148,10 @@ func scanSpeedRows(rows interface {
 		if agent == "" {
 			agent = current.Agent
 		}
-		if sample, ok := db.NewSpeedSampleWithPreviousTimestamp(current); ok {
-			samples = append(samples, sample)
-		}
+		messages = append(messages, current)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", err
 	}
-	return samples, agent, nil
+	return messages, agent, nil
 }

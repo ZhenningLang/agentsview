@@ -2177,18 +2177,36 @@ func processSessionVelocity(
 		a.sessions++
 	}
 
+	// Speed samples share the burst-merge contract with the speed trend:
+	// rebuild the LAG sequence over all roles, then merge assistant rows.
+	speedMsgs := make([]SpeedMessage, 0, len(msgs))
+	var lagTs time.Time
+	lagValid := false
+	for _, m := range msgs {
+		if m.role == "assistant" {
+			speedMsgs = append(speedMsgs, SpeedMessage{
+				Role:                   "assistant",
+				Timestamp:              m.ts,
+				TimestampValid:         m.valid,
+				OutputTokens:           m.outputTokens,
+				HasOutputTokens:        m.hasOutput,
+				Model:                  m.model,
+				PreviousTimestamp:      lagTs,
+				PreviousTimestampValid: lagValid,
+			})
+		}
+		lagTs, lagValid = m.ts, m.valid
+	}
+	for _, sample := range SpeedEventsFromMessages(speedMsgs) {
+		for _, a := range accums {
+			a.speedSamples = append(a.speedSamples, sample)
+		}
+	}
+
 	// Turn cycles: user→assistant transitions
 	for i := 1; i < len(msgs); i++ {
 		prev := msgs[i-1]
 		cur := msgs[i]
-		if sample, ok := NewSpeedSample(
-			SpeedMessage{Role: cur.role, Timestamp: cur.ts, TimestampValid: cur.valid, OutputTokens: cur.outputTokens, HasOutputTokens: cur.hasOutput, Model: cur.model},
-			SpeedMessage{Role: prev.role, Timestamp: prev.ts, TimestampValid: prev.valid},
-		); ok {
-			for _, a := range accums {
-				a.speedSamples = append(a.speedSamples, sample)
-			}
-		}
 		if !prev.valid || !cur.valid {
 			continue
 		}

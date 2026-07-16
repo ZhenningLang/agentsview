@@ -1407,17 +1407,33 @@ func processDuckSessionVelocity(
 	for _, acc := range accums {
 		acc.sessions++
 	}
+	speedMsgs := make([]db.SpeedMessage, 0, len(msgs))
+	var lagTs time.Time
+	lagValid := false
+	for _, m := range msgs {
+		if m.role == "assistant" {
+			speedMsgs = append(speedMsgs, db.SpeedMessage{
+				Role:                   "assistant",
+				Timestamp:              m.ts,
+				TimestampValid:         m.valid,
+				OutputTokens:           m.outputTokens,
+				HasOutputTokens:        m.hasOutput,
+				Model:                  m.model,
+				PreviousTimestamp:      lagTs,
+				PreviousTimestampValid: lagValid,
+			})
+		}
+		lagTs, lagValid = m.ts, m.valid
+	}
+	for _, sample := range db.SpeedEventsFromMessages(speedMsgs) {
+		for _, acc := range accums {
+			acc.speedSamples = append(acc.speedSamples, sample)
+		}
+	}
+
 	for i := 1; i < len(msgs); i++ {
 		prev := msgs[i-1]
 		cur := msgs[i]
-		if sample, ok := db.NewSpeedSample(
-			db.SpeedMessage{Role: cur.role, Timestamp: cur.ts, TimestampValid: cur.valid, OutputTokens: cur.outputTokens, HasOutputTokens: cur.hasOutput, Model: cur.model},
-			db.SpeedMessage{Role: prev.role, Timestamp: prev.ts, TimestampValid: prev.valid},
-		); ok {
-			for _, acc := range accums {
-				acc.speedSamples = append(acc.speedSamples, sample)
-			}
-		}
 		if !prev.valid || !cur.valid {
 			continue
 		}

@@ -149,12 +149,18 @@ export interface SpeedTrendSeries {
 	points: SpeedPoint[];
 }
 
+export interface SpeedConcurrencyPoint {
+	t: number;
+	sessions: number;
+}
+
 export interface SpeedTrendResponse {
 	bucket_sec: number;
 	group_by: SpeedGroupBy;
 	since: string;
 	until: string;
 	series: SpeedTrendSeries[];
+	concurrency: SpeedConcurrencyPoint[];
 }
 
 export interface TopSession {

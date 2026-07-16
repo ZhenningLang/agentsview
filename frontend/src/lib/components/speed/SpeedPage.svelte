@@ -90,7 +90,11 @@
   {#if speed.error}
     <div class="error">{speed.error}</div>
   {/if}
-  <SpeedChart series={speed.response?.series ?? []} />
+  <SpeedChart
+    series={speed.response?.series ?? []}
+    concurrency={speed.response?.concurrency ?? []}
+    bucketSec={speed.response?.bucket_sec ?? 3600}
+  />
 </section>
 
 <style>
