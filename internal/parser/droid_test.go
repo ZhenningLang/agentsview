@@ -156,4 +156,21 @@ func TestParseDroidSession_SyntheticUserRowsExcludedFromCountAndFirstMessage(t *
 	assert.Equal(t, 1, sess.UserMessageCount)
 	// All rows are still preserved for display.
 	assert.GreaterOrEqual(t, sess.MessageCount, 4)
+
+	// Synthetic user rows carry IsSystem so the sync engine's
+	// postFilterCounts (role==user && !IsSystem) agrees with the
+	// parser-side count.
+	var systemUsers, plainUsers int
+	for _, m := range result.Messages {
+		if m.Role != RoleUser {
+			continue
+		}
+		if m.IsSystem {
+			systemUsers++
+		} else {
+			plainUsers++
+		}
+	}
+	assert.Equal(t, 1, plainUsers, "only the payload prompt is real user input")
+	assert.GreaterOrEqual(t, systemUsers, 2, "preamble and empty trailing rows are system-flagged")
 }

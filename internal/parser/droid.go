@@ -133,6 +133,16 @@ func ParseDroidSession(path, project, machine string) (*ParseResult, error) {
 			}
 			hasTurn = true
 			content, thinking, hasThinking, hasToolUse, toolCalls, toolResults := ExtractTextContent(gjson.Get(line, "message.content"))
+			// Droid writes the environment tool listing as a separate
+			// user row (<system-reminder> prefix) and emits empty user
+			// rows for tool plumbing. Neither is something the caller
+			// typed: mark them IsSystem (the same convention the Claude
+			// parser uses for tool-result carriers) so downstream
+			// user-message counting and the automation classifier gate
+			// see only substantive user input.
+			trimmed := strings.TrimSpace(content)
+			syntheticUserRow := role == RoleUser &&
+				(trimmed == "" || strings.HasPrefix(trimmed, "<system-reminder>"))
 			msg := ParsedMessage{
 				Ordinal:       len(messages),
 				Role:          role,
@@ -141,6 +151,7 @@ func ParseDroidSession(path, project, machine string) (*ParseResult, error) {
 				Timestamp:     ts,
 				HasThinking:   hasThinking,
 				HasToolUse:    hasToolUse,
+				IsSystem:      syntheticUserRow,
 				ContentLength: len(content),
 				ToolCalls:     toolCalls,
 				ToolResults:   toolResults,
@@ -148,19 +159,10 @@ func ParseDroidSession(path, project, machine string) (*ParseResult, error) {
 				SourceUUID:    gjson.Get(line, "id").Str,
 			}
 			messages = append(messages, msg)
-			if role == RoleUser {
-				// Count only substantive user input. Droid writes the
-				// environment tool listing as a separate user row
-				// (<system-reminder> prefix) and emits empty user rows
-				// for tool plumbing; neither is something the caller
-				// typed, so they must not pollute user_message_count,
-				// first_message, or the automation classifier gate.
-				trimmed := strings.TrimSpace(content)
-				if trimmed != "" && !strings.HasPrefix(trimmed, "<system-reminder>") {
-					userCount++
-					if firstMsg == "" {
-						firstMsg = truncate(strings.ReplaceAll(content, "\n", " "), 300)
-					}
+			if role == RoleUser && !syntheticUserRow {
+				userCount++
+				if firstMsg == "" {
+					firstMsg = truncate(strings.ReplaceAll(content, "\n", " "), 300)
 				}
 			}
 		}
