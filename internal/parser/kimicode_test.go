@@ -251,3 +251,131 @@ func TestParseKimiCodeSession_Fork(t *testing.T) {
 		sess.ParentSessionID)
 	assert.Equal(t, RelFork, sess.RelationshipType)
 }
+
+func TestParseKimiCodeSession_NoStateJSON(t *testing.T) {
+	root := t.TempDir()
+	sessDir := filepath.Join(
+		root, "wd_my-app_aabbccddeeff",
+		"session_11111111-2222-3333-4444-555555555555")
+	wirePath := filepath.Join(sessDir, "agents", "main", "wire.jsonl")
+	require.NoError(t, writeKimiCodeTestFile(wirePath, kimiCodeMinimalWire))
+
+	result, err := ParseKimiCodeSession(
+		wirePath, "wd_my-app_aabbccddeeff", "test-machine")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	sess := result.Session
+	assert.Equal(t, "my-app", sess.Project)
+	assert.Empty(t, sess.SessionName)
+	assert.Empty(t, sess.Cwd)
+	assert.Empty(t, sess.ParentSessionID)
+}
+
+func TestParseKimiCodeSession_MalformedAndUnknown(t *testing.T) {
+	root := t.TempDir()
+	sessDir := filepath.Join(
+		root, "wd_my-app_aabbccddeeff",
+		"session_11111111-2222-3333-4444-555555555555")
+	wirePath := filepath.Join(sessDir, "agents", "main", "wire.jsonl")
+	wire := `{"type":"metadata","protocol_version":"9.9","created_at":1782441774650}
+not json at all
+{"type":"llm.request","foo":"bar","time":1782441774660}
+{"type":"turn.prompt","input":[{"type":"text","text":"hi"}],"origin":{"kind":"user"},"time":1782441774677}
+{"type":"context.append_loop_event","event":{"type":"future.event","x":1},"time":1782441774680}
+{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"s1","turnId":"0","step":1},"time":1782441774681}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"p1","turnId":"0","step":1,"stepUuid":"s1","part":{"type":"text","text":"ok"}},"time":1782441774690}
+`
+	require.NoError(t, writeKimiCodeTestFile(wirePath, wire))
+
+	result, err := ParseKimiCodeSession(
+		wirePath, "wd_my-app_aabbccddeeff", "test-machine")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	assert.Equal(t, 1, result.Session.MalformedLines)
+	require.Len(t, result.Messages, 2)
+	assert.Equal(t, RoleUser, result.Messages[0].Role)
+	assert.Equal(t, RoleAssistant, result.Messages[1].Role)
+	assert.Empty(t, result.UsageEvents)
+	assert.False(t, result.Session.HasTotalOutputTokens)
+}
+
+func TestParseKimiCodeSession_EmptyWireIgnored(t *testing.T) {
+	root := t.TempDir()
+	sessDir := filepath.Join(
+		root, "wd_my-app_aabbccddeeff",
+		"session_11111111-2222-3333-4444-555555555555")
+	wirePath := filepath.Join(sessDir, "agents", "main", "wire.jsonl")
+	require.NoError(t, writeKimiCodeTestFile(wirePath,
+		`{"type":"metadata","protocol_version":"1.4","created_at":1782441774650}`+"\n"))
+
+	result, err := ParseKimiCodeSession(
+		wirePath, "wd_my-app_aabbccddeeff", "test-machine")
+	require.NoError(t, err)
+	assert.Nil(t, result)
+}
+
+func TestParseKimiCodeSession_StepEndUsageFallback(t *testing.T) {
+	root := t.TempDir()
+	sessDir := filepath.Join(
+		root, "wd_my-app_aabbccddeeff",
+		"session_11111111-2222-3333-4444-555555555555")
+	wirePath := filepath.Join(sessDir, "agents", "main", "wire.jsonl")
+	// No usage.record lines; usage only on step.end.
+	wire := `{"type":"metadata","protocol_version":"1.4","created_at":1782441774650}
+{"type":"turn.prompt","input":[{"type":"text","text":"hi"}],"origin":{"kind":"user"},"time":1782441774677}
+{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"s1","turnId":"0","step":1},"time":1782441774678}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"p1","turnId":"0","step":1,"stepUuid":"s1","part":{"type":"text","text":"ok"}},"time":1782441774690}
+{"type":"context.append_loop_event","event":{"type":"step.end","uuid":"s1","turnId":"0","step":1,"usage":{"inputOther":10,"output":5,"inputCacheRead":7,"inputCacheCreation":3},"finishReason":"end_turn"},"time":1782441774700}
+`
+	require.NoError(t, writeKimiCodeTestFile(wirePath, wire))
+
+	result, err := ParseKimiCodeSession(
+		wirePath, "wd_my-app_aabbccddeeff", "test-machine")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Len(t, result.UsageEvents, 1)
+	assert.Equal(t, "step.end", result.UsageEvents[0].Source)
+	assert.Equal(t, 5, result.UsageEvents[0].OutputTokens)
+	assert.True(t, result.Session.HasTotalOutputTokens)
+	assert.Equal(t, 5, result.Session.TotalOutputTokens)
+	assert.True(t, result.Session.HasPeakContextTokens)
+	assert.Equal(t, 20, result.Session.PeakContextTokens)
+	assert.Equal(t, TokenAggregateUsageEvents,
+		result.Session.AggregateTokenSource)
+}
+
+func TestParseKimiCodeSession_SteerContextCard(t *testing.T) {
+	root := t.TempDir()
+	sessDir := filepath.Join(
+		root, "wd_my-app_aabbccddeeff",
+		"session_11111111-2222-3333-4444-555555555555")
+	wirePath := filepath.Join(sessDir, "agents", "main", "wire.jsonl")
+	wire := `{"type":"metadata","protocol_version":"1.4","created_at":1782441774650}
+{"type":"turn.prompt","input":[{"type":"text","text":"start"}],"origin":{"kind":"user"},"time":1782441774677}
+{"type":"turn.steer","input":[{"type":"text","text":"<notification>task failed</notification>"}],"origin":{"kind":"background_task","taskId":"bash-x","status":"failed"},"time":1782441774700}
+{"type":"turn.steer","input":[{"type":"text","text":"actually do Y instead"}],"origin":{"kind":"user"},"time":1782441774750}
+{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"s1","turnId":"0","step":1},"time":1782441774760}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"p1","turnId":"0","step":1,"stepUuid":"s1","part":{"type":"text","text":"done"}},"time":1782441774770}
+`
+	require.NoError(t, writeKimiCodeTestFile(wirePath, wire))
+
+	result, err := ParseKimiCodeSession(
+		wirePath, "wd_my-app_aabbccddeeff", "test-machine")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	require.Len(t, result.Messages, 4)
+	assert.Equal(t, "start", result.Messages[0].Content)
+	card := result.Messages[1]
+	assert.True(t, card.IsSystem)
+	assert.Equal(t, "background_task", card.SourceSubtype)
+	assert.Contains(t, card.Content, "task failed")
+	steer := result.Messages[2]
+	assert.Equal(t, RoleUser, steer.Role)
+	assert.False(t, steer.IsSystem)
+	assert.Equal(t, "actually do Y instead", steer.Content)
+	assert.Equal(t, 2, result.Session.UserMessageCount)
+}
