@@ -1,11 +1,28 @@
 # agentsview
 
+**English** | [简体中文](README.zh-CN.md)
+
 Browse, search, and track costs across all your AI coding agents. One binary, no
 accounts, everything local.
 
 <p align="center">
   <img src="https://agentsview.io/screenshots/dashboard.png" alt="Analytics dashboard" width="720">
 </p>
+
+## Why agentsview
+
+Your AI coding sessions are scattered across a dozen tools, directories, and
+file formats. agentsview pulls them into one place:
+
+- **One archive for every agent** — auto-discovers sessions from 30+ agents
+  (Claude Code, Codex, Cursor, Kimi, Copilot, ...) and indexes them into a local
+  SQLite database with FTS5 full-text search.
+- **Cost and token tracking** — daily and per-model costs across *all* your
+  agents, with cache-aware pricing. A fast local replacement for ccusage-style
+  tools.
+- **Local first** — a single binary, no accounts, no cloud. The server binds to
+  `127.0.0.1`; nothing leaves your machine unless you explicitly push it
+  (PostgreSQL, DuckDB, or Gist).
 
 ## Install
 
@@ -17,32 +34,248 @@ curl -fsSL https://agentsview.io/install.sh | bash
 powershell -ExecutionPolicy ByPass -c "irm https://agentsview.io/install.ps1 | iex"
 ```
 
-Or download the **desktop app** (macOS / Windows) from
-[GitHub Releases](https://github.com/kenn-io/agentsview/releases) or via
-homebrew: `brew install --cask agentsview`
-
-Or run the published Docker image:
+Or install the **AgentsView desktop app** (macOS / Windows) from
+[GitHub Releases](https://github.com/kenn-io/agentsview/releases), or via
+Homebrew:
 
 ```bash
-docker run --rm -p 127.0.0.1:8080:8080 \
-  -v agentsview-data:/data \
-  -v "$HOME/.claude/projects:/agents/claude:ro" \
-  -v "$HOME/.forge:/agents/forge:ro" \
-  -e CLAUDE_PROJECTS_DIR=/agents/claude \
-  -e FORGE_DIR=/agents/forge \
-  ghcr.io/kenn-io/agentsview:latest
+brew install --cask agentsview
 ```
 
-## Quick Start
+Or run the Docker image — see [Docker](#docker).
+
+## Quick start
 
 ```bash
-agentsview serve           # start server, open web UI
-agentsview usage daily     # print daily cost summary
+agentsview serve           # sync sessions and serve the web UI
+agentsview usage daily     # print a daily cost summary
 ```
 
 On first run, agentsview discovers sessions from every supported agent on your
-machine, syncs them into a local SQLite database, and opens a web UI at
-`http://127.0.0.1:8080`.
+machine, syncs them into a local SQLite archive, and serves the web UI at
+`http://127.0.0.1:8080`. From there, a file watcher plus a periodic sync every
+15 minutes keeps the archive current, and the UI updates live via SSE.
+
+Full documentation lives at **[agentsview.io](https://agentsview.io)**.
+
+## Feature tour
+
+### Browse and search every session
+
+| Dashboard                                                     | Session viewer                                                          |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| ![Dashboard](https://agentsview.io/screenshots/dashboard.png) | ![Session viewer](https://agentsview.io/screenshots/message-viewer.png) |
+
+| Search                                                          | Activity heatmap                                          |
+| --------------------------------------------------------------- | --------------------------------------------------------- |
+| ![Search](https://agentsview.io/screenshots/search-results.png) | ![Heatmap](https://agentsview.io/screenshots/heatmap.png) |
+
+- **Full-text search** across all message content (SQLite FTS5).
+- **Live updates** via SSE as active sessions receive new messages.
+- **Keyboard-first** navigation — `j`/`k`, `[`/`]`, `Cmd+K` search, `?` lists
+  all shortcuts.
+- **Context events** — stored system messages, resume/interruption markers,
+  command messages, and stop-hook feedback render as compact expandable cards,
+  kept distinct from normal user/assistant turns. agentsview only displays
+  context that the agent actually persisted; runtime prompts or hooks that are
+  never written to disk cannot be reconstructed.
+- **Resume commands** — the UI shows copyable terminal commands for supported
+  agents. It never executes local commands or attaches to terminals itself;
+  agents with unknown resume behavior are shown as unsupported rather than
+  receiving a fabricated command.
+- **Export** sessions as standalone HTML, or publish them to GitHub Gist.
+- Web UI available in English and 简体中文.
+
+### Track token usage and cost
+
+`agentsview usage` tracks token consumption and compute costs across **all**
+your coding agents — not just Claude Code. Because session data is already
+indexed in SQLite, queries are over 100x faster than tools that re-parse raw
+session files on every run.
+
+```bash
+agentsview usage daily                         # last 30 days (default)
+agentsview usage daily --breakdown             # per-model breakdown
+agentsview usage daily --agent claude --since 2026-04-01
+agentsview usage daily --all --json            # for scripting
+agentsview usage statusline                    # one-liner for shell prompts
+```
+
+- Automatic pricing via LiteLLM rates (with offline fallback)
+- Prompt-caching-aware cost calculation (cache creation / read tokens)
+- Droid sessions ingest token totals from each session's optional
+  `.settings.json` `tokenUsage` block; unpriced custom models still report token
+  counts and are listed under `unpriced_models`
+- Timezone-aware date bucketing (`--timezone`), plus date and agent filtering
+  (`--since`, `--until`, `--all`, `--agent`)
+- Works standalone — no server required
+
+Per-session numbers:
+
+```bash
+agentsview session usage <id>                  # tokens + cost estimate
+agentsview session usage <id> --format json
+```
+
+The same data is available over HTTP at `GET /api/v1/sessions/{id}/usage`.
+Existing sessions return `200` even when token or cost data is absent; missing
+sessions return `404`. The deprecated alias `agentsview token-use <id>` still
+works and also reports cost estimates.
+
+### Analytics
+
+```bash
+agentsview stats                 # human-readable summary, last 28 days
+agentsview stats --format json   # versioned v1 schema for downstream tools
+```
+
+`agentsview stats` reports window-scoped totals, session archetypes (automation
+vs. quick/standard/deep/marathon), distributions for duration, user-message
+count, peak context, and tools-per-turn, plus cache economics, tool/model/agent
+mix, and an hourly temporal breakdown. Git-derived outcome metrics are opt-in
+because they can be slow on large repos: `--include-git-outcomes`
+(commits/LOC/files changed) and `--include-github-outcomes` (PR counts via `gh`,
+also enables git outcomes).
+
+The web UI adds activity heatmaps, tool-usage and velocity charts, project
+breakdowns, token-generation-speed charts, and trend views.
+
+### Optional LLM features
+
+LLM features are off by default. Configure providers in the web UI (Settings) or
+via `[llm]` in `config.toml`:
+
+- `agentsview enrich` — offline LLM enrichment for local sessions (`--all`,
+  `--project`, `--force`, `--limit`).
+- **Semantic search** — vector search in the UI when an embedding provider is
+  configured.
+
+### Secrets scanning
+
+```bash
+agentsview secrets scan    # full-ruleset scan, persists findings
+agentsview secrets list    # list findings (redacted by default)
+```
+
+Scan results are also visible in the web UI.
+
+### Multi-machine and team setups
+
+- **Remote sync over SSH** — `agentsview sync --host <machine>` pulls session
+  files from remote machines; `[[remote_hosts]]` entries in the config fan out
+  to many.
+- **PostgreSQL** — push to a shared instance for team dashboards; see
+  [PostgreSQL sync](#postgresql-sync).
+- **DuckDB** — build a portable analytics mirror or serve remote read access
+  over Quack; see [DuckDB mirror and Quack](#duckdb-mirror-and-quack).
+
+## Supported agents
+
+agentsview auto-discovers sessions from all of these:
+
+| Agent              | Session Directory                                                           |
+| ------------------ | --------------------------------------------------------------------------- |
+| Claude Code        | `~/.claude/projects/`                                                       |
+| Codex              | `~/.codex/sessions/`, `~/.codex/archived_sessions/`                         |
+| Copilot            | `~/.copilot/`                                                               |
+| Gemini             | `~/.gemini/`                                                                |
+| Droid              | `~/.factory/sessions/`                                                      |
+| Kilo               | `~/.local/share/kilo/`                                                      |
+| OpenCode           | `~/.local/share/opencode/`                                                  |
+| OpenHands CLI      | `~/.openhands/conversations/`                                               |
+| Cursor             | `~/.cursor/projects/`                                                       |
+| Amp                | `~/.local/share/amp/threads/`                                               |
+| iFlow              | `~/.iflow/projects/`                                                        |
+| Zencoder           | `~/.zencoder/sessions/`                                                     |
+| Command Code       | `~/.commandcode/projects/`                                                  |
+| OpenClaw           | `~/.openclaw/agents/`                                                       |
+| QClaw              | `~/.qclaw/agents/`                                                          |
+| Kimi               | `~/.kimi/sessions/`                                                         |
+| Kiro               | `~/.kiro/sessions/cli/`, `~/.local/share/kiro-cli/`                         |
+| Kiro IDE           | `Kiro/User/globalStorage/kiro.kiroagent/` under the per-OS config root      |
+| Cortex Code        | `~/.snowflake/cortex/conversations/`                                        |
+| Hermes Agent       | `~/.hermes/sessions/`                                                       |
+| WorkBuddy          | `~/.workbuddy/projects/`                                                    |
+| Pi                 | `~/.pi/agent/sessions/`                                                     |
+| Qwen Code          | `~/.qwen/projects/`                                                         |
+| Forge              | `~/.forge/`                                                                 |
+| Piebald            | `~/.local/share/piebald/` (Linux; per-OS app-data dir elsewhere)            |
+| Warp               | per-OS app-data dir (e.g. Linux `~/.local/state/warp-terminal/`)            |
+| Positron Assistant | `~/Library/Application Support/Positron/User/` (macOS)                      |
+| Zed                | `~/Library/Application Support/Zed/` (macOS), `~/.local/share/zed/` (Linux) |
+| VSCode Copilot     | VS Code user-data dir on all OSes (Code, Insiders, VSCodium)                |
+| Antigravity        | `~/.gemini/antigravity/`                                                    |
+| Antigravity CLI    | `~/.gemini/antigravity-cli/` (see note below)                               |
+| Claude.ai          | not file-based — `agentsview import --type claude-ai <path>`                |
+| ChatGPT            | not file-based — `agentsview import --type chatgpt <path>`                  |
+
+Each directory can be overridden with an environment variable — see the
+[configuration docs](https://agentsview.io/configuration/) for the per-agent
+variable names. Multi-directory setups are supported, for example:
+
+```toml
+droid_sessions_dirs = ["/factory/sessions/a", "/factory/sessions/b"]
+kilo_dirs = ["/Users/me/.local/share/kilo", "/Volumes/work/kilo"]
+```
+
+Notes:
+
+- **Droid** parsing reads the JSONL transcript and, when present, the sibling
+  `<session-id>.settings.json` file for usage totals (`inputTokens`,
+  `outputTokens`, cache creation/read tokens, thinking tokens). Archive session
+  IDs use the `droid:` prefix. Source files are read-only inputs; agentsview
+  stores parsed records in its own archive and never writes back.
+- **Kilo** archive IDs use the `kilo:` prefix; the resume command strips it:
+  `kilo --session <session-id>`.
+- **Claude.ai / ChatGPT** have no on-disk session files; import conversation
+  exports with `agentsview import --type <type> <path>`.
+
+### Antigravity CLI: high-resolution transcripts
+
+Antigravity CLI sessions appear in two on-disk formats. Newer releases store
+conversation trajectories as SQLite `.db` files, which agentsview indexes
+directly. Older releases stored assistant turns and tool calls in
+AES-GCM-encrypted `.pb` files; for those sessions, agentsview falls back to
+**summary mode** using your prompts from `history.jsonl` plus any plain-text
+artifacts under `brain/` (plans, walkthroughs, checkpoints).
+
+To unlock full transcripts for older `.pb` sessions, run
+[agy-reader](https://github.com/mjacobs/agy-reader) alongside agentsview. It
+talks to the local Antigravity daemon, decrypts each conversation, and writes a
+`<uuid>.trajectory.json` sidecar next to the encrypted `.pb` file. agentsview's
+file watcher detects the sidecar automatically and parses it in place of summary
+mode — no restart needed:
+
+```bash
+go install github.com/mjacobs/agy-reader@latest
+agy-reader --sync     # generate sidecars for existing sessions
+agy-reader --watch    # ...or keep them fresh as you work
+```
+
+Sidecars stay on your machine. agentsview makes no outbound request to produce
+or read them, and treats sidecars as untrusted structured input — see
+[SECURITY.md](SECURITY.md) for the trust model.
+
+## CLI at a glance
+
+| Command                                       | What it does                                                                          |
+| --------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `agentsview serve`                            | Start the server and web UI (default port 8080)                                       |
+| `agentsview sync`                             | Sync session data without serving (`--host` for SSH)                                  |
+| `agentsview usage daily` / `usage statusline` | Token cost reports                                                                    |
+| `agentsview stats`                            | Window-scoped analytics (default: last 28 days)                                       |
+| `agentsview session ...`                      | `list`, `get`, `messages`, `tool-calls`, `search`, `usage`, `watch`, `export`, `sync` |
+| `agentsview import --type <type> <path>`      | Import Claude.ai / ChatGPT exports                                                    |
+| `agentsview enrich`                           | Offline LLM enrichment (needs `[llm]` config)                                         |
+| `agentsview secrets scan` / `secrets list`    | Detect leaked secrets in sessions                                                     |
+| `agentsview prune`                            | Delete sessions matching filters (`--dry-run` first)                                  |
+| `agentsview projects` / `health`              | List projects; show session health signals                                            |
+| `agentsview pg ...`                           | PostgreSQL: `push`, `status`, `serve`, `service`                                      |
+| `agentsview duckdb ...`                       | DuckDB: `push`, `status`, `serve`, `quack serve`                                      |
+| `agentsview update` / `version`               | Self-update and version info                                                          |
+| `agentsview openapi`                          | Print the REST API's OpenAPI 3.1 schema                                               |
+
+Run `agentsview <command> --help` for the full flag list.
 
 ## Remote / forwarded access
 
@@ -50,10 +283,10 @@ agentsview binds to loopback and validates the request `Host` header to guard
 against DNS-rebinding attacks. When you reach it through SSH port-forwarding, a
 reverse proxy, or a remote dev environment (exe.dev, Codespaces, Coder, WSL2),
 the browser sends a `Host` that the server does not recognize, so API requests
-such as `/api/v1/settings` are rejected with `403 Forbidden`.
+are rejected with `403 Forbidden` (the response body explains the fix).
 
-To fix this, restart the server with `--public-url` set to the exact origin you
-open in the browser:
+Restart the server with `--public-url` set to the exact origin you open in the
+browser:
 
 ```bash
 # Browser opens http://127.0.0.1:18080 via `ssh -L 18080:127.0.0.1:8080 host`
@@ -69,326 +302,35 @@ browser origins. If you expose the UI beyond loopback, also enable
 
 ## Docker
 
-The container image defaults to local `agentsview serve`. Set `PG_SERVE=1` to
-switch the startup command to `agentsview pg serve` instead.
+```bash
+docker run --rm -p 127.0.0.1:8080:8080 \
+  -v agentsview-data:/data \
+  -v "$HOME/.claude/projects:/agents/claude:ro" \
+  -v "$HOME/.forge:/agents/forge:ro" \
+  -e CLAUDE_PROJECTS_DIR=/agents/claude \
+  -e FORGE_DIR=/agents/forge \
+  ghcr.io/kenn-io/agentsview:latest
+```
 
+A containerized agentsview can only discover agent sessions from directories you
+explicitly mount into the container and point at with the matching env var.
 `docker-compose.prod.yaml` is included as a production example:
 
 ```bash
 docker compose -f docker-compose.prod.yaml up -d
 ```
 
-The included compose file persists the agentsview data directory in a named
-volume and mounts Claude, Codex, Forge, and OpenCode session roots read-only.
-The container runs as root, so prefer a named volume for `/data` over a host
-bind mount; if you do bind-mount, pre-create the directory with the desired
-ownership to avoid root-owned files in your home directory.
-
-The examples publish the UI on loopback only (`127.0.0.1`). If you need to
-expose it beyond localhost, enable `--require-auth` and publish the port
-intentionally.
-
-Important: a containerized agentsview instance can only discover agent sessions
-from directories you explicitly mount into the container. If you do not mount an
-agent's session directory and point the matching env var at it, that agent will
-not appear in the UI.
-
-Example PostgreSQL-backed startup:
-
-```bash
-docker run --rm -p 127.0.0.1:8080:8080 \
-  -e PG_SERVE=1 \
-  -e AGENTSVIEW_PG_URL='postgres://user:password@postgres.example.com:5432/agentsview?sslmode=require' \
-  ghcr.io/kenn-io/agentsview:latest
-```
-
-Example DuckDB mirror startup:
-
-```bash
-# Populate /data/sessions.duckdb from the mounted SQLite archive.
-docker run --rm \
-  -v agentsview-data:/data \
-  -v "$HOME/.claude/projects:/agents/claude:ro" \
-  -e CLAUDE_PROJECTS_DIR=/agents/claude \
-  ghcr.io/kenn-io/agentsview:latest duckdb push --full
-
-# Serve the populated mirror read-only.
-docker run --rm -p 127.0.0.1:8080:8080 \
-  -v agentsview-data:/data \
-  ghcr.io/kenn-io/agentsview:latest duckdb serve
-```
-
-Example Quack startup:
-
-```bash
-# Expose the local DuckDB mirror over Quack from the host/container.
-QUACK_TOKEN="$(openssl rand -base64 32)"
-docker run --rm -p 127.0.0.1:9494:9494 \
-  -v agentsview-data:/data \
-  ghcr.io/kenn-io/agentsview:latest \
-  duckdb quack serve \
-    --bind quack:0.0.0.0:9494 \
-    --token "$QUACK_TOKEN" \
-    --allow-insecure
-
-# Serve the web UI from a remote Quack endpoint.
-docker run --rm -p 127.0.0.1:8080:8080 \
-  -e AGENTSVIEW_DUCKDB_URL='quack:https://duckdb.example.com' \
-  -e AGENTSVIEW_DUCKDB_TOKEN="$QUACK_TOKEN" \
-  ghcr.io/kenn-io/agentsview:latest duckdb serve
-```
-
-Keep Quack on loopback or behind TLS. Plain HTTP Quack on a non-loopback bind
-requires `--allow-insecure` and should only be used behind a trusted tunnel or
-reverse proxy.
-
-## Token Usage and Cost Tracking
-
-`agentsview usage` is a fast, local replacement for ccusage and similar tools.
-It tracks token consumption and compute costs across **all** your coding agents
--- not just Claude Code. Because session data is already indexed in SQLite,
-queries are over 100x faster than tools that re-parse raw session files on every
-run.
-
-```bash
-# Daily cost summary (default: last 30 days)
-agentsview usage daily
-
-# Per-model breakdown
-agentsview usage daily --breakdown
-
-# Filter by agent and date range
-agentsview usage daily --agent claude --since 2026-04-01
-
-# One-line summary for shell prompts / status bars
-agentsview usage daily --all --json
-agentsview usage statusline
-```
-
-Features:
-
-- Automatic pricing via LiteLLM rates (with offline fallback)
-- Prompt-caching-aware cost calculation (cache creation / read tokens)
-- Droid token ingestion from each session's optional `.settings.json`
-  `tokenUsage` block
-- Per-model breakdown with `--breakdown`
-- Date filtering (`--since`, `--until`, `--all`), agent filtering (`--agent`)
-- JSON output (`--json`) for scripting
-- Timezone-aware date bucketing (`--timezone`)
-- Works standalone -- no server required, just run the command
-
-Droid sessions can report token totals even when pricing is unavailable for a
-custom model name. In that case the token counts still appear in usage output,
-while cost fields remain unset or the model is listed under `unpriced_models`.
-
-## Per-Session Details
-
-`agentsview session usage <id>` prints per-session token statistics plus a cost
-estimate for a single session. The output reports the session's total output
-tokens and peak context tokens, plus a cost estimate in USD (`cost_usd`) when
-pricing is available for the session's model(s) (`has_cost`). Cost is computed
-from input/output and cache tokens internally, but only the output-token and
-peak-context totals are reported alongside the cost.
-
-```bash
-# Print token usage and cost for a specific session
-agentsview session usage <id>
-
-# JSON output for scripting
-agentsview session usage <id> --format json
-```
-
-The same per-session usage data is available from the REST API:
-
-```bash
-GET /api/v1/sessions/{id}/usage
-```
-
-The response includes the `session_id`, `agent`, `project`,
-`total_output_tokens`, `peak_context_tokens`, `has_token_data`, `cost_usd`,
-`has_cost`, `models`, and `unpriced_models` fields from the CLI JSON schema.
-HTTP responses also include `server_running: true`. Existing sessions return
-`200` even when token or cost data is absent; missing sessions return `404`.
-
-The deprecated alias `agentsview token-use <id>` remains available for
-compatibility and now also reports cost estimates.
-
-Droid archive session IDs use the `droid:` prefix. For example, a Droid source
-file named `abc123.jsonl` is stored as `droid:abc123`, and per-session commands
-accept that prefixed ID.
-
-## Session Stats
-
-`agentsview stats` emits window-scoped analytics over recorded sessions: totals,
-archetypes (automation vs. quick/standard/deep/marathon), distributions for
-session duration, user-message count, peak context, and tools-per-turn, plus
-cache economics, tool/model/agent mix, and a temporal hourly breakdown. The
-`--format json` output follows a versioned v1 schema (`schema_version: 1`)
-suitable for downstream consumers.
-
-By default, `stats` only reads the local SQLite archive. Git-derived outcome
-metrics are opt-in because they can be slow or brittle on large/missing repos:
-use `--include-git-outcomes` for commits/LOC/files changed, and
-`--include-github-outcomes` for GitHub PR counts via `gh` (this also enables git
-outcomes).
-
-```bash
-# Human-readable summary over the last 28 days
-agentsview stats
-
-# Machine-readable JSON over a fixed date range
-agentsview stats --format json --since 2026-04-01 --until 2026-04-15
-
-# Restrict to one agent and inspect the schema
-agentsview stats --format json --agent claude | jq '.schema_version'
-
-# Include expensive local git outcome metrics explicitly
-agentsview stats --include-git-outcomes
-```
-
-## Session Browser
-
-| Dashboard                                                     | Session viewer                                                          |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| ![Dashboard](https://agentsview.io/screenshots/dashboard.png) | ![Session viewer](https://agentsview.io/screenshots/message-viewer.png) |
-
-| Search                                                          | Activity heatmap                                          |
-| --------------------------------------------------------------- | --------------------------------------------------------- |
-| ![Search](https://agentsview.io/screenshots/search-results.png) | ![Heatmap](https://agentsview.io/screenshots/heatmap.png) |
-
-- **Full-text search** across all message content (FTS5)
-- **Token usage and cost dashboard** -- per-session and per-model cost
-  breakdowns, daily spend charts, all in the web UI
-- **Analytics dashboard** -- activity heatmaps, tool usage, velocity metrics,
-  project breakdowns
-- **Live updates** via SSE as active sessions receive new messages
-- **Keyboard-first** navigation (`j`/`k`/`[`/`]`, `Cmd+K` search, `?` for all
-  shortcuts)
-- **Export** sessions as HTML or publish to GitHub Gist
-
-### System and Context Events
-
-Session transcripts show persisted system/context events that agentsview can
-parse from source data, including stored system messages, resume/interruption
-markers, command messages, stop-hook feedback, and parser-provided context
-events such as Droid `session_start` metadata. These events render as compact,
-expandable context cards so they stay visible without being confused with normal
-user or assistant turns.
-
-agentsview only displays context surfaces that are present in the original agent
-data or already stored in the local archive. Runtime prompts, hooks, or injected
-instructions that an agent does not persist cannot be reconstructed by
-agentsview.
-
-### Resume Commands
-
-The browser presents copyable terminal commands for supported agents; it does not
-execute local commands, attach to terminals, or resume interactive sessions
-directly. Run the copied command in your own terminal.
-
-For Kilo, stored session IDs use the `kilo:` archive prefix, but the resume
-command uses the raw session ID after that prefix is stripped:
-
-```bash
-kilo --session <session-id>
-```
-
-Agents with unknown or unsupported resume behavior are shown as unsupported or
-unknown instead of receiving a fabricated command.
-
-## Supported Agents
-
-agentsview auto-discovers sessions from all of these:
-
-| Agent              | Session Directory                                      |
-| ------------------ | ------------------------------------------------------ |
-| Claude Code        | `~/.claude/projects/`                                  |
-| Codex              | `~/.codex/sessions/`                                   |
-| Copilot CLI        | `~/.copilot/`                                          |
-| Gemini CLI         | `~/.gemini/`                                           |
-| Droid              | `~/.factory/sessions/`                                 |
-| Kilo               | `~/.local/share/kilo/`                                 |
-| OpenCode           | `~/.local/share/opencode/`                             |
-| OpenHands CLI      | `~/.openhands/conversations/`                          |
-| Cursor             | `~/.cursor/projects/`                                  |
-| Amp                | `~/.local/share/amp/threads/`                          |
-| iFlow              | `~/.iflow/projects/`                                   |
-| Zencoder           | `~/.zencoder/sessions/`                                |
-| Zed                | `~/Library/Application Support/Zed/` (macOS)           |
-| VSCode Copilot     | `~/Library/Application Support/Code/User/` (macOS)     |
-| Pi                 | `~/.pi/agent/sessions/`                                |
-| Qwen Code          | `~/.qwen/projects/`                                    |
-| OpenClaw           | `~/.openclaw/agents/`                                  |
-| QClaw              | `~/.qclaw/agents/`                                     |
-| Kimi               | `~/.kimi/sessions/`                                    |
-| Kiro CLI           | `~/.kiro/sessions/cli/`, `~/.local/share/kiro-cli/`    |
-| Kiro IDE           | `~/Library/Application Support/Kiro/` (macOS)          |
-| Cortex Code        | `~/.snowflake/cortex/conversations/`                   |
-| Hermes Agent       | `~/.hermes/sessions/`                                  |
-| WorkBuddy          | `~/.workbuddy/projects/`                               |
-| Forge              | `~/.forge/`                                            |
-| Piebald            | `~/.local/share/piebald/`                              |
-| Warp               | `~/.warp/` (platform-dependent)                        |
-| Positron Assistant | `~/Library/Application Support/Positron/User/` (macOS) |
-| Antigravity        | `~/.gemini/antigravity/`                               |
-| Antigravity CLI    | `~/.gemini/antigravity-cli/` (see note below)          |
-
-Each directory can be overridden with an environment variable. Droid uses
-`DROID_SESSIONS_DIR` with config key `droid_sessions_dirs`. Kilo uses `KILO_DIR`,
-and the config key follows the existing multi-directory convention as
-`kilo_dirs`. See the [configuration docs](https://agentsview.io/configuration/)
-for details. Droid, Kilo, Kiro CLI, and Kiro IDE are distinct agents with
-separate directory defaults and configuration keys.
-
-Example multi-directory configuration:
-
-```toml
-droid_sessions_dirs = ["/factory/sessions/a", "/factory/sessions/b"]
-kilo_dirs = ["/Users/me/.local/share/kilo", "/Volumes/work/kilo"]
-```
-
-Droid parsing reads the JSONL transcript and, when present, the sibling
-`<session-id>.settings.json` file for usage totals. The settings file may provide
-`inputTokens`, `outputTokens`, cache creation/read tokens, and thinking tokens.
-The source files are read-only inputs; agentsview stores parsed records in its
-own local archive and does not write changes back to Droid or Kilo data stores.
-
-### Antigravity CLI: high-resolution transcripts
-
-Antigravity CLI sessions now appear in two on-disk formats. Newer releases store
-conversation trajectories as SQLite `.db` files, which agentsview indexes
-directly. Older releases stored assistant turns and tool calls in
-AES-GCM-encrypted `.pb` files; for those sessions, agentsview falls back to
-**summary mode** using your prompts from `history.jsonl` plus any plain-text
-artifacts under `brain/` (plans, walkthroughs, checkpoints).
-
-To unlock full transcripts for older `.pb` sessions, run
-[agy-reader](https://github.com/mjacobs/agy-reader) alongside agentsview.
-agy-reader talks to the local Antigravity daemon, decrypts each conversation,
-and writes a `<uuid>.trajectory.json` sidecar next to the encrypted `.pb` file.
-agentsview's file watcher detects the sidecar automatically and parses it in
-place of summary mode -- no agentsview restart needed.
-
-```bash
-go install github.com/mjacobs/agy-reader@latest
-
-# Generate sidecars for existing sessions...
-agy-reader --sync
-
-# ...or keep them fresh as you work.
-agy-reader --watch
-```
-
-agy-reader auto-discovers the Antigravity daemon URL by parsing
-`~/.gemini/antigravity-cli/cli.log`. If discovery fails (e.g. the log has
-rotated), the command prints platform-specific instructions for locating the
-port and exporting `ANTIGRAVITY_DAEMON_URL` manually.
-
-Sidecars stay on your machine. agentsview makes no outbound request to produce
-or read them, and treats sidecars as untrusted structured input -- see
-[SECURITY.md](SECURITY.md) for the trust model.
-
-## PostgreSQL Sync
+Notes:
+
+- The container runs as root, so prefer a named volume for `/data` over a host
+  bind mount; if you do bind-mount, pre-create the directory with the desired
+  ownership to avoid root-owned files in your home directory.
+- The examples publish the UI on loopback only (`127.0.0.1`). To expose it
+  beyond localhost, enable `--require-auth` and publish the port intentionally.
+- Set `PG_SERVE=1` to switch the startup command to `agentsview pg serve` (with
+  `AGENTSVIEW_PG_URL` pointing at your instance).
+
+## PostgreSQL sync
 
 Push session data to a shared PostgreSQL instance for team dashboards:
 
@@ -397,11 +339,9 @@ agentsview pg push       # push local data to PG
 agentsview pg serve      # serve web UI from PG (read-only)
 ```
 
-### Automatic push (background service)
-
-To keep a shared PostgreSQL database current without running `pg push` by hand,
-run the auto-push daemon. It watches your session directories and pushes shortly
-after new sessions are recorded, with a periodic floor as a safety net:
+To keep a shared database current without running `pg push` by hand, run the
+auto-push daemon. It watches your session directories and pushes shortly after
+new sessions are recorded, with a periodic floor as a safety net:
 
 ```bash
 agentsview pg push --watch                 # foreground, Ctrl-C to stop
@@ -409,36 +349,25 @@ agentsview pg push --watch --debounce 1m   # custom coalesce window
 agentsview pg push --watch --interval 5m   # custom floor interval
 ```
 
-The daemon reads the same `[pg]` config as `pg push`, so the PostgreSQL DSN must
-be set in your config file (or an environment variable it expands). Protect the
-config file, since it holds credentials:
-
-```bash
-chmod 600 ~/.agentsview/config.toml
-```
-
 To run it unattended as an OS service (launchd on macOS, `systemd --user` on
 Linux):
 
 ```bash
 agentsview pg service install     # generate the unit, enable + start it
-agentsview pg service status      # show manager status
+agentsview pg service status      # show manager status (also start/stop)
 agentsview pg service logs -f     # follow the service log
 agentsview pg service uninstall   # stop and remove
 ```
 
-**Linux headless machines:** systemd `--user` services stop at logout and do not
-start at boot unless lingering is enabled for your user. `install` detects this
-and prints the command; you can also run it yourself:
+The daemon reads the same `[pg]` config as `pg push`, so the PostgreSQL DSN must
+be set in your config file. Protect it, since it holds credentials:
+`chmod 600 ~/.agentsview/config.toml`.
 
-```bash
-loginctl enable-linger "$USER"
-```
+**Linux headless machines:** systemd `--user` services stop at logout unless
+lingering is enabled: `loginctl enable-linger "$USER"`. See the
+[PostgreSQL docs](https://agentsview.io/postgresql/) for setup.
 
-See [PostgreSQL docs](https://agentsview.io/postgresql/) for setup and
-configuration.
-
-## DuckDB Mirror and Quack
+## DuckDB mirror and Quack
 
 DuckDB support is a mirror backend, not a replacement for the local SQLite
 archive. `agentsview serve` still performs primary ingestion into SQLite. Use
@@ -452,32 +381,21 @@ agentsview duckdb serve         # serve web UI from DuckDB (read-only)
 agentsview duckdb quack serve   # expose the local DuckDB file over Quack
 ```
 
-`agentsview duckdb serve` reads `[duckdb].path` or `AGENTSVIEW_DUCKDB_PATH`. To
-serve from a remote Quack endpoint, set `AGENTSVIEW_DUCKDB_URL` and
-`AGENTSVIEW_DUCKDB_TOKEN` instead. Quack is still a new DuckDB protocol, so
-agentsview keeps conservative defaults: local Quack serving binds to loopback,
-requires a token, and rejects non-loopback plain HTTP unless `--allow-insecure`
-is explicit. For remote use, prefer a TLS URL or put Quack behind an
-authenticated tunnel/proxy.
+`duckdb serve` reads `[duckdb].path` or `AGENTSVIEW_DUCKDB_PATH`. To serve from
+a remote Quack endpoint, set `AGENTSVIEW_DUCKDB_URL` and
+`AGENTSVIEW_DUCKDB_TOKEN` instead. Quack is still a new protocol, so agentsview
+keeps conservative defaults: local Quack serving binds to loopback, requires a
+token, and rejects non-loopback plain HTTP unless `--allow-insecure` is
+explicit. For remote use, prefer a TLS URL or put Quack behind an authenticated
+tunnel/proxy.
 
-Backend modes:
+Backend modes at a glance:
 
-- SQLite: primary local archive, file sync, FTS5 search, and writable UI.
-- PostgreSQL: optional shared team backend; push from SQLite, serve read-only.
-- DuckDB: optional mirror file or Quack endpoint; push from SQLite, serve
+- **SQLite**: primary local archive — file sync, FTS5 search, writable UI.
+- **PostgreSQL**: optional shared team backend — push from SQLite, serve
   read-only.
-
-Troubleshooting:
-
-- If `duckdb push` fails to open the mirror, confirm the binary was built with
-  the DuckDB Go driver for your platform and that `AGENTSVIEW_DUCKDB_PATH`
-  points to a writable file location.
-- If Quack commands fail with extension errors, update the agentsview binary so
-  the embedded DuckDB runtime includes the Quack extension.
-- If a remote attach fails, check the token, the `quack:` URL, TLS/proxy
-  termination, and whether the server was intentionally started with
-  `--allow-insecure` for plain non-loopback binds.
-- DuckDB search currently uses substring/regex fallback behavior. SQLite FTS5
+- **DuckDB**: optional mirror file or Quack endpoint — push from SQLite, serve
+  read-only. DuckDB search currently uses substring/regex fallback; SQLite FTS5
   remains the indexed search path for primary local serving.
 
 ## Privacy
@@ -495,20 +413,9 @@ All session data stays on your machine. The server binds to `127.0.0.1` by
 default. The update check is optional and can be disabled with
 `--no-update-check`.
 
-## Documentation
-
-Full docs at **[agentsview.io](https://agentsview.io)**:
-[Quick Start](https://agentsview.io/quickstart/) --
-[Usage Guide](https://agentsview.io/usage/) --
-[CLI Reference](https://agentsview.io/commands/) --
-[Configuration](https://agentsview.io/configuration/) --
-[Architecture](https://agentsview.io/architecture/)
-
-______________________________________________________________________
-
 ## Development
 
-Requires Go 1.26+ (CGO), Node.js 22+.
+Requires Go 1.26+ (CGO) and Node.js 22+.
 
 ```bash
 make dev            # Go server (dev mode)
@@ -519,24 +426,15 @@ make install        # install to ~/.local/bin
 
 ```bash
 make test           # Go tests (CGO_ENABLED=1 -tags "fts5,kit_posthog_disabled")
-make bench-backends # compare SQLite, DuckDB, and PostgreSQL store reads
 make lint           # golangci-lint + NilAway
-make nilaway        # NilAway through custom golangci-lint
 make e2e            # Playwright E2E tests
+make bench-backends # compare SQLite, DuckDB, and PostgreSQL reads (needs Docker)
 ```
 
-`make bench-backends` requires Docker. It starts a PostgreSQL container with
-testcontainers, mirrors the same SQLite fixture into DuckDB and PostgreSQL, and
-benchmarks the shared `db.Store` read queries for relative comparison. The
-default fixture is 1,000 sessions and 64,000 messages; use
-`BENCH_BACKENDS_SESSIONS` and `BENCH_BACKENDS_MESSAGES_PER_SESSION` to scale it.
-When the Docker CLI uses a non-default socket, export `DOCKER_HOST` for that
-socket before running the benchmark.
-
 Pre-commit hooks via [prek](https://github.com/j178/prek): run `make lint-tools`
-and `make install-hooks` after cloning (requires `prek` and `uv`).
+and `make install-hooks` after cloning.
 
-### Project Layout
+### Project layout
 
 ```
 cmd/agentsview/     CLI entrypoint
@@ -544,6 +442,15 @@ internal/           Go packages (config, db, parser, server, sync, postgres)
 frontend/           Svelte 5 SPA (Vite, TypeScript)
 desktop/            Tauri desktop wrapper
 ```
+
+## Documentation
+
+Full docs at **[agentsview.io](https://agentsview.io)**:
+[Quick Start](https://agentsview.io/quickstart/) --
+[Usage Guide](https://agentsview.io/usage/) --
+[CLI Reference](https://agentsview.io/commands/) --
+[Configuration](https://agentsview.io/configuration/) --
+[Architecture](https://agentsview.io/architecture/)
 
 ## Acknowledgements
 
