@@ -6,7 +6,7 @@ Browse, search, and track costs across all your AI coding agents. One binary, no
 accounts, everything local.
 
 <p align="center">
-  <img src="https://agentsview.io/screenshots/dashboard.png" alt="Analytics dashboard" width="720">
+  <img src="docs/screenshots/dashboard.png" alt="Analytics dashboard" width="720">
 </p>
 
 ## Why agentsview
@@ -32,6 +32,9 @@ curl -fsSL https://agentsview.io/install.sh | bash
 
 # Windows
 powershell -ExecutionPolicy ByPass -c "irm https://agentsview.io/install.ps1 | iex"
+
+# Python (PyPI wheel wrapping the native binary)
+pip install agentsview    # or run instantly: uvx agentsview
 ```
 
 Or install the **AgentsView desktop app** (macOS / Windows) from
@@ -62,13 +65,13 @@ Full documentation lives at **[agentsview.io](https://agentsview.io)**.
 
 ### Browse and search every session
 
-| Dashboard                                                     | Session viewer                                                          |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| ![Dashboard](https://agentsview.io/screenshots/dashboard.png) | ![Session viewer](https://agentsview.io/screenshots/message-viewer.png) |
+| Dashboard                                    | Session viewer                                         |
+| -------------------------------------------- | ------------------------------------------------------ |
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Session viewer](docs/screenshots/message-viewer.png) |
 
-| Search                                                          | Activity heatmap                                          |
-| --------------------------------------------------------------- | --------------------------------------------------------- |
-| ![Search](https://agentsview.io/screenshots/search-results.png) | ![Heatmap](https://agentsview.io/screenshots/heatmap.png) |
+| Search                                         | Activity heatmap                         |
+| ---------------------------------------------- | ---------------------------------------- |
+| ![Search](docs/screenshots/search-results.png) | ![Heatmap](docs/screenshots/heatmap.png) |
 
 - **Full-text search** across all message content (SQLite FTS5).
 - **Live updates** via SSE as active sessions receive new messages.

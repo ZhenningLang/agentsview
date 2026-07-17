@@ -5,7 +5,7 @@
 浏览、搜索你所有 AI 编程 agent 的会话，并统计 token 花费。单一二进制，无需账号，一切尽在本地。
 
 <p align="center">
-  <img src="https://agentsview.io/screenshots/dashboard.png" alt="分析仪表盘" width="720">
+  <img src="docs/screenshots/dashboard.png" alt="分析仪表盘" width="720">
 </p>
 
 ## 为什么用 agentsview
@@ -26,6 +26,9 @@ curl -fsSL https://agentsview.io/install.sh | bash
 
 # Windows
 powershell -ExecutionPolicy ByPass -c "irm https://agentsview.io/install.ps1 | iex"
+
+# Python（PyPI wheel，封装原生二进制）
+pip install agentsview    # 或免安装直接运行：uvx agentsview
 ```
 
 也可以安装 **AgentsView 桌面应用**（macOS / Windows）：从
@@ -55,13 +58,13 @@ agentsview usage daily     # 打印按天费用汇总
 
 ### 浏览和搜索所有会话
 
-| 仪表盘                                                        | 会话查看器                                                              |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| ![Dashboard](https://agentsview.io/screenshots/dashboard.png) | ![Session viewer](https://agentsview.io/screenshots/message-viewer.png) |
+| 仪表盘                                       | 会话查看器                                             |
+| -------------------------------------------- | ------------------------------------------------------ |
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Session viewer](docs/screenshots/message-viewer.png) |
 
-| 搜索                                                            | 活动热力图                                                |
-| --------------------------------------------------------------- | --------------------------------------------------------- |
-| ![Search](https://agentsview.io/screenshots/search-results.png) | ![Heatmap](https://agentsview.io/screenshots/heatmap.png) |
+| 搜索                                           | 活动热力图                               |
+| ---------------------------------------------- | ---------------------------------------- |
+| ![Search](docs/screenshots/search-results.png) | ![Heatmap](docs/screenshots/heatmap.png) |
 
 - **全文搜索**：覆盖所有消息内容（SQLite FTS5）。
 - **实时更新**：活跃会话收到新消息时通过 SSE 即时刷新。
