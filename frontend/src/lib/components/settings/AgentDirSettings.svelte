@@ -19,6 +19,7 @@
     qclaw: "QClaw",
     zed: "Zed",
     kimi: "Kimi",
+    kimicode: "Kimi Code",
     workbuddy: "WorkBuddy",
     piebald: "Piebald",
     antigravity: "Antigravity",

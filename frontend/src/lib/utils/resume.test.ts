@@ -15,6 +15,7 @@ describe("supportsResume", () => {
     expect(supportsResume("opencode")).toBe(true);
     expect(supportsResume("amp")).toBe(true);
     expect(supportsResume("kilo")).toBe(true);
+    expect(supportsResume("kimicode")).toBe(true);
   });
 
   it("returns false for unsupported agents", () => {
@@ -70,6 +71,24 @@ describe("buildResumeCommand", () => {
     expect(
       buildResumeCommand("kilo", "kilo:ses_kilo"),
     ).toBe("kilo --session ses_kilo");
+  });
+
+  it("generates kimi code resume command", () => {
+    expect(
+      buildResumeCommand(
+        "kimicode",
+        "kimicode:session_11111111-2222-3333-4444-555555555555",
+      ),
+    ).toBe("kimi --session session_11111111-2222-3333-4444-555555555555");
+  });
+
+  it("kimi code subagent resumes the parent session", () => {
+    expect(
+      buildResumeCommand(
+        "kimicode",
+        "kimicode:session_11111111-2222-3333-4444-555555555555:agent-0",
+      ),
+    ).toBe("kimi --session session_11111111-2222-3333-4444-555555555555");
   });
 
   it("strips agent prefix from compound IDs", () => {

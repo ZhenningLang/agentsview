@@ -26,6 +26,7 @@ describe("KNOWN_AGENTS", () => {
       "qclaw",
       "iflow",
       "kimi",
+      "kimicode",
       "claude-ai",
       "chatgpt",
       "kiro",
