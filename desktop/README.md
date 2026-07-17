@@ -30,6 +30,13 @@ The `prepare-sidecar` step runs automatically for `tauri:dev` and `tauri:build`.
 It builds `agentsview` and copies it to
 `src-tauri/binaries/agentsview-<target-triple>`.
 
+The macOS build scripts end with `reseal-macos-app.sh`, which ad-hoc
+reseals the `.app` when the bundler left it unsealed (for example when
+updater signing fails because `TAURI_SIGNING_PRIVATE_KEY` is unset).
+macOS 26.4+ flags unsealed bundles at launch with a misleading "Intel
+app support is ending" notification even though all binaries are
+arm64-native.
+
 The macOS `.app` bundle is written to
 `src-tauri/target/release/bundle/macos/AgentsView.app`.
 
