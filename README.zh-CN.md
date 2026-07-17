@@ -164,6 +164,7 @@ agentsview 会自动发现以下所有 agent 的会话：
 | OpenClaw           | `~/.openclaw/agents/`                                                         |
 | QClaw              | `~/.qclaw/agents/`                                                            |
 | Kimi               | `~/.kimi/sessions/`                                                           |
+| Kimi Code          | `~/.kimi-code/sessions/`                                                      |
 | Kiro               | `~/.kiro/sessions/cli/`、`~/.local/share/kiro-cli/`                           |
 | Kiro IDE           | 各 OS 配置根目录下的 `Kiro/User/globalStorage/kiro.kiroagent/`                |
 | Cortex Code        | `~/.snowflake/cortex/conversations/`                                          |

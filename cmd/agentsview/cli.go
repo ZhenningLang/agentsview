@@ -607,6 +607,7 @@ func writeRootHelp(w io.Writer, root *cobra.Command) {
 	fmt.Fprintln(w, "  GEMINI_DIR              Gemini CLI directory")
 	fmt.Fprintln(w, "  DROID_SESSIONS_DIR      Droid sessions directory")
 	fmt.Fprintln(w, "  KILO_DIR                Kilo data directory")
+	fmt.Fprintln(w, "  KIMI_CODE_DIR           Kimi Code sessions directory")
 	fmt.Fprintln(w, "  OPENCODE_DIR            OpenCode data directory")
 	fmt.Fprintln(w, "  CURSOR_PROJECTS_DIR     Cursor projects directory")
 	fmt.Fprintln(w, "  IFLOW_DIR               iFlow projects directory")
