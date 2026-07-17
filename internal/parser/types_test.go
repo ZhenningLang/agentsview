@@ -201,6 +201,24 @@ func TestAgentByPrefix(t *testing.T) {
 			true,
 		},
 		{
+			"legacy kimi prefix",
+			"kimi:proj-hash:sess-id",
+			AgentKimi,
+			true,
+		},
+		{
+			"kimi code prefix",
+			"kimicode:session_abc-123",
+			AgentKimiCode,
+			true,
+		},
+		{
+			"kimi code subagent prefix",
+			"kimicode:session_abc-123:agent-0",
+			AgentKimiCode,
+			true,
+		},
+		{
 			"kiro prefix stays separate from kilo",
 			"kiro:sess-id",
 			AgentKiro,
@@ -297,6 +315,7 @@ func TestRegistryCompleteness(t *testing.T) {
 		AgentOpenClaw,
 		AgentQClaw,
 		AgentKimi,
+		AgentKimiCode,
 		AgentClaudeAI,
 		AgentChatGPT,
 		AgentKiro,
@@ -469,6 +488,20 @@ func TestKiloRegistryEntry(t *testing.T) {
 	assert.Equal(t, "kilo_dirs", def.ConfigKey)
 	assert.Equal(t, []string{".local/share/kilo"}, def.DefaultDirs)
 	assert.Equal(t, "kilo:", def.IDPrefix)
+	assert.Empty(t, def.WatchSubdirs)
+}
+
+func TestKimiCodeRegistryEntry(t *testing.T) {
+	def, ok := AgentByType(AgentKimiCode)
+	require.True(t, ok, "AgentKimiCode missing from Registry")
+	require.True(t, def.FileBased, "Kimi Code FileBased")
+	require.NotNil(t, def.DiscoverFunc, "Kimi Code DiscoverFunc")
+	require.NotNil(t, def.FindSourceFunc, "Kimi Code FindSourceFunc")
+	assert.Equal(t, "Kimi Code", def.DisplayName)
+	assert.Equal(t, "KIMI_CODE_DIR", def.EnvVar)
+	assert.Equal(t, "kimi_code_dirs", def.ConfigKey)
+	assert.Equal(t, []string{".kimi-code/sessions"}, def.DefaultDirs)
+	assert.Equal(t, "kimicode:", def.IDPrefix)
 	assert.Empty(t, def.WatchSubdirs)
 }
 

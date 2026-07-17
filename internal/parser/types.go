@@ -29,6 +29,7 @@ const (
 	AgentOpenClaw       AgentType = "openclaw"
 	AgentQClaw          AgentType = "qclaw"
 	AgentKimi           AgentType = "kimi"
+	AgentKimiCode       AgentType = "kimicode"
 	AgentClaudeAI       AgentType = "claude-ai"
 	AgentChatGPT        AgentType = "chatgpt"
 	AgentKiro           AgentType = "kiro"
@@ -312,6 +313,17 @@ var Registry = []AgentDef{
 		FileBased:      true,
 		DiscoverFunc:   DiscoverKimiSessions,
 		FindSourceFunc: FindKimiSourceFile,
+	},
+	{
+		Type:           AgentKimiCode,
+		DisplayName:    "Kimi Code",
+		EnvVar:         "KIMI_CODE_DIR",
+		ConfigKey:      "kimi_code_dirs",
+		DefaultDirs:    []string{".kimi-code/sessions"},
+		IDPrefix:       "kimicode:",
+		FileBased:      true,
+		DiscoverFunc:   DiscoverKimiCodeSessions,
+		FindSourceFunc: FindKimiCodeSourceFile,
 	},
 	{
 		Type:        AgentClaudeAI,
