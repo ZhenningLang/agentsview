@@ -720,6 +720,25 @@ func (e *Engine) classifyOnePath(
 		}
 	}
 
+	// Kimi Code: <kimiCodeDir>/<ws-dir>/<session-dir>/agents/<agent>/wire.jsonl
+	for _, kimiCodeDir := range e.agentDirs[parser.AgentKimiCode] {
+		if kimiCodeDir == "" {
+			continue
+		}
+		if rel, ok := isUnder(kimiCodeDir, path); ok {
+			parts := strings.Split(rel, sep)
+			if len(parts) != 5 || parts[2] != "agents" ||
+				parts[4] != "wire.jsonl" {
+				continue
+			}
+			return parser.DiscoveredFile{
+				Path:    path,
+				Project: parts[0],
+				Agent:   parser.AgentKimiCode,
+			}, true
+		}
+	}
+
 	// WorkBuddy: <workbuddyDir>/<project>/<session>.jsonl
 	//     or: <workbuddyDir>/<project>/<session>/subagents/*.jsonl
 	for _, workBuddyDir := range e.agentDirs[parser.AgentWorkBuddy] {
@@ -3445,6 +3464,8 @@ func (e *Engine) processFileWithPolicy(
 		res = e.processQClaw(file, info)
 	case parser.AgentKimi:
 		res = e.processKimi(file, info)
+	case parser.AgentKimiCode:
+		res = e.processKimiCode(file, info)
 	case parser.AgentKiro:
 		res = e.processKiro(file, info)
 	case parser.AgentKiroIDE:
@@ -4557,6 +4578,33 @@ func (e *Engine) processKimi(
 			{Session: *sess, Messages: msgs},
 		},
 	}
+}
+
+func (e *Engine) processKimiCode(
+	file parser.DiscoveredFile, info os.FileInfo,
+) processResult {
+	if e.shouldSkipByPath(file.Path, info) {
+		return processResult{skip: true}
+	}
+
+	result, err := parser.ParseKimiCodeSession(
+		file.Path, file.Project, e.machine,
+	)
+	if err != nil {
+		return processResult{err: err}
+	}
+	if result == nil {
+		return processResult{skip: true}
+	}
+
+	hash, err := ComputeFileHash(file.Path)
+	if err == nil && result.Session.File.Hash == "" {
+		result.Session.File.Hash = hash
+	}
+	result.Session.File.Inode, result.Session.File.Device =
+		getFileIdentity(info)
+
+	return processResult{results: []parser.ParseResult{*result}}
 }
 
 func (e *Engine) processZed(
@@ -6653,6 +6701,11 @@ func (e *Engine) SyncSingleSessionContext(
 		// path is <kimiDir>/<project-hash>/<session-uuid>/wire.jsonl
 		// Derive project from two levels up.
 		file.Project = filepath.Base(filepath.Dir(filepath.Dir(path)))
+	case parser.AgentKimiCode:
+		// path is <kimiCodeDir>/<ws-dir>/<session-dir>/agents/<agent>/wire.jsonl
+		// Derive project from four levels up (the workspace dir name).
+		file.Project = filepath.Base(filepath.Dir(filepath.Dir(
+			filepath.Dir(filepath.Dir(path)))))
 	case parser.AgentQwen:
 		// path is <qwenProjectsDir>/<encoded-project>/chats/<session>.jsonl
 		file.Project = parser.GetProjectName(
