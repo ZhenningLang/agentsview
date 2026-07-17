@@ -190,3 +190,64 @@ func TestParseKimiCodeSession_Basic(t *testing.T) {
 	assert.NotEmpty(t, ev0.DedupKey)
 	assert.NotEqual(t, ev0.DedupKey, result.UsageEvents[1].DedupKey)
 }
+
+const kimiCodeMinimalWire = `{"type":"metadata","protocol_version":"1.4","created_at":1782441774650}
+{"type":"turn.prompt","input":[{"type":"text","text":"hi"}],"origin":{"kind":"user"},"time":1782441774677}
+{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"s1","turnId":"0","step":1},"time":1782441774678}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"p1","turnId":"0","step":1,"stepUuid":"s1","part":{"type":"text","text":"hello"}},"time":1782441774700}
+{"type":"context.append_loop_event","event":{"type":"step.end","uuid":"s1","turnId":"0","step":1,"usage":{"inputOther":10,"output":5,"inputCacheRead":0,"inputCacheCreation":0},"finishReason":"end_turn"},"time":1782441774710}
+{"type":"usage.record","model":"kimi-code/kimi-for-coding","usage":{"inputOther":10,"output":5,"inputCacheRead":0,"inputCacheCreation":0},"usageScope":"turn","time":1782441774710}
+`
+
+func TestParseKimiCodeSession_Subagent(t *testing.T) {
+	root := t.TempDir()
+	sessDir := filepath.Join(
+		root, "wd_my-app_aabbccddeeff",
+		"session_11111111-2222-3333-4444-555555555555")
+	wirePath := filepath.Join(sessDir, "agents", "agent-0", "wire.jsonl")
+	require.NoError(t, writeKimiCodeTestFile(wirePath, kimiCodeMinimalWire))
+	require.NoError(t, writeKimiCodeTestFile(
+		filepath.Join(sessDir, "state.json"),
+		`{"title":"parent session","workDir":"/Users/alice/Projects/my-app","forkedFrom":"session_00000000-0000-0000-0000-000000000000","agents":{"main":{"type":"main","parentAgentId":null},"agent-0":{"type":"sub","parentAgentId":"main"}}}`))
+
+	result, err := ParseKimiCodeSession(
+		wirePath, "wd_my-app_aabbccddeeff", "test-machine")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	sess := result.Session
+	assert.Equal(t,
+		"kimicode:session_11111111-2222-3333-4444-555555555555:agent-0",
+		sess.ID)
+	assert.Equal(t,
+		"kimicode:session_11111111-2222-3333-4444-555555555555",
+		sess.ParentSessionID)
+	assert.Equal(t, RelSubagent, sess.RelationshipType)
+	// forkedFrom applies to the main wire only, never to subagents.
+}
+
+func TestParseKimiCodeSession_Fork(t *testing.T) {
+	root := t.TempDir()
+	sessDir := filepath.Join(
+		root, "wd_my-app_aabbccddeeff",
+		"session_22222222-3333-4444-5555-666666666666")
+	wirePath := filepath.Join(sessDir, "agents", "main", "wire.jsonl")
+	require.NoError(t, writeKimiCodeTestFile(wirePath, kimiCodeMinimalWire))
+	require.NoError(t, writeKimiCodeTestFile(
+		filepath.Join(sessDir, "state.json"),
+		`{"title":"Fork: some session","workDir":"/Users/alice/Projects/my-app","forkedFrom":"session_11111111-2222-3333-4444-555555555555","agents":{"main":{"type":"main","parentAgentId":null}}}`))
+
+	result, err := ParseKimiCodeSession(
+		wirePath, "wd_my-app_aabbccddeeff", "test-machine")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	sess := result.Session
+	assert.Equal(t,
+		"kimicode:session_22222222-3333-4444-5555-666666666666",
+		sess.ID)
+	assert.Equal(t,
+		"kimicode:session_11111111-2222-3333-4444-555555555555",
+		sess.ParentSessionID)
+	assert.Equal(t, RelFork, sess.RelationshipType)
+}
