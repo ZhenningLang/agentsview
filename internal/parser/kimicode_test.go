@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,4 +76,117 @@ func TestFindKimiCodeSourceFile(t *testing.T) {
 	assert.Empty(t, FindKimiCodeSourceFile(root, "../bad"))
 	assert.Empty(t, FindKimiCodeSourceFile(root, "session_x:../bad"))
 	assert.Empty(t, FindKimiCodeSourceFile("", "session_11111111"))
+}
+
+const kimiCodeBasicWire = `{"type":"metadata","protocol_version":"1.4","created_at":1782441774650}
+{"type":"config.update","profileName":"agent","systemPrompt":"You are Kimi Code CLI."}
+{"type":"tools.set_active_tools","names":["Read","Bash"],"time":1782441774650}
+{"type":"config.update","modelAlias":"kimi-code/kimi-for-coding","thinkingLevel":"high","time":1782441774651}
+{"type":"permission.set_mode","mode":"auto","time":1782441774656}
+{"type":"turn.prompt","input":[{"type":"text","text":"run echo"}],"origin":{"kind":"user"},"time":1782441774677}
+{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"run echo"}],"toolCalls":[],"origin":{"kind":"user"}},"time":1782441774677}
+{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>auto mode</system-reminder>"}],"toolCalls":[],"origin":{"kind":"injection","variant":"permission_mode"}},"time":1782441774678}
+{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"s1","turnId":"0","step":1},"time":1782441774678}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"p1","turnId":"0","step":1,"stepUuid":"s1","part":{"type":"think","think":"thinking..."}},"time":1782441777167}
+{"type":"context.append_loop_event","event":{"type":"tool.call","uuid":"tool_1","turnId":"0","step":1,"stepUuid":"s1","toolCallId":"tool_1","name":"Bash","args":{"command":"echo HI"},"description":"Running: echo HI"},"time":1782441777188}
+{"type":"context.append_loop_event","event":{"type":"tool.result","parentUuid":"tool_1","toolCallId":"tool_1","result":{"output":"HI\n"}},"time":1782441777195}
+{"type":"context.append_loop_event","event":{"type":"step.end","uuid":"s1","turnId":"0","step":1,"usage":{"inputOther":1436,"output":47,"inputCacheRead":14592,"inputCacheCreation":0},"finishReason":"tool_use"},"time":1782441777195}
+{"type":"usage.record","model":"kimi-code/kimi-for-coding","usage":{"inputOther":1436,"output":47,"inputCacheRead":14592,"inputCacheCreation":0},"usageScope":"turn","time":1782441777195}
+{"type":"context.append_loop_event","event":{"type":"step.begin","uuid":"s2","turnId":"0","step":2},"time":1782441777197}
+{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"p2","turnId":"0","step":2,"stepUuid":"s2","part":{"type":"text","text":"HI"}},"time":1782441779758}
+{"type":"context.append_loop_event","event":{"type":"step.end","uuid":"s2","turnId":"0","step":2,"usage":{"inputOther":226,"output":33,"inputCacheRead":15872,"inputCacheCreation":0},"finishReason":"end_turn"},"time":1782441779758}
+{"type":"usage.record","model":"kimi-code/kimi-for-coding","usage":{"inputOther":226,"output":33,"inputCacheRead":15872,"inputCacheCreation":0},"usageScope":"turn","time":1782441779758}
+`
+
+func TestParseKimiCodeSession_Basic(t *testing.T) {
+	root := t.TempDir()
+	sessDir := filepath.Join(
+		root, "wd_my-app_aabbccddeeff",
+		"session_11111111-2222-3333-4444-555555555555")
+	wirePath := filepath.Join(sessDir, "agents", "main", "wire.jsonl")
+	require.NoError(t, writeKimiCodeTestFile(wirePath, kimiCodeBasicWire))
+	require.NoError(t, writeKimiCodeTestFile(
+		filepath.Join(sessDir, "state.json"),
+		`{"createdAt":"2026-06-26T02:42:54.628Z","updatedAt":"2026-06-26T02:42:54.673Z","title":"smoke test title","isCustomTitle":false,"agents":{"main":{"type":"main","parentAgentId":null}},"custom":{},"workDir":"/Users/alice/Projects/my-app","lastPrompt":"run echo"}`))
+
+	result, err := ParseKimiCodeSession(
+		wirePath, "wd_my-app_aabbccddeeff", "test-machine")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	sess := result.Session
+	assert.Equal(t,
+		"kimicode:session_11111111-2222-3333-4444-555555555555",
+		sess.ID)
+	assert.Equal(t, AgentKimiCode, sess.Agent)
+	assert.Equal(t, "test-machine", sess.Machine)
+	assert.Equal(t, "my-app", sess.Project)
+	assert.Equal(t, "/Users/alice/Projects/my-app", sess.Cwd)
+	assert.Equal(t, "smoke test title", sess.SessionName)
+	assert.Equal(t, "run echo", sess.FirstMessage)
+	assert.Equal(t, 5, sess.MessageCount)
+	assert.Equal(t, 1, sess.UserMessageCount)
+	assert.Equal(t,
+		time.UnixMilli(1782441774650).UTC(), sess.StartedAt.UTC())
+	assert.Equal(t,
+		time.UnixMilli(1782441779758).UTC(), sess.EndedAt.UTC())
+	assert.True(t, sess.HasTotalOutputTokens)
+	assert.Equal(t, 80, sess.TotalOutputTokens)
+	assert.True(t, sess.HasPeakContextTokens)
+	assert.Equal(t, 16098, sess.PeakContextTokens)
+	assert.Equal(t, TokenAggregateUsageEvents, sess.AggregateTokenSource)
+	assert.Empty(t, sess.ParentSessionID)
+	assert.Equal(t, RelNone, sess.RelationshipType)
+
+	require.Len(t, result.Messages, 5)
+
+	userMsg := result.Messages[0]
+	assert.Equal(t, RoleUser, userMsg.Role)
+	assert.Equal(t, "run echo", userMsg.Content)
+	assert.False(t, userMsg.IsSystem)
+
+	ctxCard := result.Messages[1]
+	assert.True(t, ctxCard.IsSystem)
+	assert.Equal(t, "system", ctxCard.SourceType)
+	assert.Equal(t, "injection", ctxCard.SourceSubtype)
+	assert.Contains(t, ctxCard.Content, "auto mode")
+
+	asst1 := result.Messages[2]
+	assert.Equal(t, RoleAssistant, asst1.Role)
+	assert.True(t, asst1.HasThinking)
+	assert.Equal(t, "thinking...", asst1.ThinkingText)
+	assert.True(t, asst1.HasToolUse)
+	require.Len(t, asst1.ToolCalls, 1)
+	assert.Equal(t, "tool_1", asst1.ToolCalls[0].ToolUseID)
+	assert.Equal(t, "Bash", asst1.ToolCalls[0].ToolName)
+	assert.Equal(t, "Bash", asst1.ToolCalls[0].Category)
+	assert.JSONEq(t, `{"command":"echo HI"}`,
+		asst1.ToolCalls[0].InputJSON)
+	assert.Equal(t, "tool_use", asst1.StopReason)
+
+	toolMsg := result.Messages[3]
+	assert.Equal(t, RoleUser, toolMsg.Role)
+	require.Len(t, toolMsg.ToolResults, 1)
+	assert.Equal(t, "tool_1", toolMsg.ToolResults[0].ToolUseID)
+	assert.Equal(t, `"HI\n"`, toolMsg.ToolResults[0].ContentRaw)
+
+	asst2 := result.Messages[4]
+	assert.Equal(t, RoleAssistant, asst2.Role)
+	assert.Equal(t, "HI", asst2.Content)
+	assert.Equal(t, "end_turn", asst2.StopReason)
+
+	require.Len(t, result.UsageEvents, 2)
+	ev0 := result.UsageEvents[0]
+	assert.Equal(t, sess.ID, ev0.SessionID)
+	assert.Equal(t, "usage.record", ev0.Source)
+	assert.Equal(t, "kimi-code/kimi-for-coding", ev0.Model)
+	assert.Equal(t, 1436, ev0.InputTokens)
+	assert.Equal(t, 47, ev0.OutputTokens)
+	assert.Equal(t, 14592, ev0.CacheReadInputTokens)
+	assert.Equal(t, 0, ev0.CacheCreationInputTokens)
+	assert.Equal(t,
+		time.UnixMilli(1782441777195).UTC().Format(time.RFC3339Nano),
+		ev0.OccurredAt)
+	assert.NotEmpty(t, ev0.DedupKey)
+	assert.NotEqual(t, ev0.DedupKey, result.UsageEvents[1].DedupKey)
 }
