@@ -15,7 +15,8 @@ import (
 )
 
 // synthesizedOriginPrefix marks notes produced by compact_memory; they are
-// excluded from clustering so synthesis never feeds on its own output.
+// included as existing topic notes so new near-duplicate atomics/topics can merge
+// back into the topic layer instead of creating duplicate topics.
 const synthesizedOriginPrefix = "compact-memory:"
 
 // SourceNote is a note eligible to take part in a topic synthesis cluster — an
@@ -91,32 +92,51 @@ func ClusterNotes(notes []SourceNote, minSim float64) [][]SourceNote {
 	return clusters
 }
 
-// bestTopicMatch returns the index of the active topic in topics whose embedding
-// is closest (cosine) to any member of cluster, and that best similarity. It
-// returns (-1, 0) when there are no topics or none has a usable embedding.
-func bestTopicMatch(cluster []SourceNote, topics []SourceNote) (idx int, best float64) {
+// bestMergeableTopicMatch returns the best active topic that every atomic in the
+// cluster can safely merge into. Requiring every member to clear mergeMinSim
+// avoids retiring a topic because only one atomic in a loose fold cluster was a
+// near-duplicate of it.
+func bestMergeableTopicMatch(cluster []SourceNote, topics []SourceNote, mergeMinSim float64) (idx int, best float64) {
 	idx = -1
 	for ti, t := range topics {
+		topicBest := 0.0
+		okAll := true
 		for _, m := range cluster {
-			if sim, ok := semantic.Cosine(m.Embedding, t.Embedding); ok && (idx == -1 || sim > best) {
-				idx = ti
-				best = sim
+			sim, ok := semantic.Cosine(m.Embedding, t.Embedding)
+			if !ok || sim < mergeMinSim {
+				okAll = false
+				break
 			}
+			if sim > topicBest {
+				topicBest = sim
+			}
+		}
+		if okAll && (idx == -1 || topicBest > best) {
+			idx = ti
+			best = topicBest
 		}
 	}
 	return idx, best
+}
+
+func closeToAll(candidate SourceNote, group []SourceNote, mergeMinSim float64) bool {
+	for _, existing := range group {
+		if sim, ok := semantic.Cosine(existing.Embedding, candidate.Embedding); !ok || sim < mergeMinSim {
+			return false
+		}
+	}
+	return true
 }
 
 // BuildClusters routes the active notes into the clusters to synthesize this
 // cycle, deterministically and conservatively:
 //
 //  1. Cluster ATOMIC-only notes at minSim (existing fold behavior).
-//  2. For each atomic cluster, find the closest active topic. If that cosine is
-//     >= mergeMinSim the cluster becomes a MERGE into that topic (the topic is
-//     added as a source); otherwise it stays an ADD of a brand-new topic.
-//  3. Dedup remaining (unassigned) active topics: greedily group topics whose
-//     pairwise cosine is >= mergeMinSim; any group of >= 2 becomes a MERGE
-//     cluster (all those topics are sources).
+//  2. For each atomic cluster, find the closest active topic that every atomic
+//     member matches at >= mergeMinSim. That cluster becomes a MERGE into the
+//     topic; otherwise it stays an ADD of a brand-new topic.
+//  3. Dedup remaining active topics with a complete-link guard: a candidate
+//     joins a merge group only when it is >= mergeMinSim to every group member.
 //
 // A note is emitted in at most one cluster per cycle. mergeMinSim is held high
 // (near-duplicate) so distinct-but-related topics are never merged.
@@ -146,7 +166,7 @@ func BuildClusters(notes []SourceNote, minSim, mergeMinSim float64) [][]SourceNo
 				freeIdx = append(freeIdx, ti)
 			}
 		}
-		if ti, best := bestTopicMatch(cluster, free); ti >= 0 && best >= mergeMinSim {
+		if ti, best := bestMergeableTopicMatch(cluster, free, mergeMinSim); ti >= 0 && best >= mergeMinSim {
 			cluster = append(cluster, free[ti])
 			assignedTopic[freeIdx[ti]] = true
 		}
@@ -164,7 +184,7 @@ func BuildClusters(notes []SourceNote, minSim, mergeMinSim float64) [][]SourceNo
 			if assignedTopic[j] {
 				continue
 			}
-			if sim, ok := semantic.Cosine(topics[i].Embedding, topics[j].Embedding); ok && sim >= mergeMinSim {
+			if closeToAll(topics[j], group, mergeMinSim) {
 				group = append(group, topics[j])
 				assignedTopic[j] = true
 			}

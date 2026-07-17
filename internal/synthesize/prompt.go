@@ -44,9 +44,9 @@ type promptNote struct {
 
 const maxBodyRunes = 800
 
-// maxTopicBodyRunes is larger than maxBodyRunes: an existing topic note is
+// MaxTopicBodyRunes is larger than maxBodyRunes: an existing topic note is
 // already a synthesis and the model must preserve all of it, so it gets more room.
-const maxTopicBodyRunes = 2000
+const MaxTopicBodyRunes = 2000
 
 // BuildUserPrompt renders an all-atomic cluster as the JSON the model distills.
 func BuildUserPrompt(cluster []SourceNote) string {
@@ -68,7 +68,7 @@ func BuildMergeUserPrompt(cluster []SourceNote) string {
 	for _, n := range cluster {
 		limit := maxBodyRunes
 		if n.IsTopic {
-			limit = maxTopicBodyRunes
+			limit = MaxTopicBodyRunes
 		}
 		items = append(items, promptNote{ID: n.ID, Title: n.Title, Body: truncateRunes(n.Body, limit), IsTopic: n.IsTopic})
 	}

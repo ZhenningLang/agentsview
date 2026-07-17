@@ -44,7 +44,7 @@ func TestSourceNotesFromMemoriesIncludesTopicsDropsIndexAndEmbeddingless(t *test
 		{RelPath: "atom.md", Title: "t", OriginSession: "ses_x", LLMEmbedding: []float32{1, 0}},
 		{RelPath: "synth.md", OriginSession: "compact-memory:syn-1", LLMEmbedding: []float32{1, 0}}, // included as a topic
 		{RelPath: "noembed.md", OriginSession: "ses_y"},                                             // excluded (no embedding)
-		{RelPath: "INDEX.md", LLMEmbedding: []float32{1, 0}},                                         // excluded
+		{RelPath: "INDEX.md", LLMEmbedding: []float32{1, 0}},                                        // excluded
 	}
 	got := SourceNotesFromMemories(mems)
 	require.Len(t, got, 2)
@@ -228,6 +228,19 @@ func TestBuildClustersTwoTopicsBelowThresholdNotMerged(t *testing.T) {
 	assert.Empty(t, clusters, "topics below mergeMinSim must NOT be merged")
 }
 
+func TestBuildClustersTopicDedupRequiresPairwiseSimilarity(t *testing.T) {
+	// t1 is close to both t2 and t3, but t2 and t3 are not close to each other.
+	// A merge group must not use t1 as a bridge to retire both distinct topics.
+	notes := []SourceNote{
+		{ID: "t1", Embedding: []float32{1, 0, 0}, IsTopic: true},
+		{ID: "t2", Embedding: []float32{0.9, 0.4359, 0}, IsTopic: true},
+		{ID: "t3", Embedding: []float32{0.9, -0.4359, 0}, IsTopic: true},
+	}
+	clusters := BuildClusters(notes, 0.55, testMergeMinSim)
+	require.Len(t, clusters, 1)
+	assert.ElementsMatch(t, []string{"t1", "t2"}, clusterIDs(clusters[0]))
+}
+
 func TestBuildClustersAllAtomicFarFromTopicsAdds(t *testing.T) {
 	// regression: atomic cluster orthogonal to the only topic -> plain ADD.
 	notes := []SourceNote{
@@ -238,6 +251,21 @@ func TestBuildClustersAllAtomicFarFromTopicsAdds(t *testing.T) {
 	clusters := BuildClusters(notes, 0.55, testMergeMinSim)
 	require.Len(t, clusters, 1)
 	assert.False(t, clusterHasTopic(clusters[0]), "should be a fresh ADD, not a merge")
+	assert.ElementsMatch(t, []string{"a1", "a2"}, clusterIDs(clusters[0]))
+}
+
+func TestBuildClustersAtomicTopicMergeRequiresEveryAtomicToMatchTopic(t *testing.T) {
+	// a1 and a2 are an atomic cluster at the lower fold threshold, but only a1
+	// is a near-duplicate of t1. The whole cluster must remain an ADD rather than
+	// retiring t1 and folding the weakly related a2 into that merge.
+	notes := []SourceNote{
+		{ID: "a1", Embedding: []float32{1, 0, 0}},
+		{ID: "a2", Embedding: []float32{0.56, 0.828, 0}},
+		{ID: "t1", Embedding: []float32{1, 0, 0}, IsTopic: true},
+	}
+	clusters := BuildClusters(notes, 0.55, testMergeMinSim)
+	require.Len(t, clusters, 1)
+	assert.False(t, clusterHasTopic(clusters[0]), "weak atomic member should block topic merge")
 	assert.ElementsMatch(t, []string{"a1", "a2"}, clusterIDs(clusters[0]))
 }
 
@@ -309,6 +337,33 @@ func TestWorkerMergeSkipWritesNothing(t *testing.T) {
 	assert.Equal(t, 0, rec.WriteCount)
 	assert.Equal(t, 0, script.called, "LLM skip must not invoke compact_memory")
 	assert.False(t, commit.called, "nothing written -> no commit")
+}
+
+func TestWorkerMergeSkipsOversizedTopicBody(t *testing.T) {
+	store := fakeStore{mems: []db.Memory{
+		{RelPath: "a1.md", Title: "atomic one", Body: "x", Status: "active", Source: db.SourceCrossAgent, OriginSession: "s1", LLMEmbedding: []float32{1, 0, 0}},
+		{RelPath: "a2.md", Title: "atomic two", Body: "y", Status: "active", Source: db.SourceCrossAgent, OriginSession: "s2", LLMEmbedding: []float32{0.999, 0.001, 0}},
+		{RelPath: "t1.md", Title: "existing topic", Body: strings.Repeat("x", MaxTopicBodyRunes+1), Status: "active", Source: db.SourceCrossAgent, OriginSession: "compact-memory:syn-old", LLMEmbedding: []float32{0.998, 0.002, 0}},
+	}}
+	script := &captureScript{res: ScriptResult{Stdout: "write should-not-happen\n"}}
+	commit := &fakeCommitter{}
+	w := &Worker{
+		Root:   "/df",
+		Store:  store,
+		LLM:    fakeLLM{resp: `{"skip":false,"title":"合并后的主题","insight":"综合要点"}`},
+		Script: script,
+		Commit: commit,
+		Resync: &fakeResyncer{},
+		Audit:  NewAuditLog(t.TempDir() + "/.synthesize-audit.jsonl"),
+	}
+
+	rec, err := w.RunOnce(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 0, rec.WriteCount)
+	assert.Equal(t, 0, script.called, "oversized topic merge must not invoke compact_memory")
+	assert.False(t, commit.called, "nothing written -> no commit")
+	require.Len(t, rec.Topics, 1)
+	assert.Equal(t, "skip topic_body_over_budget", rec.Topics[0].Result)
 }
 
 // captureScript records the decision file JSON so tests can assert on the

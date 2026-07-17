@@ -22,13 +22,20 @@ const (
 	// reversible, but pulling an existing topic into a merge supersedes it, so it
 	// must require near-duplicate similarity to avoid collapsing distinct-but-
 	// related topics into one. Distinct themes (cosine below this) stay separate.
-	defaultMergeSimilarity = 0.82
+	// Calibrated from the active-topic embedding gap: 0.81056 sits between the
+	// highest topic pair (0.82242) and the next pair (0.79870), so 0.81 keeps the
+	// current strongest duplicate candidate while excluding the rest.
+	defaultMergeSimilarity = 0.81
 	// defaultMaxClusters caps clusters folded per cycle. With the ~4h interval
 	// this comfortably keeps up with new atomics and self-clears a burst backlog
 	// over a few cycles (verified: resync between cycles excludes folded sources,
 	// so a higher cap does not re-synthesize already-folded clusters).
 	defaultMaxClusters = 20
 )
+
+func DefaultMinSimilarity() float64 { return defaultMinSimilarity }
+
+func DefaultMergeSimilarity() float64 { return defaultMergeSimilarity }
 
 // LLMClient is the narrow LLM surface the worker needs.
 type LLMClient interface {
@@ -158,6 +165,9 @@ func (w *Worker) synthesizeCluster(ctx context.Context, cluster []SourceNote) To
 		sourceIDs = append(sourceIDs, n.ID)
 	}
 	isMerge := clusterHasTopic(cluster)
+	if isMerge && hasOversizedTopic(cluster) {
+		return TopicRecord{SourceIDs: sourceIDs, Skipped: true, Result: "skip topic_body_over_budget"}
+	}
 
 	system, user := systemPrompt, BuildUserPrompt(cluster)
 	if isMerge {
@@ -218,6 +228,15 @@ func (w *Worker) synthesizeCluster(ctx context.Context, cluster []SourceNote) To
 		topic.Error = firstNonEmptyLine(res.Stderr)
 	}
 	return topic
+}
+
+func hasOversizedTopic(cluster []SourceNote) bool {
+	for _, n := range cluster {
+		if n.IsTopic && len([]rune(strings.TrimSpace(n.Body))) > MaxTopicBodyRunes {
+			return true
+		}
+	}
+	return false
 }
 
 // synthID is a deterministic id for a cluster (sorted source ids hash) so
