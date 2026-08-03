@@ -397,7 +397,10 @@ func TestMemoryFeedbackResyncPreservesEmbeddingWhenEmbedConfigMissing(t *testing
 	assert.Equal(t, len(existingVector), embeddings[0].LLMEmbeddingDim)
 }
 
-func TestMemoryPutResyncFallsBackToLexicalWhenEmbeddingProviderFails(t *testing.T) {
+// A dead embedding provider must not cost the caller their edit. The syncer
+// is fail-soft per note, so the write lands on the first pass and the whole
+// batch is never replayed against the provider.
+func TestMemoryPutSucceedsWhenEmbeddingProviderFails(t *testing.T) {
 	called := 0
 	client := llmTestClient(func(req *http.Request) (*http.Response, error) {
 		called++
@@ -420,8 +423,9 @@ func TestMemoryPutResyncFallsBackToLexicalWhenEmbeddingProviderFails(t *testing.
 
 	w := fx.te.putMemory(t, fx.crossRelPath, newContent, memSHA(fx.crossContent))
 	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
-	assert.Positive(t, called, "configured embedder should be attempted before lexical fallback")
-	assert.Contains(t, logs.String(), "retrying lexical sync")
+	assert.Positive(t, called, "the configured embedder should still be attempted")
+	assert.Contains(t, logs.String(), "embedding memory",
+		"the rejection stays observable instead of failing silently")
 
 	wGet := fx.te.get(t, "/api/v1/memories/"+encodeMemPath(fx.crossRelPath))
 	require.Equal(t, http.StatusOK, wGet.Code, "body: %s", wGet.Body.String())

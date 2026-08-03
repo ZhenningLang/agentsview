@@ -152,14 +152,40 @@ func TestCCSyncWithEmbedderPopulatesMemoryEmbedding(t *testing.T) {
 	assert.Equal(t, 1, embedder.calls)
 }
 
-func TestCCSyncWithEmbedderReturnsErrorOnEmbeddingFailure(t *testing.T) {
+func TestCCSyncWithEmbedderKeepsMirrorOnEmbeddingFailure(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "projects")
 	writeCCNote(t, root, "projA", "a.md", "cc body")
 	w := &fakeWriter{}
 	s := NewCCSyncerWithEmbedder(root, w, nil, &fakeEmbedder{err: errors.New("embed failed")})
 
-	err := s.Sync(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "embedding memory")
-	assert.Empty(t, w.memories)
+	require.NoError(t, s.Sync(context.Background()),
+		"a provider rejection must not abort the run")
+	require.Len(t, w.memories, 1)
+	assert.Empty(t, w.memories[0].LLMEmbedding)
+}
+
+// This is the shape that actually burned tokens: ~176 CC-native notes where a
+// single oversized one aborted every run before anything was persisted.
+func TestCCSyncOneFailedEmbeddingDoesNotDiscardOtherVectors(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "projects")
+	writeCCNote(t, root, "projA", "a.md", "good body a")
+	writeCCNote(t, root, "projA", "oversized.md", "reject me")
+	writeCCNote(t, root, "projB", "b.md", "good body b")
+	w := &fakeWriter{}
+	embedder := &failingEmbedder{
+		vector:   []float32{1, 0},
+		failBody: "reject me",
+		err:      errors.New("maximum context length is 8192 tokens"),
+	}
+	s := NewCCSyncerWithEmbedder(root, w, nil, embedder)
+
+	require.NoError(t, s.Sync(context.Background()))
+	require.Len(t, w.memories, 3)
+	withVector := 0
+	for _, m := range w.memories {
+		if len(m.LLMEmbedding) > 0 {
+			withVector++
+		}
+	}
+	assert.Equal(t, 2, withVector)
 }
