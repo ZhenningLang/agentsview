@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
-	"go.kenn.io/agentsview/internal/skills"
 )
 
 type fakeWriter struct {
@@ -382,21 +381,33 @@ func TestSyncFailedEmbeddingCarriesPreviousVectorForward(t *testing.T) {
 }
 
 func TestTruncateForEmbeddingFitsBudget(t *testing.T) {
-	tk := skills.NewHeuristicTokenizer()
 	long := strings.Repeat("语义记忆内容", 20000)
-	require.Greater(t, tk.Count(long), maxEmbedInputTokens)
+	require.Greater(t, embeddingTokenEstimate(long), maxEmbedInputTokens)
 
-	got := truncateForEmbedding(tk, long)
+	got := truncateForEmbedding(long)
 
-	assert.LessOrEqual(t, tk.Count(got), maxEmbedInputTokens)
+	assert.LessOrEqual(t, embeddingTokenEstimate(got), maxEmbedInputTokens)
 	assert.NotEmpty(t, got)
 }
 
 func TestTruncateForEmbeddingLeavesShortBodyIntact(t *testing.T) {
-	tk := skills.NewHeuristicTokenizer()
 	body := "short enough body"
 
-	assert.Equal(t, body, truncateForEmbedding(tk, body))
+	assert.Equal(t, body, truncateForEmbedding(body))
+}
+
+// The note that stalled the real sync was Latin-heavy with a CJK minority:
+// the provider measured 9134 tokens where skills.Tokenizer scored 5501, so
+// this shape is exactly the one the estimate must not wave through.
+func TestTruncateForEmbeddingCatchesLatinHeavyMixedNote(t *testing.T) {
+	body := strings.Repeat("记忆", 1704) + strings.Repeat("memory note body. ", 835)
+	require.Greater(t, embeddingTokenEstimate(body), 8192,
+		"a note of this shape sits above the provider ceiling")
+
+	got := truncateForEmbedding(body)
+
+	assert.LessOrEqual(t, embeddingTokenEstimate(got), maxEmbedInputTokens)
+	assert.Less(t, len(got), len(body))
 }
 
 func TestSyncTruncatesOversizedBodyBeforeEmbedding(t *testing.T) {
@@ -411,8 +422,7 @@ func TestSyncTruncatesOversizedBodyBeforeEmbedding(t *testing.T) {
 	require.NoError(t, s.Sync(context.Background()))
 	require.Len(t, w.memories, 1)
 	assert.NotEmpty(t, w.memories[0].LLMEmbedding)
-	assert.LessOrEqual(t,
-		skills.NewHeuristicTokenizer().Count(embedder.lastInput), maxEmbedInputTokens)
+	assert.LessOrEqual(t, embeddingTokenEstimate(embedder.lastInput), maxEmbedInputTokens)
 }
 
 func TestSyncWithEmbedderReusesUnchangedEmbedding(t *testing.T) {

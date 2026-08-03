@@ -108,9 +108,7 @@ func (s *LedgerSyncer) Sync(ctx context.Context) error {
 	for _, candidate := range latestByTopic {
 		m, ok := s.memoryFromEntry(candidate.entry, info.ModTime().Unix(), syncedAt)
 		if ok {
-			if err := populateMemoryEmbedding(
-				ctx, s.embedder, s.tokenizer, &m, previous,
-			); err != nil {
+			if err := populateMemoryEmbedding(ctx, s.embedder, &m, previous); err != nil {
 				// Fail-soft per entry: one rejected body must not discard the
 				// whole ledger mirror.
 				log.Printf("assist-mem sync: %v", err)

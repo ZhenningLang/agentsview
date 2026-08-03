@@ -107,9 +107,7 @@ func (s *CCSyncer) Sync(ctx context.Context) error {
 				continue
 			}
 			m.SyncedAt = syncedAt
-			if err := populateMemoryEmbedding(
-				ctx, s.embedder, s.tokenizer, &m, previous,
-			); err != nil {
+			if err := populateMemoryEmbedding(ctx, s.embedder, &m, previous); err != nil {
 				// Fail-soft per note, matching the parse path above.
 				log.Printf("cc memory sync: %v", err)
 			}

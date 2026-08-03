@@ -135,9 +135,7 @@ func (s *Syncer) Sync(ctx context.Context) error {
 			continue
 		}
 		m.SyncedAt = syncedAt
-		if err := populateMemoryEmbedding(
-			ctx, s.embedder, s.tokenizer, &m, previous,
-		); err != nil {
+		if err := populateMemoryEmbedding(ctx, s.embedder, &m, previous); err != nil {
 			// Fail-soft per file, matching the parse path above: one note the
 			// provider refuses must not discard every other note's fresh
 			// vector and leave the mirror unwritten.
@@ -170,24 +168,43 @@ func loadPreviousEmbeddings(
 
 // maxEmbedInputTokens bounds the text handed to the embedding provider.
 // Providers reject oversized inputs outright (OpenAI's embedding models cap
-// at 8192 tokens) and a rejected note is unrecoverable no matter how often
-// it is retried, so the body is truncated instead. The budget sits well
-// below the 8192 ceiling because the heuristic tokenizer only approximates
-// BPE counts and must not under-estimate its way back over the limit.
+// at 8192 tokens) and a rejected note stays rejected no matter how often it
+// is retried, so the body is truncated instead. The budget sits well below
+// the ceiling to leave room for the estimate below being an estimate.
 const maxEmbedInputTokens = 6000
 
-// truncateForEmbedding shortens body until the tokenizer estimate fits the
-// embedding budget. Truncation loses tail content, which is preferable to
-// the note carrying no vector at all.
-func truncateForEmbedding(tk skills.Tokenizer, body string) string {
-	if tk == nil || tk.Count(body) <= maxEmbedInputTokens {
+// embeddingTokenEstimate over-counts the BPE tokens in text on purpose.
+// skills.Tokenizer is not usable here: its doc comment scopes it to
+// order-of-magnitude context sizing and it under-counts badly, scoring a
+// measured 9.1k-token note at 5.5k, which would sail straight past a hard
+// provider limit. Wide runes (CJK and friends) are charged a full token
+// each and narrow runes every two characters. Real BPE vocabularies emit
+// fewer tokens than that for both, so the estimate errs toward truncating
+// early rather than getting the request rejected.
+func embeddingTokenEstimate(text string) int {
+	var wide, narrow int
+	for _, r := range text {
+		if r >= 0x2E80 {
+			wide++
+		} else {
+			narrow++
+		}
+	}
+	return wide + (narrow+1)/2
+}
+
+// truncateForEmbedding shortens body until the estimate fits the embedding
+// budget. Losing tail content is preferable to the note carrying no vector
+// at all.
+func truncateForEmbedding(body string) string {
+	if embeddingTokenEstimate(body) <= maxEmbedInputTokens {
 		return body
 	}
 	runes := []rune(body)
 	// Each pass shrinks by at least 10%, so the loop is bounded even if the
 	// estimate scales non-linearly with length.
 	for len(runes) > 0 {
-		est := tk.Count(string(runes))
+		est := embeddingTokenEstimate(string(runes))
 		if est <= maxEmbedInputTokens {
 			break
 		}
@@ -201,7 +218,7 @@ func truncateForEmbedding(tk skills.Tokenizer, body string) string {
 }
 
 func populateMemoryEmbedding(
-	ctx context.Context, embedder Embedder, tk skills.Tokenizer,
+	ctx context.Context, embedder Embedder,
 	m *db.Memory, previous map[string]db.Memory,
 ) error {
 	// Embeddings are derived only from Body. Reuse by rel_path/source/body so
@@ -214,7 +231,7 @@ func populateMemoryEmbedding(
 	if embedder == nil {
 		return nil
 	}
-	vector, err := embedder.Embed(ctx, truncateForEmbedding(tk, m.Body))
+	vector, err := embedder.Embed(ctx, truncateForEmbedding(m.Body))
 	if err != nil {
 		// Fail-soft, but never downgrade what is already stored: carry the
 		// previous vector forward so a provider outage cannot blank every
