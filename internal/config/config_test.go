@@ -1260,6 +1260,51 @@ func TestLLMConfig_DanglingUsageBindings(t *testing.T) {
 	assert.Equal(t, []string{"embed"}, cfg.DanglingLLMUsageBindings())
 }
 
+// A bound provider replaces the whole embed block, so an api_key under
+// [llm.embed] silently stops being used. Two keys in one file, only one of
+// them billed, is the shape that costs a debugging session.
+func TestLLMConfig_ShadowedEmbedProvider(t *testing.T) {
+	newCfg := func() Config {
+		return Config{LLM: LLMConfig{
+			Enabled:   true,
+			BaseURL:   "https://legacy.example.test/v1",
+			APIKey:    "legacy-key",
+			Embed:     LLMEmbedConfig{APIKey: "embed-section-key"},
+			Usage:     map[string]string{"embed": "openrouter"},
+			Providers: map[string]LLMConfig{"openrouter": {APIKey: "provider-key"}},
+		}}
+	}
+
+	cfg := newCfg()
+	assert.Equal(t, "openrouter", cfg.ShadowedLLMEmbedProvider())
+	assert.Equal(t, "provider-key", cfg.ResolveUsageLLM("embed").Embed.APIKey,
+		"the provider key is what actually runs")
+
+	t.Run("identical keys are not a surprise", func(t *testing.T) {
+		cfg := newCfg()
+		cfg.LLM.Providers["openrouter"] = LLMConfig{APIKey: "embed-section-key"}
+		assert.Empty(t, cfg.ShadowedLLMEmbedProvider())
+	})
+
+	t.Run("provider without a key leaves the credential alone", func(t *testing.T) {
+		cfg := newCfg()
+		cfg.LLM.Providers["openrouter"] = LLMConfig{BaseURL: "https://or.example.test/v1"}
+		assert.Empty(t, cfg.ShadowedLLMEmbedProvider())
+	})
+
+	t.Run("no explicit embed key means nothing is shadowed", func(t *testing.T) {
+		cfg := newCfg()
+		cfg.LLM.Embed.APIKey = ""
+		assert.Empty(t, cfg.ShadowedLLMEmbedProvider())
+	})
+
+	t.Run("no usage binding means nothing is shadowed", func(t *testing.T) {
+		cfg := newCfg()
+		cfg.LLM.Usage = nil
+		assert.Empty(t, cfg.ShadowedLLMEmbedProvider())
+	})
+}
+
 func TestLLMConfig_RedactsSecrets(t *testing.T) {
 	cfg := Config{LLM: LLMConfig{
 		BaseURL: "https://chat.example.test/v1",

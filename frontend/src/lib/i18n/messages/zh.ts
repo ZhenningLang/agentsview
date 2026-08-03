@@ -51,7 +51,7 @@ export const zh: Record<string, string> = {
   "assign.desc": "每个用途:选一个已配好的 provider + 填该用途用的模型。",
   "assign.use": "用",
   "assign.noProvider": "(先在上面配一个 provider)",
-  "assign.dangling": "下列用途绑定了不存在的 provider,已回退到默认:",
+  "assign.warnings": "用途绑定存在以下问题:",
 
   // 语言切换
   "lang.label": "语言",

@@ -494,6 +494,35 @@ func (c *Config) DanglingLLMUsageBindings() []string {
 	return out
 }
 
+// ShadowedLLMEmbedProvider returns the provider name bound to the embed usage
+// when that binding overrides an API key explicitly set under [llm.embed], or
+// "" when there is nothing to warn about. resolveUsageEmbed replaces the whole
+// embed block with the bound provider's connection, so once [llm.usage] embed
+// is set, a key written under [llm.embed] never runs. The file then names two
+// credentials for one job while billing only the other, which is invisible
+// until someone reads a provider invoice. Reported alongside
+// DanglingLLMUsageBindings so the config surface can surface it instead.
+func (c *Config) ShadowedLLMEmbedProvider() string {
+	if c == nil {
+		return ""
+	}
+	configured := strings.TrimSpace(c.LLM.Embed.APIKey)
+	if configured == "" {
+		return ""
+	}
+	provider, ok := c.resolveBoundProvider("embed")
+	if !ok {
+		return ""
+	}
+	// An empty or identical provider key leaves the effective credential
+	// unchanged, so there is no surprise to report.
+	effective := strings.TrimSpace(provider.APIKey)
+	if effective == "" || effective == configured {
+		return ""
+	}
+	return strings.TrimSpace(c.LLM.Usage["embed"])
+}
+
 func (c *Config) resolveUsageEmbed(base LLMConfig, usage string) LLMConfig {
 	provider, ok := c.resolveBoundProvider(usage)
 	if !ok {

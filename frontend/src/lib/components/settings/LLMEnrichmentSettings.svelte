@@ -605,7 +605,7 @@
 
         {#if usageWarnings.length}
           <div class="warning-list" role="alert">
-            <p class="warning-head">{t("assign.dangling")}</p>
+            <p class="warning-head">{t("assign.warnings")}</p>
             {#each usageWarnings as w}<p>{w}</p>{/each}
           </div>
         {/if}

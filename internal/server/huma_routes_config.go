@@ -637,19 +637,26 @@ func llmConfigResponseFromConfig(llm config.LLMConfig) llmConfigResponse {
 			}
 		}
 	}
-	resp.UsageWarnings = danglingLLMUsageWarnings(llm)
+	resp.UsageWarnings = llmUsageWarnings(llm)
 	return resp
 }
 
-func danglingLLMUsageWarnings(llm config.LLMConfig) []string {
-	dangling := (&config.Config{LLM: llm}).DanglingLLMUsageBindings()
-	if len(dangling) == 0 {
-		return nil
-	}
-	warnings := make([]string, 0, len(dangling))
-	for _, usage := range dangling {
+func llmUsageWarnings(llm config.LLMConfig) []string {
+	cfg := &config.Config{LLM: llm}
+	warnings := make([]string, 0)
+	for _, usage := range cfg.DanglingLLMUsageBindings() {
 		provider := strings.TrimSpace(llm.Usage[usage])
 		warnings = append(warnings, fmt.Sprintf("usage %q references unknown provider %q", usage, provider))
+	}
+	// A bound provider replaces the whole embed block, so a key under
+	// [llm.embed] stops being used without any other signal.
+	if provider := cfg.ShadowedLLMEmbedProvider(); provider != "" {
+		warnings = append(warnings, fmt.Sprintf(
+			"usage %q is bound to provider %q, so the api_key under [llm.embed] is ignored",
+			"embed", provider))
+	}
+	if len(warnings) == 0 {
+		return nil
 	}
 	slices.Sort(warnings)
 	return warnings

@@ -372,6 +372,31 @@ func TestLLMProvidersGetReturnsUsageWarnings(t *testing.T) {
 	assert.Contains(t, warnings[0].(string), `usage "consolidate"`)
 }
 
+// Binding the embed usage to a provider silently overrides an api_key set
+// under [llm.embed]. The config then names two keys for one job and bills the
+// one nobody configured, so the surface has to say so.
+func TestLLMProvidersGetWarnsWhenEmbedKeyIsShadowed(t *testing.T) {
+	te := setup(t, withLLMConfig(func(c *config.LLMConfig) {
+		c.Embed = config.LLMEmbedConfig{
+			BaseURL: "https://openrouter.example/v1",
+			APIKey:  "embed-section-key",
+			Model:   "text-embedding-3-large",
+		}
+		c.Providers = map[string]config.LLMConfig{
+			"openrouter": {BaseURL: "https://openrouter.example/v1", APIKey: "provider-key"},
+		}
+		c.Usage = map[string]string{"embed": "openrouter"}
+	}))
+
+	w := te.get(t, "/api/v1/config/llm/providers")
+	assertStatus(t, w, http.StatusOK)
+	resp := decode[map[string]any](t, w)
+	warnings := resp["usage_warnings"].([]any)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0].(string), `[llm.embed]`)
+	assert.Contains(t, warnings[0].(string), `"openrouter"`)
+}
+
 func TestLLMProvidersPatchDeletesProvidersAndClearsUsage(t *testing.T) {
 	te := setup(t, withLLMConfig(func(c *config.LLMConfig) {
 		c.Providers = map[string]config.LLMConfig{

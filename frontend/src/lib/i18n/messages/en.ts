@@ -51,7 +51,7 @@ export const en: Record<string, string> = {
   "assign.desc": "For each usage: pick a configured provider + the model it runs.",
   "assign.use": "Use",
   "assign.noProvider": "(configure a provider above first)",
-  "assign.dangling": "These usages are bound to a missing provider and fell back to default:",
+  "assign.warnings": "Usage bindings have the following problems:",
 
   // language switch
   "lang.label": "Language",
