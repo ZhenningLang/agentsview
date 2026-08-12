@@ -655,8 +655,8 @@ func TestGetSessionStats_Distributions(t *testing.T) {
 		"peak_context scope_human: %+v", gotPC)
 	assert.Equal(t, 1, gotPC[4].Count,
 		"peak_context scope_human: %+v", gotPC)
-	assert.True(t, stats.Distributions.PeakContextTokens.ClaudeOnly,
-		"peak_context.claude_only")
+	assert.False(t, stats.Distributions.PeakContextTokens.ClaudeOnly,
+		"peak_context.claude_only is kept for v1 shape but is data-driven")
 	assert.Equal(t, 0,
 		stats.Distributions.PeakContextTokens.NullCount,
 		"peak_context.null_count")
@@ -727,10 +727,9 @@ func TestGetSessionStats_Distributions_NullPeakContext(t *testing.T) {
 		peakContext:    20_000,
 		hasPeakContext: true,
 	})
-	// Non-Claude session without peak-context must NOT increment
-	// NullCount: peak_context is Claude-only, so codex/cursor rows are
-	// outside the metric entirely. Guards against regressions that
-	// remove the r.agent == "claude" gate on the null branch.
+	// Session from an agent that never reports peak context in this
+	// window must NOT increment NullCount: only data-less rows from
+	// peak-context-reporting agents tally as null.
 	insertSessionFixture(t, d, sessionFixture{
 		id: "cx1", agent: "codex", userMsgs: 5,
 		startedAt:   hoursAgo(5),
@@ -751,6 +750,84 @@ func TestGetSessionStats_Distributions_NullPeakContext(t *testing.T) {
 	assert.Equal(t, 1, total,
 		"scope_all bucket total want 1 "+
 			"(the one Claude session with hasPeakContext=true)")
+}
+
+func TestGetSessionStats_Distributions_PeakContextNonClaude(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	insertSessionFixture(t, d, sessionFixture{
+		id: "droid-with-peak", agent: "droid", userMsgs: 5,
+		startedAt:      hoursAgo(5),
+		durationMin:    3.0,
+		peakContext:    25_000,
+		hasPeakContext: true,
+	})
+	insertSessionFixture(t, d, sessionFixture{
+		id: "kilo-with-peak", agent: "kilo", userMsgs: 5,
+		startedAt:      hoursAgo(5),
+		durationMin:    3.0,
+		peakContext:    120_000,
+		hasPeakContext: true,
+	})
+	insertSessionFixture(t, d, sessionFixture{
+		id: "droid-without-peak", agent: "droid", userMsgs: 5,
+		startedAt:   hoursAgo(5),
+		durationMin: 3.0,
+	})
+	insertSessionFixture(t, d, sessionFixture{
+		id: "codex-without-peak", agent: "codex", userMsgs: 5,
+		startedAt:   hoursAgo(5),
+		durationMin: 3.0,
+	})
+	insertSessionFixture(t, d, sessionFixture{
+		id: "kilo-automated-with-peak", agent: "kilo", userMsgs: 5,
+		startedAt:      hoursAgo(5),
+		durationMin:    3.0,
+		peakContext:    180_000,
+		hasPeakContext: true,
+		isAutomated:    true,
+	})
+
+	stats, err := d.GetSessionStats(ctx, StatsFilter{Since: "28d"})
+	require.NoError(t, err, "GetSessionStats")
+
+	pc := stats.Distributions.PeakContextTokens
+	totalAll := 0
+	for _, b := range pc.ScopeAll.Buckets {
+		totalAll += b.Count
+	}
+	assert.Equal(t, 3, totalAll,
+		"scope_all bucket total want all reporting rows: %+v",
+		pc.ScopeAll.Buckets)
+	assert.Equal(t, 1, pc.ScopeAll.Buckets[1].Count,
+		"25k droid session in bucket 1: %+v", pc.ScopeAll.Buckets)
+	assert.Equal(t, 1, pc.ScopeAll.Buckets[3].Count,
+		"120k kilo session in bucket 3: %+v", pc.ScopeAll.Buckets)
+	assert.Equal(t, 1, pc.ScopeAll.Buckets[4].Count,
+		"180k automated kilo session in bucket 4: %+v", pc.ScopeAll.Buckets)
+	assert.InDelta(t, (25_000.0+120_000.0+180_000.0)/3.0,
+		pc.ScopeAll.Mean, 0.01, "scope_all mean over reporting rows")
+
+	totalHuman := 0
+	for _, b := range pc.ScopeHuman.Buckets {
+		totalHuman += b.Count
+	}
+	assert.Equal(t, 2, totalHuman,
+		"scope_human bucket total excludes automated row: %+v",
+		pc.ScopeHuman.Buckets)
+	assert.Equal(t, 1, pc.ScopeHuman.Buckets[1].Count,
+		"25k droid human session in bucket 1: %+v", pc.ScopeHuman.Buckets)
+	assert.Equal(t, 1, pc.ScopeHuman.Buckets[3].Count,
+		"120k kilo human session in bucket 3: %+v", pc.ScopeHuman.Buckets)
+	assert.Equal(t, 0, pc.ScopeHuman.Buckets[4].Count,
+		"automated 180k kilo session excluded from human: %+v", pc.ScopeHuman.Buckets)
+	assert.InDelta(t, (25_000.0+120_000.0)/2.0,
+		pc.ScopeHuman.Mean, 0.01, "scope_human mean over human reporting rows")
+
+	assert.Equal(t, 1, pc.NullCount,
+		"null_count want only droid-without-peak; codex never reports in window")
+	assert.False(t, pc.ClaudeOnly, "claude_only must be false")
 }
 
 // seedVelocityMessages inserts len(offsetsSec) messages for sessionID,
