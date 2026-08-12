@@ -591,17 +591,6 @@ func repairLegacySchemaBeforeInit(
 	return nil
 }
 
-// needsDataResync checks whether user_version is behind the
-// current dataVersion, indicating parser changes that require
-// re-processing existing files.
-func needsDataResync(conn *sql.DB) (bool, error) {
-	version, err := readUserVersion(conn)
-	if err != nil {
-		return false, err
-	}
-	return version < dataVersion, nil
-}
-
 // migrateColumns adds columns introduced by this branch to
 // databases created by older releases. Each migration is
 // idempotent — it only runs when the column is missing.

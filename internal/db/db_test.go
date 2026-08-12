@@ -5587,7 +5587,7 @@ func TestOpenMigratesLegacyMemoryWithoutSourceColumn(t *testing.T) {
 
 	// Build a complete, current database, then strip the memory.source column
 	// to faithfully simulate a database created before P1 added it: a fully
-	// populated schema (so needsSchemaRebuild does NOT trigger a full rebuild
+	// populated schema (so legacy schema repair does NOT trigger a full resync
 	// that would hide the bug) that is missing only memory.source. This is the
 	// exact shape that crashed in the field.
 	seed, err := Open(path)

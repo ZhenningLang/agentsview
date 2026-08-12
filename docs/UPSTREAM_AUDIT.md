@@ -23,6 +23,7 @@
 - **Status:** `v1 reviewed with known residual accuracy risk`.
 - **Semantically reviewed primary records currently written:** `187`.
 - This v1 ledger has not received a full manual semantic review. Round-2 reviewer spot-check sampled 12 records and found 3 errors (25%); the quality follow-up is recorded in `docs/UPSTREAM_BACKLOG.md`.
+- **Reliability limitation:** natural-language decisions in this ledger have not reached the per-record reliable audit standard. The observed `spot_check_error_rate` is 25%, and full semantic re-review of all 187 records is a backlog item before using this ledger as a scheduling source.
 
 ## Scope And Candidate Contract
 - Merge commits are excluded with `git log --no-merges`; this range currently has zero merges, but the rule is explicit for the next audit.

@@ -55,6 +55,8 @@ Source ledger: `docs/UPSTREAM_AUDIT.md`. This file contains only records whose l
 ### Ledger v1 semantic accuracy follow-up
 - **Source:** `docs/UPSTREAM_AUDIT.md` spot check metadata.
 - **Observed accuracy:** reviewer B sampled 12 records on 2026-08-13 and found 3 errors, a 25% error rate.
-- **Reason:** this v1 ledger combines manual review with path-based conservative triage; it is useful as a committed baseline but has not received full manual semantic review.
-- **Proposed acceptance:** before the next upstream increment, sample at least one record per `(Category, Decision)` combination plus all `adopt+backlog` items, record per-SHA conclusions, and fix any failed cohort before using the ledger as a scheduling source.
+- **Reliability limitation:** natural-language decisions have not reached the per-record reliable audit standard. Category, Evidence wording, and Revisit trigger are partially generated from path buckets; an incorrect bucket can make all three wrong together.
+- **Reason:** this v1 ledger combines manual review with path-based conservative triage; it is useful as a committed coverage baseline but has not received full manual semantic review.
+- **Priority:** `P0`
+- **Proposed acceptance:** before the next upstream increment, perform full semantic re-review of all 187 primary records, record per-SHA conclusions, recompute `spot_check_error_rate`, and fix any failed cohort before using the ledger as a scheduling source.
 - **Review after:** `2026-09-12`
