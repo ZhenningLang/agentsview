@@ -14,6 +14,7 @@
   import { copyToClipboard } from "../../utils/clipboard.js";
   import { stripIdPrefix } from "../../utils/resume.js";
   import { normalizeMessagePreview } from "../../utils/messages.js";
+  import { isSearchableQuery } from "../../utils/search-query.js";
   import type { Session, SearchResult } from "../../api/types.js";
 
   let inputRef: HTMLInputElement | undefined = $state(undefined);
@@ -35,7 +36,7 @@
 
   // Filtered recent sessions (client-side filter)
   let recentSessions = $derived.by(() => {
-    if (inputValue.length > 0 && inputValue.length < 3) {
+    if (inputValue.length > 0 && !isSearchableQuery(inputValue)) {
       const q = inputValue.toLowerCase();
       return sessions.sessions
         .filter(
@@ -52,8 +53,9 @@
     return [];
   });
 
-  // Combined results: search results when query >= 3 chars, else recent
-  let showSearchResults = $derived(inputValue.length >= 3);
+  // Combined results: search results once the query clears the per-script
+  // length threshold, else recent sessions.
+  let showSearchResults = $derived(isSearchableQuery(inputValue));
 
   let totalItems = $derived(
     showSearchResults
@@ -66,7 +68,7 @@
     inputValue = target.value;
     selectedIndex = 0;
 
-    if (inputValue.length >= 3) {
+    if (isSearchableQuery(inputValue)) {
       searchStore.search(inputValue, sessions.filters.project);
     } else {
       searchStore.clear();
@@ -169,7 +171,7 @@
     </div>
 
     <div class="palette-results">
-      {#if showSearchResults}
+      {#if searchStore.semanticAvailable || showSearchResults}
         <div class="palette-sort">
           {#if searchStore.semanticAvailable}
             <button
@@ -185,21 +187,25 @@
               onclick={() => { searchStore.setMode("semantic"); selectedIndex = 0; }}
             >Semantic</button>
           {/if}
-          <button
-            class="sort-btn"
-            class:active={searchStore.sort === "relevance"}
-            disabled={searchStore.mode === "semantic"}
-            onmousedown={(e: MouseEvent) => e.preventDefault()}
-            onclick={() => { searchStore.setSort("relevance"); selectedIndex = 0; }}
-          >Relevance</button>
-          <button
-            class="sort-btn"
-            class:active={searchStore.sort === "recency"}
-            disabled={searchStore.mode === "semantic"}
-            onmousedown={(e: MouseEvent) => e.preventDefault()}
-            onclick={() => { searchStore.setSort("recency"); selectedIndex = 0; }}
-          >Recency</button>
+          {#if showSearchResults}
+            <button
+              class="sort-btn"
+              class:active={searchStore.sort === "relevance"}
+              disabled={searchStore.mode === "semantic"}
+              onmousedown={(e: MouseEvent) => e.preventDefault()}
+              onclick={() => { searchStore.setSort("relevance"); selectedIndex = 0; }}
+            >Relevance</button>
+            <button
+              class="sort-btn"
+              class:active={searchStore.sort === "recency"}
+              disabled={searchStore.mode === "semantic"}
+              onmousedown={(e: MouseEvent) => e.preventDefault()}
+              onclick={() => { searchStore.setSort("recency"); selectedIndex = 0; }}
+            >Recency</button>
+          {/if}
         </div>
+      {/if}
+      {#if showSearchResults}
         {#if searchStore.isSearching}
           <div class="palette-empty">Searching...</div>
         {:else if searchStore.results.length === 0}
