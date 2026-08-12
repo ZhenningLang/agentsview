@@ -100,6 +100,7 @@ func (db *DB) Search(
 	if f.Limit <= 0 || f.Limit > MaxSearchLimit {
 		f.Limit = DefaultSearchLimit
 	}
+	f.Query = PrepareFTSQuery(f.Query)
 
 	// ORDER BY for the outer query. FTS5 ranks are negative (lower = better),
 	// so rank ASC places message matches (negative rank) before name-only rows
@@ -133,11 +134,10 @@ func (db *DB) Search(
 	}
 
 	innerWhereSQL := strings.Join(innerWhere, " AND ")
-	// Strip FTS phrase-matching quotes before substring operations.
-	// The HTTP handler wraps multi-word queries in double quotes for FTS
-	// (e.g. "fix bug" → `"fix bug"`). LIKE and instr() must use the
-	// plain text form so name/content substring searches work correctly.
-	plainQuery := stripFTSQuotes(f.Query)
+	// Strip canonical FTS phrase quotes before substring operations. LIKE and
+	// instr() must use the plain text form so name/content substring searches
+	// work correctly.
+	plainQuery := StripFTSQuotes(f.Query)
 	if plainQuery == "" {
 		return SearchPage{}, nil
 	}
@@ -366,12 +366,42 @@ func (db *DB) SearchSession(
 	return ordinals, rows.Err()
 }
 
-// stripFTSQuotes removes surrounding double quotes added by the HTTP
-// handler's prepareFTSQuery for FTS phrase matching, returning the plain
-// search term for substring operations (LIKE, instr).
-func stripFTSQuotes(v string) string {
-	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
-		return v[1 : len(v)-1]
+// PrepareFTSQuery returns a safe SQLite FTS5 phrase query for global search.
+// Operator characters inside the phrase are treated as search content rather
+// than FTS syntax. Existing canonical phrases are returned unchanged.
+func PrepareFTSQuery(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
 	}
-	return v
+	if isCanonicalFTSPhrase(trimmed) {
+		return trimmed
+	}
+	return `"` + strings.ReplaceAll(trimmed, `"`, `""`) + `"`
+}
+
+// StripFTSQuotes reverses PrepareFTSQuery's canonical phrase form so substring
+// backends and LIKE branches search the user's original text.
+func StripFTSQuotes(prepared string) string {
+	if !isCanonicalFTSPhrase(prepared) {
+		return strings.TrimSpace(prepared)
+	}
+	inner := prepared[1 : len(prepared)-1]
+	return strings.ReplaceAll(inner, `""`, `"`)
+}
+
+func isCanonicalFTSPhrase(v string) bool {
+	if len(v) < 2 || v[0] != '"' || v[len(v)-1] != '"' {
+		return false
+	}
+	for i := 1; i < len(v)-1; i++ {
+		if v[i] != '"' {
+			continue
+		}
+		if i+1 >= len(v)-1 || v[i+1] != '"' {
+			return false
+		}
+		i++
+	}
+	return true
 }

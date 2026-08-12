@@ -1,10 +1,6 @@
 package server
 
-import (
-	"strings"
-
-	"go.kenn.io/agentsview/internal/db"
-)
+import "go.kenn.io/agentsview/internal/db"
 
 type searchResponse struct {
 	Query   string            `json:"query"`
@@ -13,13 +9,9 @@ type searchResponse struct {
 	Next    int               `json:"next"`
 }
 
-// prepareFTSQuery wraps multi-word queries in quotes so
-// SQLite FTS matches the exact phrase rather than individual
-// terms.
+// prepareFTSQuery wraps global search input as a canonical FTS phrase so
+// operator characters are treated as content. Multi-word queries keep the
+// existing exact-phrase semantics, and canonical quoted phrases are idempotent.
 func prepareFTSQuery(raw string) string {
-	if strings.Contains(raw, " ") &&
-		!strings.HasPrefix(raw, "\"") {
-		return "\"" + raw + "\""
-	}
-	return raw
+	return db.PrepareFTSQuery(raw)
 }

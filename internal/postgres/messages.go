@@ -149,15 +149,6 @@ func escapeLike(v string) string {
 	return db.EscapeLikePattern(v)
 }
 
-// stripFTSQuotes removes surrounding double quotes that
-// prepareFTSQuery adds for SQLite FTS phrase matching.
-func stripFTSQuotes(v string) string {
-	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
-		return v[1 : len(v)-1]
-	}
-	return v
-}
-
 // Search performs ILIKE-based full-text search across messages,
 // grouped to one result per session via DISTINCT ON, UNION'd with a
 // session metadata (display_name / first_message / llm_*) branch.
@@ -168,7 +159,7 @@ func (s *Store) Search(
 		f.Limit = db.DefaultSearchLimit
 	}
 
-	searchTerm := stripFTSQuotes(f.Query)
+	searchTerm := db.StripFTSQuotes(f.Query)
 	if searchTerm == "" {
 		return db.SearchPage{}, nil
 	}

@@ -33,6 +33,97 @@ func TestStoreSearchILIKE(t *testing.T) {
 	}
 }
 
+func TestPGSearchOperatorCharacterQueries(t *testing.T) {
+	pgURL := testPGURL(t)
+	ensureStoreSchema(t, pgURL)
+
+	pg, err := Open(pgURL, testSchema, false)
+	require.NoError(t, err, "Open")
+	defer pg.Close()
+
+	fixtures := map[string]string{
+		"pg-error":       "diagnosed error-401 during login",
+		"pg-status":      "observed status:500 from service",
+		"pg-asterisk":    "literal foo*bar marker",
+		"pg-near":        "the NEAR token is written here",
+		"pg-and-phrase":  "query contains a AND b as typed",
+		"pg-and-decoy":   "query contains a distant b only",
+		"pg-quoted":      "quoted phrase appears here",
+		"pg-embed-quote": `contains 裸"双引号 boundary`,
+		"pg-backslash":   `tail\ marker is preserved`,
+		"pg-cjk":         "侯爽 wrote this note",
+		"pg-cjk-mixed":   "侯s mixed token appears",
+	}
+	for id, content := range fixtures {
+		_, err = pg.Exec(`
+			INSERT INTO sessions
+				(id, machine, project, agent, first_message,
+				 started_at, ended_at, message_count,
+				 user_message_count)
+			VALUES
+				($1, 'test-machine', 'operator-search', 'claude', $2,
+				 '2026-08-12T10:00:00Z'::timestamptz,
+				 '2026-08-12T10:30:00Z'::timestamptz,
+				 1, 1)
+		`, id, content)
+		require.NoError(t, err, "inserting session %s", id)
+		_, err = pg.Exec(`
+			INSERT INTO messages
+				(session_id, ordinal, role, content,
+				 timestamp, content_length)
+			VALUES
+				($1, 0, 'user', $2,
+				 '2026-08-12T10:00:00Z'::timestamptz, $3)
+		`, id, content, len(content))
+		require.NoError(t, err, "inserting message %s", id)
+	}
+
+	store, err := NewStore(pgURL, testSchema, true)
+	require.NoError(t, err, "NewStore")
+	defer store.Close()
+
+	tests := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{name: "dash operator", raw: "error-401", want: []string{"pg-error"}},
+		{name: "colon operator", raw: "status:500", want: []string{"pg-status"}},
+		{name: "asterisk operator", raw: "foo*bar", want: []string{"pg-asterisk"}},
+		{name: "NEAR operator", raw: "NEAR", want: []string{"pg-near"}},
+		{name: "AND remains exact phrase", raw: "a AND b", want: []string{"pg-and-phrase"}},
+		{name: "quoted phrase", raw: `"quoted phrase"`, want: []string{"pg-quoted"}},
+		{name: "embedded quote", raw: `裸"双引号`, want: []string{"pg-embed-quote"}},
+		{name: "trailing backslash", raw: `tail\`, want: []string{"pg-backslash"}},
+		{name: "pure CJK", raw: "侯爽", want: []string{"pg-cjk"}},
+		{name: "CJK ASCII mixed", raw: "侯s", want: []string{"pg-cjk-mixed"}},
+		{name: "empty", raw: "", want: nil},
+	}
+
+	ctx := context.Background()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			page, err := store.Search(ctx, db.SearchFilter{
+				Query: db.PrepareFTSQuery(tt.raw),
+				Limit: 20,
+			})
+			require.NoError(t, err, "Search")
+			assert.Equal(t, tt.want, pgSearchResultIDs(page.Results))
+		})
+	}
+}
+
+func pgSearchResultIDs(results []db.SearchResult) []string {
+	if len(results) == 0 {
+		return nil
+	}
+	ids := make([]string, len(results))
+	for i, result := range results {
+		ids[i] = result.SessionID
+	}
+	return ids
+}
+
 func TestPGSearchDeduplication(t *testing.T) {
 	pgURL := testPGURL(t)
 	ensureStoreSchema(t, pgURL)

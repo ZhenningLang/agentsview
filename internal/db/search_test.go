@@ -417,6 +417,58 @@ func TestSearch(t *testing.T) {
 	})
 }
 
+func TestSearchOperatorCharacterQueries(t *testing.T) {
+	d := testDB(t)
+	requireFTS(t, d)
+
+	fixtures := map[string]string{
+		"s-error":       "diagnosed error-401 during login",
+		"s-status":      "observed status:500 from service",
+		"s-asterisk":    "literal foo*bar marker",
+		"s-near":        "the NEAR token is written here",
+		"s-and-phrase":  "query contains a AND b as typed",
+		"s-and-decoy":   "query contains a distant b only",
+		"s-quoted":      "quoted phrase appears here",
+		"s-embed-quote": `contains 裸"双引号 boundary`,
+		"s-backslash":   `tail\ marker is preserved`,
+		"s-cjk":         "侯爽 wrote this note",
+		"s-cjk-mixed":   "侯s mixed token appears",
+	}
+	for id, content := range fixtures {
+		insertSession(t, d, id, "proj-search")
+		insertMessages(t, d, userMsg(id, 0, content))
+	}
+
+	tests := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{name: "dash operator", raw: "error-401", want: []string{"s-error"}},
+		{name: "colon operator", raw: "status:500", want: []string{"s-status"}},
+		{name: "asterisk operator", raw: "foo*bar", want: []string{"s-asterisk"}},
+		{name: "NEAR operator", raw: "NEAR", want: []string{"s-near"}},
+		{name: "AND remains exact phrase", raw: "a AND b", want: []string{"s-and-phrase"}},
+		{name: "quoted phrase", raw: `"quoted phrase"`, want: []string{"s-quoted"}},
+		{name: "embedded quote", raw: `裸"双引号`, want: []string{"s-embed-quote"}},
+		{name: "trailing backslash", raw: `tail\`, want: []string{"s-backslash"}},
+		{name: "pure CJK", raw: "侯爽", want: []string{"s-cjk"}},
+		{name: "CJK ASCII mixed", raw: "侯s", want: []string{"s-cjk-mixed"}},
+		{name: "empty", raw: "", want: []string{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			page, err := d.Search(context.Background(), SearchFilter{
+				Query: tt.raw,
+				Limit: 20,
+			})
+			require.NoError(t, err, "Search")
+			assert.Equal(t, tt.want, searchResultIDs(page.Results))
+		})
+	}
+}
+
 func setSearchLLMFields(t *testing.T, d *DB, sessionID, title, summary, keywords string) {
 	t.Helper()
 	_, err := d.getWriter().Exec(`
