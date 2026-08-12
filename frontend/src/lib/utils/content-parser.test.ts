@@ -81,7 +81,7 @@ describe("parseContent", () => {
 
   it("preserves leading whitespace in tail text", () => {
     const segments =
-      parseContent("```code\ncontent```\n  Trailing text");
+      parseContent("```code\ncontent\n```\n  Trailing text");
     expect(segments).toHaveLength(2);
     expect(segments[0]).toMatchObject({ type: "code" });
     expect(segments[1]).toEqual({
@@ -107,6 +107,47 @@ describe("parseContent", () => {
         type: "code",
         content: "const x = 1;\n",
         label: "typescript",
+      },
+    ]);
+  });
+
+  it("keeps nested shorter fences inside longer code blocks", () => {
+    const content =
+      '````markdown\nSome context paragraph.\n\n```qmd\nauthor: "Jane Doe"\n```\n\nMore context here.\n````';
+    const segments = parseContent(content);
+    expect(segments).toEqual([
+      {
+        type: "code",
+        content:
+          'Some context paragraph.\n\n```qmd\nauthor: "Jane Doe"\n```\n\nMore context here.\n',
+        label: "markdown",
+      },
+    ]);
+  });
+
+  it("treats a same-line closing fence as unclosed", () => {
+    // CommonMark requires the closing fence on its own line, so
+    // "content```" does not close the block and the scanner emits
+    // no code segment at all. The old lazy regex accepted it.
+    const segments = parseContent("```code\ncontent```\ntail");
+    expect(segments).toEqual([
+      { type: "text", content: "```code\ncontent```\ntail" },
+    ]);
+  });
+
+  it("keeps inline same-length backtick runs inside code blocks", () => {
+    const content =
+      '```javascript\nconst fence = "```";\n[Thinking]\nnot parsed\n```\nAfter';
+    const segments = parseContent(content);
+    expect(segments).toEqual([
+      {
+        type: "code",
+        content: 'const fence = "```";\n[Thinking]\nnot parsed\n',
+        label: "javascript",
+      },
+      {
+        type: "text",
+        content: "\nAfter",
       },
     ]);
   });
