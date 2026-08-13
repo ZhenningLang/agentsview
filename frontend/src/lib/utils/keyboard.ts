@@ -40,6 +40,7 @@ function isFindInput(): boolean {
 
 interface ShortcutOptions {
   navigateMessage: (delta: number) => void;
+  navigateUserPrompt: (delta: number) => void;
 }
 
 function handleEscape(): void {
@@ -144,6 +145,19 @@ export function registerShortcuts(
 
     // All other shortcuts: skip when modal open or input focused
     if (ui.activeModal !== null || isInputFocused()) return;
+
+    // Shift+J / Shift+K jump between user prompts. Checked before the plain
+    // key map so the Shift variant never also triggers plain j/k navigation.
+    // The key is normalized because Caps Lock inverts it: Shift+J then reports
+    // `e.key === "j"`, which would otherwise fall through to plain navigation.
+    if (e.shiftKey) {
+      const shifted = e.key.toLowerCase();
+      if (shifted === "j" || shifted === "k") {
+        e.preventDefault();
+        opts.navigateUserPrompt(shifted === "j" ? 1 : -1);
+        return;
+      }
+    }
 
     const keyActions: Record<string, () => void> = {
       j: () => opts.navigateMessage(1),

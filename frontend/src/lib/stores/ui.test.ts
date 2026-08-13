@@ -583,6 +583,147 @@ describe("UIStore", () => {
     });
   });
 
+  describe("session vitals Calls disclosure", () => {
+    const KEY = "agentsview-session-vitals-calls-expanded";
+
+    type FreshUI = {
+      ui: Record<string, unknown> & { toggleVitalsCalls: () => void };
+    };
+
+    async function freshStore(
+      storage: unknown,
+      load: () => Promise<unknown>,
+    ): Promise<FreshUI> {
+      const original = globalThis.localStorage;
+      Object.defineProperty(globalThis, "localStorage", {
+        value: storage,
+        writable: true,
+        configurable: true,
+      });
+      try {
+        return (await load()) as FreshUI;
+      } finally {
+        Object.defineProperty(globalThis, "localStorage", {
+          value: original,
+          writable: true,
+          configurable: true,
+        });
+      }
+    }
+
+    it("defaults to expanded when nothing is stored", async () => {
+      const mod = await freshStore(
+        { getItem: vi.fn(() => null), setItem: vi.fn() },
+        // @ts-expect-error -- cache bust for a fresh UIStore instance
+        () => import("./ui.svelte.js?callsMissing"),
+      );
+      expect(mod.ui.vitalsCallsExpanded).toBe(true);
+    });
+
+    it('restores the collapsed choice from a stored "false"', async () => {
+      const mod = await freshStore(
+        {
+          getItem: vi.fn((key: string) => (key === KEY ? "false" : null)),
+          setItem: vi.fn(),
+        },
+        // @ts-expect-error -- cache bust for a fresh UIStore instance
+        () => import("./ui.svelte.js?callsCollapsed"),
+      );
+      expect(mod.ui.vitalsCallsExpanded).toBe(false);
+    });
+
+    it("falls back to expanded for an unparseable stored value", async () => {
+      const mod = await freshStore(
+        {
+          getItem: vi.fn((key: string) => (key === KEY ? "nope" : null)),
+          setItem: vi.fn(),
+        },
+        // @ts-expect-error -- cache bust for a fresh UIStore instance
+        () => import("./ui.svelte.js?callsInvalid"),
+      );
+      expect(mod.ui.vitalsCallsExpanded).toBe(true);
+    });
+
+    it("falls back to expanded when storage is null or has no getItem", async () => {
+      const nullStorage = await freshStore(
+        null,
+        // @ts-expect-error -- cache bust for a fresh UIStore instance
+        () => import("./ui.svelte.js?callsNullStorage"),
+      );
+      expect(nullStorage.ui.vitalsCallsExpanded).toBe(true);
+
+      const noGetItem = await freshStore(
+        { setItem: vi.fn() },
+        // @ts-expect-error -- cache bust for a fresh UIStore instance
+        () => import("./ui.svelte.js?callsNoGetItem"),
+      );
+      expect(noGetItem.ui.vitalsCallsExpanded).toBe(true);
+    });
+
+    it("persists the toggled choice under the namespaced key", async () => {
+      const setItem = vi.fn();
+      const mod = await freshStore(
+        { getItem: vi.fn(() => null), setItem },
+        // @ts-expect-error -- cache bust for a fresh UIStore instance
+        () => import("./ui.svelte.js?callsPersist"),
+      );
+      const original = globalThis.localStorage;
+      Object.defineProperty(globalThis, "localStorage", {
+        value: { getItem: vi.fn(() => null), setItem },
+        writable: true,
+        configurable: true,
+      });
+      try {
+        setItem.mockClear();
+        mod.ui.toggleVitalsCalls();
+        await tick();
+        expect(mod.ui.vitalsCallsExpanded).toBe(false);
+        expect(setItem).toHaveBeenLastCalledWith(KEY, "false");
+
+        mod.ui.toggleVitalsCalls();
+        await tick();
+        expect(mod.ui.vitalsCallsExpanded).toBe(true);
+        expect(setItem).toHaveBeenLastCalledWith(KEY, "true");
+      } finally {
+        Object.defineProperty(globalThis, "localStorage", {
+          value: original,
+          writable: true,
+          configurable: true,
+        });
+      }
+    });
+
+    it("keeps toggling in-page when persistence throws", async () => {
+      // Scoped to this key: the theme effect writes `theme` unguarded (see
+      // BACKLOG P12-1), and a blanket throw would surface that instead.
+      const setItem = vi.fn((key: string) => {
+        if (key === KEY) throw new Error("quota exceeded");
+      });
+      const mod = await freshStore(
+        { getItem: vi.fn(() => null), setItem },
+        // @ts-expect-error -- cache bust for a fresh UIStore instance
+        () => import("./ui.svelte.js?callsPersistThrows"),
+      );
+      const original = globalThis.localStorage;
+      Object.defineProperty(globalThis, "localStorage", {
+        value: { getItem: vi.fn(() => null), setItem },
+        writable: true,
+        configurable: true,
+      });
+      try {
+        mod.ui.toggleVitalsCalls();
+        await tick();
+        expect(mod.ui.vitalsCallsExpanded).toBe(false);
+      } finally {
+        Object.defineProperty(globalThis, "localStorage", {
+          value: original,
+          writable: true,
+          configurable: true,
+        });
+      }
+    });
+  });
+
   describe("block type filtering", () => {
     beforeEach(() => {
       ui.showAllBlocks();

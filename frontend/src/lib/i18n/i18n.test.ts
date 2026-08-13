@@ -42,6 +42,61 @@ describe("i18n", () => {
     expect(LOCALES).toEqual(["zh", "en"]);
   });
 
+  it("translates every phase-12 key in both locales", () => {
+    const keys = [
+      "header.copySourcePath",
+      "session.malformedLines.one",
+      "session.malformedLines.other",
+      "session.malformedLines.tooltip.one",
+      "session.malformedLines.tooltip.other",
+      "shortcuts.nextUserPrompt",
+      "shortcuts.prevUserPrompt",
+      "toolBlock.copyInput",
+      "toolBlock.copiedInput",
+      "toolBlock.copyOutput",
+      "toolBlock.copiedOutput",
+    ];
+    for (const loc of LOCALES) {
+      setLocale(loc);
+      for (const key of keys) {
+        expect(t(key)).not.toBe(key); // translated, not raw key
+        expect(t(key).trim()).not.toBe("");
+      }
+    }
+  });
+
+  it("interpolates the malformed-lines count in both locales", () => {
+    setLocale("en");
+    expect(t("session.malformedLines.one", { count: 1 })).toBe(
+      "1 malformed line",
+    );
+    expect(t("session.malformedLines.other", { count: 7 })).toBe(
+      "7 malformed lines",
+    );
+    expect(t("session.malformedLines.tooltip.one", { count: 1 })).toBe(
+      "1 line in the source file could not be parsed",
+    );
+    expect(t("session.malformedLines.tooltip.other", { count: 7 })).toBe(
+      "7 lines in the source file could not be parsed",
+    );
+
+    setLocale("zh");
+    expect(t("session.malformedLines.other", { count: 7 })).toBe(
+      "7 行无法解析",
+    );
+    expect(t("session.malformedLines.tooltip.other", { count: 7 })).toBe(
+      "源文件中有 7 行无法解析",
+    );
+    for (const key of [
+      "session.malformedLines.one",
+      "session.malformedLines.other",
+      "session.malformedLines.tooltip.one",
+      "session.malformedLines.tooltip.other",
+    ]) {
+      expect(t(key, { count: 2 })).not.toContain("{count}");
+    }
+  });
+
   it("covers every usage label + description in both locales", () => {
     const usages = ["enrich", "consolidate", "embed", "recall_rerank"];
     for (const loc of LOCALES) {

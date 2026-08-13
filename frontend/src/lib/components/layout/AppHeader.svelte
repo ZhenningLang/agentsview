@@ -6,6 +6,7 @@
     ChartColumnIcon,
     CheckIcon,
     CloudUploadIcon,
+    CopyIcon,
     DownloadIcon,
     EllipsisIcon,
     FileTextIcon,
@@ -48,6 +49,7 @@
   import { fetchBalance } from "../../api/llm.js";
   import { isRemoteConnection } from "../../api/runtime.js";
   import { copyToClipboard } from "../../utils/clipboard.js";
+  import { t } from "../../i18n/index.svelte.js";
   import { onMount } from "svelte";
   import ProjectTypeahead from "./ProjectTypeahead.svelte";
   import ImportModal from "../import/ImportModal.svelte";
@@ -263,6 +265,17 @@
     showOverflow = false;
   }
 
+  // Copies the on-disk transcript path of the hydrated active session. The
+  // action is hidden when there is no path, so an empty clipboard write is
+  // impossible; a failed write leaves the menu open rather than faking success.
+  async function handleCopySourceFilePath() {
+    if (!activeSessionFilePath) return;
+    const ok = await copyToClipboard(activeSessionFilePath);
+    if (!ok) return;
+    showExportMenu = false;
+    showOverflow = false;
+  }
+
   function openPublish(secret: boolean) {
     ui.publishSecret = secret;
     ui.activeModal = "publish";
@@ -272,6 +285,11 @@
 
   const hasActiveSession = $derived(
     sessions.activeSessionId !== null,
+  );
+  // Empty for skinny sidebar rows: activeSession only resolves once the detail
+  // response has hydrated the row, and only that response carries file_path.
+  const activeSessionFilePath = $derived(
+    sessions.activeSession?.file_path ?? "",
   );
 
   // Close block filter dropdown on outside click
@@ -676,6 +694,15 @@
                 {/if}
               </span>
             </button>
+            {#if activeSessionFilePath}
+              <button
+                class="overflow-item"
+                onclick={handleCopySourceFilePath}
+              >
+                <CopyIcon size="13" strokeWidth="2" aria-hidden="true" />
+                <span>{t("header.copySourcePath")}</span>
+              </button>
+            {/if}
           </div>
         {/if}
       </div>
@@ -762,6 +789,15 @@
                 {/if}
               </span>
             </button>
+            {#if activeSessionFilePath}
+              <button
+                class="overflow-item"
+                onclick={handleCopySourceFilePath}
+              >
+                <CopyIcon size="13" strokeWidth="2" aria-hidden="true" />
+                <span>{t("header.copySourcePath")}</span>
+              </button>
+            {/if}
             <button
               class="overflow-item"
               onclick={() => openPublish(false)}

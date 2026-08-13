@@ -9,6 +9,16 @@ vi.mock("./SubagentInline.svelte", () => ({
   default: {},
 }));
 
+const copyToClipboardMock = vi.hoisted(() =>
+  vi.fn().mockResolvedValue(true),
+);
+
+vi.mock("../../utils/clipboard.js", () => ({
+  copyToClipboard: copyToClipboardMock,
+}));
+
+import { setLocale } from "../../i18n/index.svelte.js";
+
 // @ts-ignore
 import ToolBlock from "./ToolBlock.svelte";
 
@@ -794,5 +804,375 @@ describe("ToolBlock collapsed preview", () => {
 
     const preview = document.querySelector(".tool-header .tool-preview");
     expect(preview!.textContent).toBe("Run subagent task");
+  });
+});
+
+describe("ToolBlock copy affordances", () => {
+  let component: ReturnType<typeof mount> | undefined;
+
+  const INPUT_COPY = 'button[aria-label="Copy tool input"]';
+  const OUTPUT_COPY = 'button[aria-label="Copy tool output"]';
+
+  beforeEach(() => {
+    copyToClipboardMock.mockClear();
+    copyToClipboardMock.mockResolvedValue(true);
+    setLocale("en");
+  });
+
+  afterEach(() => {
+    if (component) {
+      unmount(component);
+      component = undefined;
+    }
+    setLocale("zh");
+    document.body.innerHTML = "";
+  });
+
+  function render(props: {
+    content: string;
+    label?: string;
+    toolCall?: ToolCall;
+  }) {
+    component = mount(ToolBlock, { target: document.body, props });
+    return tick();
+  }
+
+  async function clickCopy(selector: string) {
+    document.querySelector<HTMLButtonElement>(selector)!.click();
+    await Promise.resolve();
+    await tick();
+  }
+
+  it("copies the full Task prompt without expanding the block", async () => {
+    const prompt = Array.from(
+      { length: 40 },
+      (_, i) => `prompt line ${i + 1}`,
+    ).join("\n");
+    const toolCall: ToolCall = {
+      tool_name: "Task",
+      input_json: JSON.stringify({ prompt, description: "Do a thing" }),
+    };
+    await render({ content: "", label: "Task", toolCall });
+
+    expect(document.querySelector(".tool-content")).toBeNull();
+    await clickCopy(INPUT_COPY);
+
+    expect(copyToClipboardMock).toHaveBeenCalledWith(prompt);
+    // Copying must not expand the block.
+    expect(document.querySelector(".tool-content")).toBeNull();
+  });
+
+  it("copies the full Bash fallback while the preview stays truncated", async () => {
+    const command = Array.from(
+      { length: 260 },
+      (_, i) => `echo step-${i + 1}`,
+    ).join("\n");
+    const toolCall: ToolCall = {
+      tool_name: "Bash",
+      category: "Bash",
+      input_json: JSON.stringify({
+        command,
+        description: "long script",
+        agent__intent: "internal-only",
+      }),
+    };
+    await render({ content: "", label: "Bash", toolCall });
+
+    await clickCopy(INPUT_COPY);
+
+    const copied = copyToClipboardMock.mock.calls[0]![0] as string;
+    expect(copied).toBe(
+      `description: long script\ncommand: ${command}`,
+    );
+    expect(copied).not.toContain("lines total");
+    expect(copied).not.toContain("internal-only");
+
+    // The rendered preview keeps the 20-line display cap.
+    document.querySelector<HTMLButtonElement>(".tool-header")!.click();
+    await tick();
+    const shown = document.querySelector(".tool-content")!.textContent!;
+    expect(shown.split("\n").length).toBe(20);
+  });
+
+  it("copies the full Edit diff, including a pre-computed patch", async () => {
+    const oldStr = Array.from({ length: 150 }, (_, i) => `old ${i}`).join("\n");
+    const newStr = Array.from({ length: 150 }, (_, i) => `new ${i}`).join("\n");
+    await render({
+      content: "",
+      label: "Edit",
+      toolCall: {
+        tool_name: "Edit",
+        category: "Edit",
+        input_json: JSON.stringify({
+          file_path: "/tmp/a.ts",
+          old_string: oldStr,
+          new_string: newStr,
+        }),
+      } satisfies ToolCall,
+    });
+
+    await clickCopy(INPUT_COPY);
+    const copied = copyToClipboardMock.mock.calls[0]![0] as string;
+    expect(copied.split("\n").length).toBe(301);
+    expect(copied).not.toContain("lines total");
+    expect(copied.endsWith("+new 149")).toBe(true);
+
+    unmount(component!);
+    component = undefined;
+    document.body.innerHTML = "";
+    copyToClipboardMock.mockClear();
+
+    const patch = Array.from({ length: 240 }, (_, i) => `+patched ${i}`).join(
+      "\n",
+    );
+    await render({
+      content: "",
+      label: "Edit",
+      toolCall: {
+        tool_name: "apply_patch",
+        category: "Edit",
+        input_json: JSON.stringify({ file_path: "/tmp/a.ts", patch }),
+      } satisfies ToolCall,
+    });
+
+    await clickCopy(INPUT_COPY);
+    expect(copyToClipboardMock).toHaveBeenCalledWith(patch);
+  });
+
+  it("copies the full Write content", async () => {
+    const content = Array.from({ length: 250 }, (_, i) => `line ${i}`).join(
+      "\n",
+    );
+    await render({
+      content: "",
+      label: "Write",
+      toolCall: {
+        tool_name: "Write",
+        category: "Write",
+        input_json: JSON.stringify({ file_path: "/tmp/a.ts", content }),
+      } satisfies ToolCall,
+    });
+
+    await clickCopy(INPUT_COPY);
+    const copied = copyToClipboardMock.mock.calls[0]![0] as string;
+    expect(copied.split("\n").length).toBe(251);
+    expect(copied).not.toContain("lines total");
+    expect(copied.endsWith("+line 249")).toBe(true);
+  });
+
+  it("prefers explicit content over any fallback", async () => {
+    await render({
+      content: "explicit\nrendered\ncontent",
+      label: "Read",
+      toolCall: {
+        tool_name: "Read",
+        category: "Read",
+        input_json: JSON.stringify({ file_path: "/tmp/a.ts" }),
+      } satisfies ToolCall,
+    });
+
+    await clickCopy(INPUT_COPY);
+    expect(copyToClipboardMock).toHaveBeenCalledWith(
+      "explicit\nrendered\ncontent",
+    );
+  });
+
+  it("renders no input copy button when there is nothing to copy", async () => {
+    await render({ content: "", label: "Read" });
+    expect(document.querySelector(INPUT_COPY)).toBeNull();
+  });
+
+  it("copies the exact result_content without expanding output", async () => {
+    const resultText = "first output line\nsecond output line";
+    await render({
+      content: "some input",
+      toolCall: {
+        tool_name: "Read",
+        category: "file",
+        result_content: resultText,
+      } satisfies ToolCall,
+    });
+
+    document.querySelector<HTMLButtonElement>(".tool-header")!.click();
+    await tick();
+
+    expect(document.querySelector(OUTPUT_COPY)).not.toBeNull();
+    expect(document.querySelector(".output-content")).toBeNull();
+
+    await clickCopy(OUTPUT_COPY);
+
+    expect(copyToClipboardMock).toHaveBeenCalledWith(resultText);
+    expect(document.querySelector(".output-content")).toBeNull();
+    // The tool block itself stays expanded.
+    expect(document.querySelector(".output-header")).not.toBeNull();
+
+    document.querySelector<HTMLButtonElement>(".output-header")!.click();
+    await tick();
+    expect(document.querySelector(".output-content")?.textContent).toBe(
+      resultText,
+    );
+  });
+
+  it("tracks input and output copied state independently", async () => {
+    vi.useFakeTimers();
+    try {
+      await render({
+        content: "input text",
+        toolCall: {
+          tool_name: "Read",
+          category: "file",
+          result_content: "output text",
+        } satisfies ToolCall,
+      });
+      document.querySelector<HTMLButtonElement>(".tool-header")!.click();
+      await tick();
+
+      document.querySelector<HTMLButtonElement>(INPUT_COPY)!.click();
+      await Promise.resolve();
+      await tick();
+
+      expect(document.querySelector(INPUT_COPY)).toBeNull();
+      expect(
+        document.querySelector('button[aria-label="Copied tool input"]'),
+      ).not.toBeNull();
+      // The output button is untouched.
+      expect(document.querySelector(OUTPUT_COPY)).not.toBeNull();
+
+      vi.advanceTimersByTime(1600);
+      await tick();
+      expect(document.querySelector(INPUT_COPY)).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not show a copied state when the clipboard write fails", async () => {
+    copyToClipboardMock.mockResolvedValue(false);
+    await render({
+      content: "input text",
+      toolCall: {
+        tool_name: "Read",
+        category: "file",
+        result_content: "output text",
+      } satisfies ToolCall,
+    });
+    document.querySelector<HTMLButtonElement>(".tool-header")!.click();
+    await tick();
+
+    await clickCopy(INPUT_COPY);
+    await clickCopy(OUTPUT_COPY);
+
+    expect(
+      document.querySelector('button[aria-label="Copied tool input"]'),
+    ).toBeNull();
+    expect(
+      document.querySelector('button[aria-label="Copied tool output"]'),
+    ).toBeNull();
+  });
+
+  it("copies a long Pi edits[] input without truncating it", async () => {
+    const longText = "y".repeat(500);
+    await render({
+      content: "",
+      label: "Edit",
+      toolCall: {
+        tool_name: "pi_edit",
+        category: "Edit",
+        input_json: JSON.stringify({
+          file_path: "/tmp/a.ts",
+          edits: [{ op: "replace", pos: "1", lines: [longText] }],
+        }),
+      } satisfies ToolCall,
+    });
+
+    await clickCopy(INPUT_COPY);
+    const copied = copyToClipboardMock.mock.calls[0]![0] as string;
+    expect(copied).toContain(longText);
+    expect(copied).not.toContain("\u2026");
+
+    // The rendered preview keeps the 400-char per-edit truncation.
+    document.querySelector<HTMLButtonElement>(".tool-header")!.click();
+    await tick();
+    expect(document.body.textContent).toContain("\u2026");
+  });
+
+  it("does not schedule a copied-state timer after unmount", async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    let resolveClipboard!: (ok: boolean) => void;
+    copyToClipboardMock.mockReturnValue(
+      new Promise<boolean>((res) => {
+        resolveClipboard = res;
+      }),
+    );
+    try {
+      await render({
+        content: "input text",
+        toolCall: {
+          tool_name: "Read",
+          category: "file",
+          result_content: "output text",
+        } satisfies ToolCall,
+      });
+      document.querySelector<HTMLButtonElement>(".tool-header")!.click();
+      await tick();
+
+      // Clipboard write is still in flight when the row is torn down, which is
+      // what happens when a session switch unmounts the virtualized list.
+      document.querySelector<HTMLButtonElement>(INPUT_COPY)!.click();
+      unmount(component!);
+      component = undefined;
+
+      setTimeoutSpy.mockClear();
+      resolveClipboard(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      await tick();
+
+      // The late continuation must not arm a 1500ms timer nobody can clear.
+      const armed = setTimeoutSpy.mock.calls.filter(
+        ([, delay]) => delay === 1500,
+      );
+      expect(armed).toHaveLength(0);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears pending copied-state timers on unmount", async () => {
+    vi.useFakeTimers();
+    const clearSpy = vi.spyOn(globalThis, "clearTimeout");
+    try {
+      await render({
+        content: "input text",
+        toolCall: {
+          tool_name: "Read",
+          category: "file",
+          result_content: "output text",
+        } satisfies ToolCall,
+      });
+      document.querySelector<HTMLButtonElement>(".tool-header")!.click();
+      await tick();
+      document.querySelector<HTMLButtonElement>(INPUT_COPY)!.click();
+      await Promise.resolve();
+      await tick();
+
+      clearSpy.mockClear();
+      unmount(component!);
+      component = undefined;
+      // Svelte's own teardown also calls clearTimeout, so assert the copied
+      // state actually stops rather than just that some timer was cleared.
+      expect(clearSpy).toHaveBeenCalled();
+      vi.advanceTimersByTime(1600);
+      await tick();
+      expect(document.querySelector(INPUT_COPY)).toBeNull();
+      expect(
+        document.querySelector('button[aria-label="Copied tool input"]'),
+      ).toBeNull();
+    } finally {
+      clearSpy.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });

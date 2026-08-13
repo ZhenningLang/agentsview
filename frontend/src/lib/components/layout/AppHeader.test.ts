@@ -33,9 +33,36 @@ vi.mock("../../api/llm.js", () => ({
 import { sessions } from "../../stores/sessions.svelte.js";
 import { ui } from "../../stores/ui.svelte.js";
 import { router } from "../../stores/router.svelte.js";
+import { setLocale } from "../../i18n/index.svelte.js";
+import type { Session } from "../../api/types.js";
 
 // @ts-ignore
 import AppHeader from "./AppHeader.svelte";
+
+function testSession(overrides: Partial<Session> = {}): Session {
+  return {
+    id: "sess-123",
+    project: "agentsview",
+    machine: "test-machine",
+    agent: "claude",
+    first_message: "Synthetic test session",
+    started_at: "2026-08-13T12:00:00Z",
+    ended_at: "2026-08-13T12:05:00Z",
+    message_count: 2,
+    user_message_count: 1,
+    total_output_tokens: 0,
+    peak_context_tokens: 0,
+    is_automated: false,
+    created_at: "2026-08-13T12:00:00Z",
+    ...overrides,
+  };
+}
+
+function menuButtonByText(text: string): HTMLButtonElement | undefined {
+  return Array.from(
+    document.querySelectorAll<HTMLButtonElement>("button"),
+  ).find((button) => button.textContent?.includes(text));
+}
 
 describe("AppHeader export actions", () => {
   let component: ReturnType<typeof mount> | undefined;
@@ -63,8 +90,10 @@ describe("AppHeader export actions", () => {
     });
     mocks.fetchBalance.mockResolvedValue({ supported: false, available: false });
     sessions.activeSessionId = "sess-123";
+    sessions.sessions = [testSession()];
     ui.isMobileViewport = false;
     ui.followLatest = false;
+    setLocale("en");
   });
 
   afterEach(() => {
@@ -72,6 +101,8 @@ describe("AppHeader export actions", () => {
       unmount(component);
       component = undefined;
     }
+    sessions.sessions = [];
+    setLocale("en");
     document.body.innerHTML = "";
     Object.defineProperty(globalThis, "localStorage", {
       value: originalStorage,
@@ -106,6 +137,146 @@ describe("AppHeader export actions", () => {
     expect(mocks.copyToClipboard).toHaveBeenCalledWith(
       "http://localhost:3000/api/v1/sessions/sess-123/md",
     );
+  });
+
+  it("copies the active session source path from the export menu", async () => {
+    sessions.sessions = [
+      testSession({
+        file_path: "/tmp/agentsview/sessions/session 123.jsonl",
+      }),
+    ];
+
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+
+    document
+      .querySelector<HTMLButtonElement>('button[aria-label="Export session"]')!
+      .click();
+    await tick();
+
+    const copyPathButton = menuButtonByText("Copy source file path");
+    expect(copyPathButton).toBeDefined();
+
+    copyPathButton!.click();
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    expect(mocks.copyToClipboard).toHaveBeenCalledWith(
+      "/tmp/agentsview/sessions/session 123.jsonl",
+    );
+    // Menu closes on success.
+    expect(menuButtonByText("Copy source file path")).toBeUndefined();
+  });
+
+  it("copies the active session source path from the narrow overflow menu", async () => {
+    sessions.sessions = [
+      testSession({ file_path: "/var/log/agent/session.jsonl" }),
+    ];
+
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+
+    document
+      .querySelector<HTMLButtonElement>('button[aria-label="More actions"]')!
+      .click();
+    await tick();
+
+    const copyPathButton = menuButtonByText("Copy source file path");
+    expect(copyPathButton).toBeDefined();
+
+    copyPathButton!.click();
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    expect(mocks.copyToClipboard).toHaveBeenCalledWith(
+      "/var/log/agent/session.jsonl",
+    );
+    expect(menuButtonByText("Copy source file path")).toBeUndefined();
+  });
+
+  it("localizes the source path action", async () => {
+    setLocale("zh");
+    sessions.sessions = [
+      testSession({ file_path: "/var/log/agent/session.jsonl" }),
+    ];
+
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+
+    document
+      .querySelector<HTMLButtonElement>('button[aria-label="Export session"]')!
+      .click();
+    await tick();
+
+    expect(menuButtonByText("Copy source file path")).toBeUndefined();
+    expect(menuButtonByText("复制源文件路径")).toBeDefined();
+  });
+
+  it("hides the source path action when the session has no on-disk path", async () => {
+    sessions.sessions = [testSession({ file_path: "" })];
+
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+
+    document
+      .querySelector<HTMLButtonElement>('button[aria-label="Export session"]')!
+      .click();
+    await tick();
+    expect(menuButtonByText("Copy source file path")).toBeUndefined();
+
+    document
+      .querySelector<HTMLButtonElement>('button[aria-label="More actions"]')!
+      .click();
+    await tick();
+    expect(menuButtonByText("Copy source file path")).toBeUndefined();
+  });
+
+  it("hides the source path action when the active session is not hydrated", async () => {
+    sessions.sessions = [
+      testSession({
+        file_path: "/tmp/skinny.jsonl",
+        is_index_only: true,
+      }),
+    ];
+
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+
+    document
+      .querySelector<HTMLButtonElement>('button[aria-label="Export session"]')!
+      .click();
+    await tick();
+
+    expect(menuButtonByText("Copy source file path")).toBeUndefined();
+  });
+
+  it("does not report success or close the menu when the clipboard write fails", async () => {
+    mocks.copyToClipboard.mockResolvedValueOnce(false);
+    sessions.sessions = [
+      testSession({ file_path: "/tmp/agentsview/no-clipboard.jsonl" }),
+    ];
+
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+
+    document
+      .querySelector<HTMLButtonElement>('button[aria-label="Export session"]')!
+      .click();
+    await tick();
+
+    menuButtonByText("Copy source file path")!.click();
+    await tick();
+    await Promise.resolve();
+    await tick();
+
+    expect(mocks.copyToClipboard).toHaveBeenCalledWith(
+      "/tmp/agentsview/no-clipboard.jsonl",
+    );
+    // Still open, still showing the idle label — no fake success.
+    expect(menuButtonByText("Copy source file path")).toBeDefined();
+    expect(menuButtonByText("Copied source file path")).toBeUndefined();
   });
 
   it("toggles follow latest from the session header", async () => {

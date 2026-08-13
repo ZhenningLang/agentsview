@@ -26,6 +26,8 @@ export interface Session {
   file_path?: string;
   file_size?: number;
   file_mtime?: number;
+  /** Source lines the parser could not decode; already serialized by the API. */
+  parser_malformed_lines?: number;
   total_output_tokens: number;
   peak_context_tokens: number;
   has_total_output_tokens?: boolean;

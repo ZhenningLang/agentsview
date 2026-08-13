@@ -27,6 +27,7 @@ function fireKey(
 describe("registerShortcuts", () => {
   let cleanup: () => void;
   let navigateMessage: (delta: number) => void;
+  let navigateUserPrompt: (delta: number) => void;
 
   beforeEach(() => {
     ui.activeModal = null;
@@ -38,7 +39,11 @@ describe("registerShortcuts", () => {
       starred.unstar(id);
     }
     navigateMessage = vi.fn();
-    cleanup = registerShortcuts({ navigateMessage });
+    navigateUserPrompt = vi.fn();
+    // Passed as one options object so the Red run exercises the registered
+    // handler's behavior, not a compile-time signature change.
+    const opts = { navigateMessage, navigateUserPrompt };
+    cleanup = registerShortcuts(opts);
   });
 
   afterEach(() => {
@@ -176,6 +181,96 @@ describe("registerShortcuts", () => {
     it("should still allow Cmd+K (modifier shortcut)", () => {
       fireKey("k", { metaKey: true });
       expect(ui.activeModal).toBe("commandPalette");
+    });
+  });
+
+  describe("Shift+J / Shift+K user prompt navigation", () => {
+    it("moves forward through user prompts on Shift+J", () => {
+      fireKey("J", { shiftKey: true });
+      expect(navigateUserPrompt).toHaveBeenCalledWith(1);
+      expect(navigateMessage).not.toHaveBeenCalled();
+    });
+
+    it("moves backward through user prompts on Shift+K", () => {
+      fireKey("K", { shiftKey: true });
+      expect(navigateUserPrompt).toHaveBeenCalledWith(-1);
+      expect(navigateMessage).not.toHaveBeenCalled();
+    });
+
+    it("preventDefault()s the shortcut so the page does not scroll", () => {
+      const event = new KeyboardEvent("keydown", {
+        key: "J",
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      const prevented = !document.dispatchEvent(event);
+      expect(prevented).toBe(true);
+    });
+
+    it("leaves plain j/k on message navigation", () => {
+      fireKey("j");
+      fireKey("k");
+      expect(navigateMessage).toHaveBeenNthCalledWith(1, 1);
+      expect(navigateMessage).toHaveBeenNthCalledWith(2, -1);
+      expect(navigateUserPrompt).not.toHaveBeenCalled();
+    });
+
+    it("does not fire while a modal is open", () => {
+      ui.activeModal = "shortcuts";
+      fireKey("J", { shiftKey: true });
+      fireKey("K", { shiftKey: true });
+      expect(navigateUserPrompt).not.toHaveBeenCalled();
+    });
+
+    it("does not fire while an input or contenteditable is focused", () => {
+      const input = document.createElement("input");
+      document.body.appendChild(input);
+      input.focus();
+      fireKey("J", { shiftKey: true });
+      expect(navigateUserPrompt).not.toHaveBeenCalled();
+      input.remove();
+
+      const editable = document.createElement("div");
+      editable.setAttribute("contenteditable", "true");
+      // jsdom does not derive isContentEditable from the attribute.
+      Object.defineProperty(editable, "isContentEditable", { value: true });
+      document.body.appendChild(editable);
+      editable.focus();
+      fireKey("J", { shiftKey: true });
+      expect(navigateUserPrompt).not.toHaveBeenCalled();
+      editable.remove();
+    });
+
+    it.each([
+      ["metaKey", { metaKey: true }],
+      ["ctrlKey", { ctrlKey: true }],
+      ["altKey", { altKey: true }],
+    ])("does not fire when %s is also held", (_name, modifier) => {
+      fireKey("J", { shiftKey: true, ...modifier });
+      fireKey("K", { shiftKey: true, ...modifier });
+      expect(navigateUserPrompt).not.toHaveBeenCalled();
+    });
+
+    it("still works when Caps Lock inverts the reported key", () => {
+      // Caps Lock on + Shift held reports the lowercase key. Without
+      // normalization this fell through to plain message navigation.
+      fireKey("j", { shiftKey: true });
+      expect(navigateUserPrompt).toHaveBeenCalledWith(1);
+      fireKey("k", { shiftKey: true });
+      expect(navigateUserPrompt).toHaveBeenCalledWith(-1);
+      expect(navigateMessage).not.toHaveBeenCalled();
+    });
+
+    it("leaves Cmd/Ctrl+K on the command palette", () => {
+      fireKey("k", { metaKey: true });
+      expect(ui.activeModal).toBe("commandPalette");
+      expect(navigateUserPrompt).not.toHaveBeenCalled();
+
+      ui.activeModal = null;
+      fireKey("k", { ctrlKey: true });
+      expect(ui.activeModal).toBe("commandPalette");
+      expect(navigateUserPrompt).not.toHaveBeenCalled();
     });
   });
 

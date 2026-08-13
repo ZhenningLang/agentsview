@@ -28,6 +28,7 @@
   import { normalizeMessagePreview } from "../../utils/messages.js";
   import { sessionTitle } from "../../utils/session-title.js";
   import { getGradeStyle, getGradeLabel } from "../../utils/grade.js";
+  import { t } from "../../i18n/index.svelte.js";
   import SignalPanel from "../content/SignalPanel.svelte";
   import { sessions } from "../../stores/sessions.svelte.js";
   import { router } from "../../stores/router.svelte.js";
@@ -193,6 +194,14 @@
       ? messagesStore.mainModel
       : "",
   );
+
+  // Only a positive integer count is a signal. `0` means "parsed cleanly" and
+  // anything non-finite (missing field, unexpected payload) is not a claim we
+  // want to render as a warning.
+  const malformedLines = $derived.by(() => {
+    const raw = session?.parser_malformed_lines;
+    return typeof raw === "number" && Number.isFinite(raw) ? raw : 0;
+  });
 
   const gradeStyle = $derived(
     getGradeStyle(session?.health_grade),
@@ -681,6 +690,19 @@
       {#if mainModel}
         <span class="model-badge" title={mainModel}>{mainModel}</span>
       {/if}
+      {#if malformedLines > 0}
+        {@const suffix = malformedLines === 1 ? "one" : "other"}
+        {@const tooltip = t(`session.malformedLines.tooltip.${suffix}`, {
+          count: malformedLines,
+        })}
+        <span
+          class="malformed-badge"
+          title={tooltip}
+          aria-label={tooltip}
+        >
+          {t(`session.malformedLines.${suffix}`, { count: malformedLines })}
+        </span>
+      {/if}
       <div class="actions-wrapper">
         <button
           class="link-btn"
@@ -997,6 +1019,18 @@
     background: var(--bg-tertiary);
     white-space: nowrap;
     flex-shrink: 0;
+  }
+
+  .malformed-badge {
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    color: var(--accent-amber);
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--accent-amber) 14%, transparent);
+    white-space: nowrap;
+    flex-shrink: 0;
+    cursor: default;
   }
 
   .actions-wrapper {

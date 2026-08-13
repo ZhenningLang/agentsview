@@ -17,6 +17,7 @@ import {
   SessionsService,
 } from "../../api/generated/index";
 import { messages } from "../../stores/messages.svelte.js";
+import { setLocale } from "../../i18n/index.svelte.js";
 
 vi.mock("../../api/client.js", () => ({
   listOpeners: vi.fn().mockResolvedValue({ openers: [] }),
@@ -682,4 +683,84 @@ describe("SessionBreadcrumb", () => {
     });
   });
 
+  describe("parser malformed-lines badge", () => {
+    // The count is injected after construction so this stays a behavior Red
+    // (badge missing) rather than a TypeScript "unknown property" failure.
+    function sessionWithMalformed(count: unknown): Session {
+      const session = makeSession("claude");
+      Object.assign(session, { parser_malformed_lines: count });
+      return session;
+    }
+
+    async function mountWith(count: unknown) {
+      const component = mount(SessionBreadcrumb, {
+        target: document.body,
+        props: {
+          session: sessionWithMalformed(count),
+          onBack: () => {},
+        },
+      });
+      await flushPromises();
+      return component;
+    }
+
+    afterEach(() => {
+      setLocale("zh");
+    });
+
+    it("shows a pluralized English badge with a tooltip", async () => {
+      setLocale("en");
+      const component = await mountWith(3);
+
+      const badge = document.querySelector(".malformed-badge");
+      expect(badge).not.toBeNull();
+      expect(badge?.textContent?.trim()).toBe("3 malformed lines");
+      expect(badge?.getAttribute("title")).toBe(
+        "3 lines in the source file could not be parsed",
+      );
+      expect(badge?.getAttribute("aria-label")).toBe(
+        "3 lines in the source file could not be parsed",
+      );
+
+      unmount(component);
+    });
+
+    it("uses the English singular form for one malformed line", async () => {
+      setLocale("en");
+      const component = await mountWith(1);
+
+      const badge = document.querySelector(".malformed-badge");
+      expect(badge?.textContent?.trim()).toBe("1 malformed line");
+      expect(badge?.getAttribute("title")).toBe(
+        "1 line in the source file could not be parsed",
+      );
+
+      unmount(component);
+    });
+
+    it("renders the Chinese label and tooltip under the zh locale", async () => {
+      setLocale("zh");
+      const component = await mountWith(2);
+
+      const badge = document.querySelector(".malformed-badge");
+      expect(badge?.textContent?.trim()).toBe("2 行无法解析");
+      expect(badge?.getAttribute("title")).toBe("源文件中有 2 行无法解析");
+
+      unmount(component);
+    });
+
+    it.each([
+      ["zero", 0],
+      ["undefined", undefined],
+      ["negative", -4],
+      ["non-numeric", "many"],
+    ])("hides the badge when the count is %s", async (_label, count) => {
+      setLocale("en");
+      const component = await mountWith(count);
+
+      expect(document.querySelector(".malformed-badge")).toBeNull();
+
+      unmount(component);
+    });
+  });
 });

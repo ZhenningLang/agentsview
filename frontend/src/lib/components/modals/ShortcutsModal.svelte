@@ -1,16 +1,19 @@
 <script lang="ts">
   import { ui } from "../../stores/ui.svelte.js";
   import { sync } from "../../stores/sync.svelte.js";
+  import { t } from "../../i18n/index.svelte.js";
 
   const isMac = navigator.platform.toUpperCase().includes("MAC");
   const mod = isMac ? "Cmd" : "Ctrl";
 
-  const baseShortcuts = [
+  const baseShortcuts = $derived([
     { key: `${mod}+K`, action: "Open command palette" },
     { key: `${mod}+F / /`, action: "Find in session" },
     { key: "Esc", action: "Close palette / modal / find" },
     { key: "j / \u2193", action: "Next message" },
     { key: "k / \u2191", action: "Previous message" },
+    { key: "Shift+J", action: t("shortcuts.nextUserPrompt") },
+    { key: "Shift+K", action: t("shortcuts.prevUserPrompt") },
     { key: "]", action: "Next session" },
     { key: "[", action: "Previous session" },
     { key: "o", action: "Toggle sort order" },
@@ -22,7 +25,7 @@
     { key: "c", action: "Copy resume command" },
     { key: "Del", action: "Delete session" },
     { key: "?", action: "Show this modal" },
-  ];
+  ]);
 
   const zoomShortcuts = [
     { key: `${mod}++`, action: "Zoom in" },
@@ -30,9 +33,11 @@
     { key: `${mod}+0`, action: "Reset zoom" },
   ];
 
-  const shortcuts = sync.isDesktop
-    ? [...baseShortcuts, ...zoomShortcuts]
-    : baseShortcuts;
+  const shortcuts = $derived(
+    sync.isDesktop
+      ? [...baseShortcuts, ...zoomShortcuts]
+      : baseShortcuts,
+  );
 
   function handleOverlayClick(e: MouseEvent) {
     if (

@@ -1,13 +1,17 @@
 <!-- ABOUTME: Renders a collapsible tool call block with metadata tags and content. -->
 <!-- ABOUTME: Supports Task tool calls with inline subagent conversation expansion. -->
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import type { ToolCall } from "../../api/types.js";
   import SubagentInline from "./SubagentInline.svelte";
+  import CopyButton from "../shared/CopyButton.svelte";
   import {
     extractToolParamMeta,
     generateFallbackContent,
   } from "../../utils/tool-params.js";
   import { applyHighlight, escapeHTML } from "../../utils/highlight.js";
+  import { copyToClipboard } from "../../utils/clipboard.js";
+  import { t } from "../../i18n/index.svelte.js";
 
   interface Props {
     content: string;
@@ -46,6 +50,11 @@
   let searchExpandedOutput: boolean = $state(false);
   let searchExpandedHistory: boolean = $state(false);
   let prevQuery: string = "";
+  let inputCopied: boolean = $state(false);
+  let outputCopied: boolean = $state(false);
+  let inputCopyTimer: ReturnType<typeof setTimeout> | undefined;
+  let outputCopyTimer: ReturnType<typeof setTimeout> | undefined;
+  let destroyed = false;
 
   // Auto-expand when a search match exists in input or output
   // content. Only reset user overrides when the query itself
@@ -304,38 +313,112 @@
     const raw = fallbackContent ?? content ?? "";
     return raw.split("\n");
   });
+
+  /** Same formatter as `fallbackContent`, but with the display line cap
+   *  removed: the rendered block is a preview, the clipboard gets the whole
+   *  input. Deliberately independent of `displayContent`/`show all`. */
+  let uncappedFallbackContent = $derived.by(() => {
+    if (content || !inputParams || !toolCall) return null;
+    const cat = toolCall.category || null;
+    const uncapped = { maxLines: null };
+    const result = cat
+      ? generateFallbackContent(cat, inputParams, uncapped)
+      : null;
+    return (
+      result ??
+      generateFallbackContent(toolCall.tool_name, inputParams, uncapped)
+    );
+  });
+
+  // `inputParams` is `JSON.parse` output, so `taskPrompt` is whatever the agent
+  // serialized. A structured prompt (array/object) would reach
+  // `copyToClipboard(text: string)` and land as "[object Object]", so only a
+  // real string is treated as a copyable prompt.
+  let inputCopySource = $derived(
+    (typeof taskPrompt === "string" ? taskPrompt : null) ??
+      uncappedFallbackContent ??
+      content ??
+      "",
+  );
+
+  async function handleInputCopy(event: MouseEvent) {
+    event.stopPropagation();
+    if (!inputCopySource) return;
+    const ok = await copyToClipboard(inputCopySource);
+    // The await can outlive the component — a session switch or a virtualized
+    // scroll tears the row down mid-write. Without this guard the continuation
+    // would arm a timer after onDestroy already ran, and nothing could clear it.
+    if (!ok || destroyed) return;
+    clearTimeout(inputCopyTimer);
+    inputCopied = true;
+    inputCopyTimer = setTimeout(() => {
+      inputCopied = false;
+    }, 1500);
+  }
+
+  async function handleOutputCopy(event: MouseEvent) {
+    event.stopPropagation();
+    const output = toolCall?.result_content ?? "";
+    if (!output) return;
+    const ok = await copyToClipboard(output);
+    if (!ok || destroyed) return;
+    clearTimeout(outputCopyTimer);
+    outputCopied = true;
+    outputCopyTimer = setTimeout(() => {
+      outputCopied = false;
+    }, 1500);
+  }
+
+  onDestroy(() => {
+    destroyed = true;
+    clearTimeout(inputCopyTimer);
+    clearTimeout(outputCopyTimer);
+  });
 </script>
 
 <div class="tool-block" class:in-group={inGroup}>
-  <button
-    class="tool-header"
-    onclick={() => {
-      const sel = window.getSelection();
-      if (sel && sel.toString().length > 0) return;
-      userCollapsed = !userCollapsed;
-      userOverride = true;
-      if (userCollapsed) contentFullyExpanded = false;
-    }}
-  >
-    <span class="tool-chevron" class:open={!collapsed}>
-      &#9656;
-    </span>
-    {#if label}
-      <span class="tool-label">{label}</span>
-    {/if}
-    {#if collapsed && previewLine}
-      <span class="tool-preview">{previewLine}</span>
-    {/if}
-    {#if durationLabel}
-      <span
-        class="tool-duration"
-        class:slow={isSlow}
-        class:running={isRunning}
-      >
-        {durationLabel}
+  <div class="tool-header-row">
+    <button
+      class="tool-header"
+      onclick={() => {
+        const sel = window.getSelection();
+        if (sel && sel.toString().length > 0) return;
+        userCollapsed = !userCollapsed;
+        userOverride = true;
+        if (userCollapsed) contentFullyExpanded = false;
+      }}
+    >
+      <span class="tool-chevron" class:open={!collapsed}>
+        &#9656;
       </span>
+      {#if label}
+        <span class="tool-label">{label}</span>
+      {/if}
+      {#if collapsed && previewLine}
+        <span class="tool-preview">{previewLine}</span>
+      {/if}
+      {#if durationLabel}
+        <span
+          class="tool-duration"
+          class:slow={isSlow}
+          class:running={isRunning}
+        >
+          {durationLabel}
+        </span>
+      {/if}
+    </button>
+    {#if inputCopySource}
+      <CopyButton
+        class="tool-copy"
+        copied={inputCopied}
+        ariaLabel={t("toolBlock.copyInput")}
+        copiedAriaLabel={t("toolBlock.copiedInput")}
+        title={t("toolBlock.copyInput")}
+        copiedTitle={t("toolBlock.copiedInput")}
+        onclick={handleInputCopy}
+      />
     {/if}
-  </button>
+  </div>
   {#if !collapsed}
     {#if metaTags}
       <div class="tool-meta">
@@ -370,24 +453,35 @@
       {/if}
     {/if}
     {#if toolCall?.result_content}
-      <button
-        class="output-header"
-        onclick={(e) => {
-          e.stopPropagation();
-          const sel = window.getSelection();
-          if (sel && sel.toString().length > 0) return;
-          userOutputCollapsed = !userOutputCollapsed;
-          userOutputOverride = true;
-        }}
-      >
-        <span class="tool-chevron" class:open={!outputCollapsed}>
-          &#9656;
-        </span>
-        <span class="output-label">output</span>
-        {#if outputCollapsed && outputPreviewLine}
-          <span class="tool-preview">{outputPreviewLine}</span>
-        {/if}
-      </button>
+      <div class="output-header-row">
+        <button
+          class="output-header"
+          onclick={(e) => {
+            e.stopPropagation();
+            const sel = window.getSelection();
+            if (sel && sel.toString().length > 0) return;
+            userOutputCollapsed = !userOutputCollapsed;
+            userOutputOverride = true;
+          }}
+        >
+          <span class="tool-chevron" class:open={!outputCollapsed}>
+            &#9656;
+          </span>
+          <span class="output-label">output</span>
+          {#if outputCollapsed && outputPreviewLine}
+            <span class="tool-preview">{outputPreviewLine}</span>
+          {/if}
+        </button>
+        <CopyButton
+          class="tool-copy"
+          copied={outputCopied}
+          ariaLabel={t("toolBlock.copyOutput")}
+          copiedAriaLabel={t("toolBlock.copiedOutput")}
+          title={t("toolBlock.copyOutput")}
+          copiedTitle={t("toolBlock.copiedOutput")}
+          onclick={handleOutputCopy}
+        />
+      </div>
       {#if !outputCollapsed}
         <pre class="tool-content output-content" use:applyHighlight={{ q: highlightQuery, current: isCurrentHighlight, content: toolCall.result_content }}>{@html escapeHTML(toolCall.result_content)}</pre>
       {/if}
@@ -457,12 +551,38 @@
     border-radius: 0;
   }
 
+  .tool-header-row,
+  .output-header-row {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
+
+  .output-header-row {
+    border-top: 1px solid var(--border-muted);
+  }
+
+  /* The copy buttons are hidden until the block is hovered or focused, so they
+     do not compete with the tool label. Coarse pointers get them permanently
+     (see CopyButton's own `@media (hover: none)` rule). */
+  .tool-header-row :global(.tool-copy),
+  .output-header-row :global(.tool-copy) {
+    flex: 0 0 auto;
+    margin-right: 6px;
+  }
+
+  .tool-block:hover :global(.tool-copy),
+  .tool-header-row:focus-within :global(.tool-copy),
+  .output-header-row:focus-within :global(.tool-copy) {
+    opacity: 1;
+  }
+
   .tool-header {
     display: flex;
     align-items: center;
     gap: 6px;
     padding: 6px 10px;
-    width: 100%;
+    flex: 1 1 auto;
     text-align: left;
     font-size: 12px;
     color: var(--text-secondary);
@@ -586,12 +706,11 @@
     align-items: center;
     gap: 6px;
     padding: 5px 10px;
-    width: 100%;
+    flex: 1 1 auto;
     text-align: left;
     font-size: 12px;
     color: var(--text-secondary);
     min-width: 0;
-    border-top: 1px solid var(--border-muted);
     transition: background 0.1s;
     user-select: text;
   }

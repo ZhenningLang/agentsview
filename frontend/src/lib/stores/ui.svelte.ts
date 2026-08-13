@@ -46,6 +46,8 @@ const VITALS_KEY = "agentsview-session-vitals";
 const SIGNAL_PANEL_KEY = "agentsview-signal-panel";
 const FOLLOW_LATEST_KEY = "agentsview-follow-latest";
 const USE_LLM_TITLE_KEY = "agentsview-use-llm-title";
+const VITALS_CALLS_EXPANDED_KEY =
+  "agentsview-session-vitals-calls-expanded";
 
 function readBlockFilters(): Set<BlockType> {
   try {
@@ -212,6 +214,14 @@ class UIStore {
   useLlmTitle: boolean = $state(
     readStoredBool(USE_LLM_TITLE_KEY, false),
   );
+  /**
+   * Whether the analysis panel's Calls section shows its axis and rows. This is
+   * a global density choice rather than a per-session one, and it defaults to
+   * expanded so existing users keep the behavior they have today.
+   */
+  vitalsCallsExpanded: boolean = $state(
+    readStoredBool(VITALS_CALLS_EXPANDED_KEY, true),
+  );
   followLatestRequest: number = $state(0);
 
   /** Set of block types currently visible. */
@@ -323,6 +333,17 @@ class UIStore {
           localStorage?.setItem(
             USE_LLM_TITLE_KEY,
             String(this.useLlmTitle),
+          );
+        } catch {
+          // ignore
+        }
+      });
+
+      $effect(() => {
+        try {
+          localStorage?.setItem(
+            VITALS_CALLS_EXPANDED_KEY,
+            String(this.vitalsCallsExpanded),
           );
         } catch {
           // ignore
@@ -539,6 +560,10 @@ class UIStore {
 
   closeVitals() {
     this.vitalsOpen = false;
+  }
+
+  toggleVitalsCalls() {
+    this.vitalsCallsExpanded = !this.vitalsCallsExpanded;
   }
 
   toggleSignalPanel() {
