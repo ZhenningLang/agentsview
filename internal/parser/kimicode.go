@@ -404,7 +404,8 @@ func ParseKimiCodeSession(
 						len(pendingThinking) > 0 ||
 						len(pendingToolCall) > 0 {
 						pendingStop = fr
-					} else if lastAssistantIdx >= 0 {
+					} else if lastAssistantIdx >= 0 &&
+						lastAssistantIdx < len(messages) {
 						messages[lastAssistantIdx].StopReason = fr
 					}
 				}
@@ -560,8 +561,8 @@ func kimiCodeProjectName(project, workDir string) string {
 		}
 	}
 	p := project
-	if strings.HasPrefix(p, "wd_") {
-		p = strings.TrimPrefix(p, "wd_")
+	if q, ok := strings.CutPrefix(p, "wd_"); ok {
+		p = q
 		if idx := strings.LastIndex(p, "_"); idx > 0 &&
 			len(p)-idx-1 == 12 && isKimiCodeHex(p[idx+1:]) {
 			p = p[:idx]

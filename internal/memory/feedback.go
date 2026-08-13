@@ -71,11 +71,11 @@ func setFrontmatterFields(content string, kv map[string]string) string {
 
 func frontmatterLineHasKey(line, key string) bool {
 	trimmed := strings.TrimLeft(line, " \t")
-	idx := strings.Index(trimmed, ":")
-	if idx == -1 {
+	before, _, ok := strings.Cut(trimmed, ":")
+	if !ok {
 		return false
 	}
-	return strings.TrimSpace(trimmed[:idx]) == key
+	return strings.TrimSpace(before) == key
 }
 
 func orderedFrontmatterKeys(kv map[string]string) []string {

@@ -349,10 +349,6 @@ func ParseOpenCodeFile(
 	return sess, parsed, nil
 }
 
-func openOpenCodeDB(dbPath string) (*sql.DB, error) {
-	return openOpenCodeFamilyDB(openCodeFamilyOpenCode, dbPath)
-}
-
 func openOpenCodeFamilyDB(
 	cfg openCodeFamilyConfig, dbPath string,
 ) (*sql.DB, error) {

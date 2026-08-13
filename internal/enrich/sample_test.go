@@ -35,7 +35,7 @@ func TestSampleMessagesFiltersTruncatesAndKeepsOrder(t *testing.T) {
 
 func TestSampleMessagesSelectsHeadMiddleTail(t *testing.T) {
 	msgs := make([]db.Message, 0, 14)
-	for i := 0; i < 14; i++ {
+	for i := range 14 {
 		msgs = append(msgs, db.Message{Role: "user", Content: "message number " + string(rune('a'+i))})
 	}
 	samples := sampleMessages(msgs)

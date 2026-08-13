@@ -285,4 +285,56 @@ describe("CommandPalette", () => {
 
     unmount(component);
   });
+
+  it("offers the mode toggle before a query is typed", async () => {
+    mockSearchStore.semanticAvailable = true;
+
+    const component = mount(CommandPalette, { target: document.body });
+    const modeButton = await tickUntil(".palette-sort .sort-btn:nth-child(2)");
+
+    expect(modeButton.textContent?.trim()).toBe("Semantic");
+    // Sort buttons stay hidden until there are results to sort.
+    const labels = Array.from(
+      document.querySelectorAll<HTMLElement>(".palette-sort .sort-btn"),
+    ).map((b) => b.textContent?.trim());
+    expect(labels).toEqual(["Keyword", "Semantic"]);
+    expect(document.querySelector(".palette-section-label")?.textContent)
+      .toBe("Recent Sessions");
+
+    unmount(component);
+  });
+
+  const thresholdCases: Array<{
+    name: string;
+    query: string;
+    searches: boolean;
+  }> = [
+    { name: "two latin chars", query: "au", searches: false },
+    { name: "three latin chars", query: "aut", searches: true },
+    { name: "one cjk char", query: "侯", searches: false },
+    { name: "two cjk chars", query: "侯爽", searches: true },
+    { name: "cjk mixed with latin", query: "侯s", searches: true },
+  ];
+
+  for (const c of thresholdCases) {
+    it(`${c.searches ? "searches" : "does not search"} for ${c.name}`, async () => {
+      const component = mount(CommandPalette, { target: document.body });
+      await tick();
+
+      const input = document.querySelector<HTMLInputElement>(".palette-input")!;
+      input.value = c.query;
+      input.dispatchEvent(new InputEvent("input", { bubbles: true }));
+      await tick();
+
+      if (c.searches) {
+        expect(mockSearchStore.search).toHaveBeenCalledWith(c.query, "");
+        expect(mockSearchStore.clear).not.toHaveBeenCalled();
+      } else {
+        expect(mockSearchStore.search).not.toHaveBeenCalled();
+        expect(mockSearchStore.clear).toHaveBeenCalled();
+      }
+
+      unmount(component);
+    });
+  }
 });

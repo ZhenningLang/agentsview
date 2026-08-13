@@ -92,7 +92,8 @@ class SearchStore {
   }
 
   /** Full reset: clears results and resets sort to the default.
-   * Call this on palette close, not on transient clears (e.g. query < 3 chars). */
+   * Call this on palette close, not on transient clears (e.g. a query that is
+   * still below the minimum length). */
   resetSort() {
     this.sort = "relevance";
     this.mode = "keyword";

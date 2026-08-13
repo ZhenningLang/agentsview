@@ -534,10 +534,7 @@ func (s *Store) Search(ctx context.Context, f db.SearchFilter) (db.SearchPage, e
 	if f.Limit <= 0 || f.Limit > db.MaxSearchLimit {
 		f.Limit = db.DefaultSearchLimit
 	}
-	if f.Query == "" {
-		return db.SearchPage{}, nil
-	}
-	searchTerm := stripSearchQuotes(f.Query)
+	searchTerm := db.StripFTSQuotes(f.Query)
 	if searchTerm == "" {
 		return db.SearchPage{}, nil
 	}
@@ -659,13 +656,6 @@ func (s *Store) Search(ctx context.Context, f db.SearchFilter) (db.SearchPage, e
 		page.NextCursor = f.Cursor + f.Limit
 	}
 	return page, nil
-}
-
-func stripSearchQuotes(q string) string {
-	if len(q) >= 2 && q[0] == '"' && q[len(q)-1] == '"' {
-		return q[1 : len(q)-1]
-	}
-	return q
 }
 
 func (s *Store) SearchSession(ctx context.Context, sessionID, query string) ([]int, error) {

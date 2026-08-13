@@ -44,17 +44,18 @@ func TestResolveScriptHonorsClaudeConfigDir(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, ".claude-personal")
 	require.NoError(t, os.MkdirAll(filepath.Join(root, "projects"), 0o755))
+	scriptRoot := filepath.ToSlash(root)
 
 	cmd := exec.Command("sh", "-c", buildResolveScript())
 	cmd.Env = []string{
-		"HOME=" + home,
-		"CLAUDE_CONFIG_DIR=" + root,
+		"HOME=" + filepath.ToSlash(home),
+		"CLAUDE_CONFIG_DIR=" + scriptRoot,
 	}
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "resolve script failed: output: %s", out)
 
 	dirs := parseResolvedDirs(string(out))
-	assert.Equal(t, []string{filepath.Join(root, "projects")}, dirs[parser.AgentClaude])
+	assert.Equal(t, []string{scriptRoot + "/projects"}, dirs[parser.AgentClaude])
 }
 
 func TestResolveScriptExitsZero(t *testing.T) {

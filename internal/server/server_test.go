@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1437,6 +1438,78 @@ func TestSearch_WithResults(t *testing.T) {
 	if resp.Count < 1 {
 		t.Fatal("expected at least 1 search result")
 	}
+}
+
+func TestSearch_OperatorCharacterQueries(t *testing.T) {
+	te := setup(t)
+	if !te.db.HasFTS() {
+		t.Skip("skipping search test: no FTS support")
+	}
+
+	fixtures := map[string]string{
+		"http-error":       "diagnosed error-401 during login",
+		"http-status":      "observed status:500 from service",
+		"http-asterisk":    "literal foo*bar marker",
+		"http-near":        "the NEAR token is written here",
+		"http-and-phrase":  "query contains a AND b as typed",
+		"http-and-decoy":   "query contains a distant b only",
+		"http-quoted":      "quoted phrase appears here",
+		"http-embed-quote": `contains 裸"双引号 boundary`,
+		"http-backslash":   `tail\ marker is preserved`,
+		"http-cjk":         "侯爽 wrote this note",
+		"http-cjk-mixed":   "侯s mixed token appears",
+	}
+	for id, content := range fixtures {
+		te.seedSession(t, id, "search", 1)
+		te.seedMessages(t, id, 1, func(_ int, m *db.Message) {
+			m.Content = content
+			m.ContentLength = len(content)
+		})
+	}
+
+	tests := []struct {
+		name      string
+		raw       string
+		wantQuery string
+		wantIDs   []string
+	}{
+		{name: "dash operator", raw: "error-401", wantQuery: "error-401", wantIDs: []string{"http-error"}},
+		{name: "colon operator", raw: "status:500", wantQuery: "status:500", wantIDs: []string{"http-status"}},
+		{name: "asterisk operator", raw: "foo*bar", wantQuery: "foo*bar", wantIDs: []string{"http-asterisk"}},
+		{name: "NEAR operator", raw: "NEAR", wantQuery: "NEAR", wantIDs: []string{"http-near"}},
+		{name: "AND remains exact phrase", raw: "a AND b", wantQuery: "a AND b", wantIDs: []string{"http-and-phrase"}},
+		{name: "quoted phrase", raw: `"quoted phrase"`, wantQuery: `"quoted phrase"`, wantIDs: []string{"http-quoted"}},
+		{name: "embedded quote", raw: `裸"双引号`, wantQuery: `裸"双引号`, wantIDs: []string{"http-embed-quote"}},
+		{name: "trailing backslash", raw: `tail\`, wantQuery: `tail\`, wantIDs: []string{"http-backslash"}},
+		{name: "pure CJK", raw: "侯爽", wantQuery: "侯爽", wantIDs: []string{"http-cjk"}},
+		{name: "CJK ASCII mixed", raw: "侯s", wantQuery: "侯s", wantIDs: []string{"http-cjk-mixed"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := te.get(t, "/api/v1/search?q="+url.QueryEscape(tt.raw))
+			assertStatus(t, w, http.StatusOK)
+
+			resp := decode[searchResponse](t, w)
+			assert.Equal(t, tt.wantQuery, resp.Query)
+			assert.Equal(t, tt.wantIDs, serverSearchResultIDs(resp.Results))
+		})
+	}
+
+	for _, raw := range []string{"", " \t\n "} {
+		t.Run("empty query remains bad request", func(t *testing.T) {
+			w := te.get(t, "/api/v1/search?q="+url.QueryEscape(raw))
+			assertStatus(t, w, http.StatusBadRequest)
+		})
+	}
+}
+
+func serverSearchResultIDs(results []db.SearchResult) []string {
+	ids := make([]string, len(results))
+	for i, result := range results {
+		ids[i] = result.SessionID
+	}
+	return ids
 }
 
 func TestSearch_Limits(t *testing.T) {

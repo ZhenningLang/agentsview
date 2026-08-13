@@ -65,7 +65,7 @@ func (c *Client) ChatJSONUsage(ctx context.Context, system, user string) (string
 	withReasoning := strings.TrimSpace(c.cfg.ReasoningEffort) != ""
 	triedWithoutReasoning := false
 
-	for attempt := 0; attempt < 3; attempt++ {
+	for attempt := range 3 {
 		content, usage, status, err := c.postChat(ctx, endpoint, system, user, withReasoning)
 		if err == nil {
 			return content, usage, nil
@@ -158,11 +158,7 @@ type usageJSON struct {
 }
 
 func (u usageJSON) toUsage() Usage {
-	return Usage{
-		PromptTokens:     u.PromptTokens,
-		CompletionTokens: u.CompletionTokens,
-		TotalTokens:      u.TotalTokens,
-	}
+	return Usage(u)
 }
 
 func (c *Client) postChat(ctx context.Context, endpoint, system, user string, withReasoning bool) (string, Usage, int, error) {

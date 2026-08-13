@@ -372,16 +372,17 @@ func TestHighEntropyPaddingCapture(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := Scan(c.text)
-			var m *Match
+			matchIdx := -1
 			for i := range got {
 				if got[i].Rule == "high-entropy-assignment" {
-					m = &got[i]
+					matchIdx = i
 					break
 				}
 			}
-			if m == nil {
+			if matchIdx == -1 {
 				t.Fatalf("no high-entropy match in %q; got %+v", c.text, got)
 			}
+			m := got[matchIdx]
 			span := c.text[m.Start:m.End]
 			if !strings.HasSuffix(span, c.suffix) {
 				t.Errorf("captured span %q does not end with %q",

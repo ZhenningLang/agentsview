@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -110,13 +111,17 @@ func (w *FileWriter) resolvePath(relPath string) (string, error) {
 	if relPath == "" {
 		return "", ErrPathTraversal
 	}
+	if filepath.IsAbs(relPath) {
+		relPath = strings.TrimLeft(
+			strings.TrimPrefix(relPath, filepath.VolumeName(relPath)),
+			`\/`,
+		)
+	}
 	// Reject explicit parent traversal segments outright. filepath.Clean
 	// would collapse some of these, but an explicit reject is clearer and
 	// closes off encodings the Join/Clean check might otherwise normalize.
-	for _, seg := range strings.Split(filepath.ToSlash(relPath), "/") {
-		if seg == ".." {
-			return "", ErrPathTraversal
-		}
+	if slices.Contains(strings.Split(filepath.ToSlash(relPath), "/"), "..") {
+		return "", ErrPathTraversal
 	}
 	cleanDir := filepath.Clean(w.dir)
 	full := filepath.Clean(filepath.Join(cleanDir, relPath))
@@ -339,9 +344,9 @@ func (w *FileWriter) rebuildIndexGo() error {
 		"| File | Title | Problem Type | Status | Keywords | Origin |\n")
 	b.WriteString("|---|---|---|---|---|---|\n")
 	for _, r := range rows {
-		b.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s |\n",
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n",
 			indexCell(r.file), indexCell(r.title), indexCell(r.problemType),
-			indexCell(r.status), indexCell(r.keywords), indexCell(r.origin)))
+			indexCell(r.status), indexCell(r.keywords), indexCell(r.origin))
 	}
 	out := strings.TrimRight(b.String(), "\n") + "\n"
 	return os.WriteFile(
@@ -378,7 +383,7 @@ func parseIndexFrontmatter(content string) map[string]string {
 		if strings.HasPrefix(v, "[") && strings.HasSuffix(v, "]") {
 			inner := strings.TrimSuffix(strings.TrimPrefix(v, "["), "]")
 			var items []string
-			for _, it := range strings.Split(inner, ",") {
+			for it := range strings.SplitSeq(inner, ",") {
 				it = strings.Trim(strings.TrimSpace(it), `"'`)
 				if it != "" {
 					items = append(items, it)
@@ -438,7 +443,7 @@ func (w *FileWriter) History(
 		return []HistoryEntry{}, nil
 	}
 	entries := []HistoryEntry{}
-	for _, rec := range strings.Split(string(out), "\x1e") {
+	for rec := range strings.SplitSeq(string(out), "\x1e") {
 		rec = strings.Trim(rec, "\n")
 		if rec == "" {
 			continue

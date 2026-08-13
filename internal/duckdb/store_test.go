@@ -328,6 +328,70 @@ func TestSearchGroupsMessagesAndIncludesNameMatches(t *testing.T) {
 	assert.Equal(t, "needle override rename", overridden.Results[0].Snippet)
 }
 
+func TestSearchOperatorCharacterQueries(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+
+	fixtures := map[string]string{
+		"duck-error":       "diagnosed error-401 during login",
+		"duck-status":      "observed status:500 from service",
+		"duck-asterisk":    "literal foo*bar marker",
+		"duck-near":        "the NEAR token is written here",
+		"duck-and-phrase":  "query contains a AND b as typed",
+		"duck-and-decoy":   "query contains a distant b only",
+		"duck-quoted":      "quoted phrase appears here",
+		"duck-embed-quote": `contains 裸"双引号 boundary`,
+		"duck-backslash":   `tail\ marker is preserved`,
+		"duck-cjk":         "侯爽 wrote this note",
+		"duck-cjk-mixed":   "侯s mixed token appears",
+	}
+	writes := make([]db.SessionBatchWrite, 0, len(fixtures))
+	for id, content := range fixtures {
+		writes = append(writes, db.SessionBatchWrite{
+			Session:         syncSession(id, "search", content, "2026-01-17T00:00:00.000Z", 1),
+			Messages:        []db.Message{syncMessage(id, 0, "user", content, "2026-01-17T00:00:00.000Z")},
+			DataVersion:     1,
+			ReplaceMessages: true,
+		})
+	}
+	_, err := local.WriteSessionBatchAtomic(writes)
+	require.NoError(t, err)
+
+	syncer := newTestSync(t, filepath.Join(t.TempDir(), "operator-search.duckdb"), local, SyncOptions{})
+	_, err = syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	store := NewStoreFromDB(syncer.DB())
+
+	tests := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{name: "dash operator", raw: "error-401", want: []string{"duck-error"}},
+		{name: "colon operator", raw: "status:500", want: []string{"duck-status"}},
+		{name: "asterisk operator", raw: "foo*bar", want: []string{"duck-asterisk"}},
+		{name: "NEAR operator", raw: "NEAR", want: []string{"duck-near"}},
+		{name: "AND remains exact phrase", raw: "a AND b", want: []string{"duck-and-phrase"}},
+		{name: "quoted phrase", raw: `"quoted phrase"`, want: []string{"duck-quoted"}},
+		{name: "embedded quote", raw: `裸"双引号`, want: []string{"duck-embed-quote"}},
+		{name: "trailing backslash", raw: `tail\`, want: []string{"duck-backslash"}},
+		{name: "pure CJK", raw: "侯爽", want: []string{"duck-cjk"}},
+		{name: "CJK ASCII mixed", raw: "侯s", want: []string{"duck-cjk-mixed"}},
+		{name: "empty", raw: "", want: nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := store.Search(ctx, db.SearchFilter{
+				Query: db.PrepareFTSQuery(tt.raw),
+				Limit: 20,
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, duckSearchResultIDs(got.Results))
+		})
+	}
+}
+
 func TestSearchIncludesSyncedLLMMetadata(t *testing.T) {
 	ctx := context.Background()
 	local := newLocalDB(t)
@@ -2033,4 +2097,15 @@ func newSyncedStore(t *testing.T) (*Store, syncFixture) {
 	_, err := syncer.Push(ctx, true, nil)
 	require.NoError(t, err)
 	return NewStoreFromDB(syncer.DB()), fixture
+}
+
+func duckSearchResultIDs(results []db.SearchResult) []string {
+	if len(results) == 0 {
+		return nil
+	}
+	ids := make([]string, len(results))
+	for i, result := range results {
+		ids[i] = result.SessionID
+	}
+	return ids
 }

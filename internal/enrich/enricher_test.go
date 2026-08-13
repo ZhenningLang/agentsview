@@ -125,7 +125,7 @@ func TestEnricherRunAccumulatesTokenUsage(t *testing.T) {
 	ctx := context.Background()
 	ended := "2026-06-24T09:00:00Z"
 	const n = 2
-	for i := 0; i < n; i++ {
+	for i := range n {
 		id := fmt.Sprintf("t%d", i)
 		insertEnrichSession(t, d, id, func(s *db.Session) {
 			s.MessageCount = 3
@@ -160,7 +160,7 @@ func TestEnricherRunReportsProgress(t *testing.T) {
 	ctx := context.Background()
 	ended := "2026-06-24T09:00:00Z"
 	const n = 4
-	for i := 0; i < n; i++ {
+	for i := range n {
 		id := fmt.Sprintf("p%d", i)
 		insertEnrichSession(t, d, id, func(s *db.Session) {
 			s.MessageCount = 3

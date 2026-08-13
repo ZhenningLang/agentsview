@@ -673,9 +673,10 @@ func (a *scopedAccumulator) finalize() ScopedDistribution {
 //     the human mean and buckets because the v1 human bucket shape
 //     starts at 2. ScopeAll keeps the [0,2) bucket for short sessions.
 //
-// PeakContextTokens is Claude-only: rows from other agents and rows
-// without hasPeakContext data are excluded from every bucket; the
-// Claude-specific null rows are tallied separately in NullCount.
+// PeakContextTokens includes every row with hasPeakContext data,
+// regardless of agent. Rows without the data are tallied in NullCount
+// only for agents that report the metric at least once in the filtered
+// window, so never-reporting agents stay outside the metric entirely.
 func computeDistributions(s *SessionStats, rows []sessionStatsRow) {
 	durAll := newAccumulator(durationMinutesEdges)
 	durHuman := newAccumulator(durationMinutesEdges)
@@ -686,6 +687,12 @@ func computeDistributions(s *SessionStats, rows []sessionStatsRow) {
 	tptAll := newAccumulator(toolsPerTurnEdges)
 	tptHuman := newAccumulator(toolsPerTurnEdges)
 	var pcNull int
+	peakAgents := map[string]bool{}
+	for _, r := range rows {
+		if r.hasPeakContext {
+			peakAgents[r.agent] = true
+		}
+	}
 
 	for _, r := range rows {
 		human := !r.isAutomated
@@ -708,16 +715,14 @@ func computeDistributions(s *SessionStats, rows []sessionStatsRow) {
 		if human && r.userMessageCount >= 2 {
 			umHuman.add(umv)
 		}
-		if r.agent == "claude" {
-			if r.hasPeakContext {
-				pv := float64(r.peakContextTokens)
-				pcAll.add(pv)
-				if human {
-					pcHuman.add(pv)
-				}
-			} else {
-				pcNull++
+		if r.hasPeakContext {
+			pv := float64(r.peakContextTokens)
+			pcAll.add(pv)
+			if human {
+				pcHuman.add(pv)
 			}
+		} else if peakAgents[r.agent] {
+			pcNull++
 		}
 		if r.assistantTurns > 0 {
 			tpt := float64(r.totalToolCalls) / float64(r.assistantTurns)
@@ -740,7 +745,7 @@ func computeDistributions(s *SessionStats, rows []sessionStatsRow) {
 		ScopeAll:   pcAll.finalize(),
 		ScopeHuman: pcHuman.finalize(),
 		NullCount:  pcNull,
-		ClaudeOnly: true,
+		ClaudeOnly: false,
 	}
 	s.Distributions.ToolsPerTurn = ScopedDistributionPair{
 		ScopeAll:   tptAll.finalize(),

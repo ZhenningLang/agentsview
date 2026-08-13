@@ -72,4 +72,6 @@ graphify-out/
 # accidental self-referential symlink guard
 frontend/node_modules
 memory_telemetry.jsonl
-memory/
+# Root-level runtime memory dir only; internal/memory and
+# frontend/src/lib/components/memory are source and must stay tracked.
+/memory/

@@ -96,7 +96,7 @@ func (a *AuditLog) Read(limit int) ([]RunRecord, error) {
 		return nil, err
 	}
 	defer f.Close()
-	var recs []RunRecord
+	recs := []RunRecord{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {

@@ -7,23 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 )
-
-// processAlive reports whether a process with the given pid exists. On Unix,
-// FindProcess always succeeds, so we probe with signal 0: a nil error or
-// EPERM (the process exists but is owned by another user) both mean "alive".
-func processAlive(pid int) bool {
-	p, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	err = p.Signal(syscall.Signal(0))
-	if err == nil {
-		return true
-	}
-	return errors.Is(err, os.ErrPermission)
-}
 
 // ErrLocked is returned by AcquireLock when another holder owns the lock. The
 // caller treats it as "skip this cycle", not a failure.

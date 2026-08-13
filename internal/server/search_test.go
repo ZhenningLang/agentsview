@@ -20,17 +20,30 @@ func TestPrepareFTSQuery(t *testing.T) {
 		raw  string
 		want string
 	}{
-		{name: "single word unchanged", raw: "login", want: "login"},
+		{name: "single word quoted", raw: "login", want: `"login"`},
 		{name: "multi-word gets quoted", raw: "fix bug", want: `"fix bug"`},
 		{name: "already quoted unchanged", raw: `"fix bug"`, want: `"fix bug"`},
+		{name: "dash operator treated as phrase content", raw: "error-401", want: `"error-401"`},
+		{name: "colon operator treated as phrase content", raw: "status:500", want: `"status:500"`},
+		{name: "asterisk treated as phrase content", raw: "foo*bar", want: `"foo*bar"`},
+		{name: "NEAR treated as phrase content", raw: "NEAR", want: `"NEAR"`},
+		{name: "AND remains exact phrase content", raw: "a AND b", want: `"a AND b"`},
+		{name: "embedded quote escaped", raw: `裸"双引号`, want: `"裸""双引号"`},
+		{name: "trailing backslash kept inside complete phrase", raw: `tail\`, want: `"tail\"`},
+		{name: "pure CJK quoted", raw: "侯爽", want: `"侯爽"`},
+		{name: "CJK ASCII mixed quoted", raw: "侯s", want: `"侯s"`},
 		{name: "empty string unchanged", raw: "", want: ""},
+		{name: "whitespace-only trims to empty", raw: " \t\n ", want: ""},
 		{name: "three words quoted", raw: "a b c", want: `"a b c"`},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, prepareFTSQuery(tt.raw))
+			got := prepareFTSQuery(tt.raw)
+			assert.Equal(t, tt.want, got)
+			assert.Equal(t, got, prepareFTSQuery(got),
+				"prepared query should be idempotent")
 		})
 	}
 }

@@ -105,7 +105,7 @@ func ReadTelemetry(path string, limit int) ([]TelemetryRecord, error) {
 		return nil, err
 	}
 	defer f.Close()
-	var rows []TelemetryRecord
+	rows := []TelemetryRecord{}
 	s := bufio.NewScanner(f)
 	s.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for s.Scan() {
@@ -121,9 +121,6 @@ func ReadTelemetry(path string, limit int) ([]TelemetryRecord, error) {
 	reverse(rows)
 	if limit > 0 && len(rows) > limit {
 		rows = rows[:limit]
-	}
-	if rows == nil {
-		rows = []TelemetryRecord{}
 	}
 	return rows, nil
 }

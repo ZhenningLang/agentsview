@@ -132,8 +132,14 @@ func isWatchResourceExhaustion(err error) bool {
 // Returns true if the directory was successfully watched.
 func (w *Watcher) WatchShallow(root string) bool {
 	root = filepath.Clean(root)
+	if w.hasRoot(root) {
+		return true
+	}
+	if err := w.watcher.Add(root); err != nil {
+		return false
+	}
 	w.addRoot(root)
-	return w.watcher.Add(root) == nil
+	return true
 }
 
 // Start begins processing file events in a goroutine.
@@ -237,6 +243,12 @@ func (w *Watcher) addRoot(root string) {
 	if !slices.Contains(w.roots, root) {
 		w.roots = append(w.roots, root)
 	}
+}
+
+func (w *Watcher) hasRoot(root string) bool {
+	w.rootsMu.RLock()
+	defer w.rootsMu.RUnlock()
+	return slices.Contains(w.roots, root)
 }
 
 func (w *Watcher) shouldExclude(path string) bool {

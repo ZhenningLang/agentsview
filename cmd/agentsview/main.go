@@ -824,8 +824,8 @@ func startAssistMemSyncWithRearmHook(
 	var watcher *sync.Watcher
 	watcher, err := sync.NewWatcher(watcherDebounce, func(paths []string) {
 		for _, changed := range paths {
-			if pathChangeAffectsTarget(changed, path) {
-				root, watched := watchNearestExistingDir(
+			if pathChangeAffectsTarget(changed, path) || pathChangeMayMoveTargetDir(changed, path) {
+				root, watched := watchAssistMemLedgerDirs(
 					watcher, filepath.Dir(path),
 				)
 				if onRearm != nil {
@@ -846,7 +846,7 @@ func startAssistMemSyncWithRearmHook(
 	if err != nil {
 		log.Printf("assist-mem watcher: %v", err)
 	} else {
-		root, watched := watchNearestExistingDir(watcher, filepath.Dir(path))
+		root, watched := watchAssistMemLedgerDirs(watcher, filepath.Dir(path))
 		if onRearm != nil {
 			onRearm(root, watched)
 		}
@@ -860,9 +860,7 @@ func startAssistMemSyncWithRearmHook(
 	}
 	runner.Run()
 	var wg stdsync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		ticker := time.NewTicker(periodicSyncInterval)
 		defer ticker.Stop()
 		for {
@@ -873,7 +871,7 @@ func startAssistMemSyncWithRearmHook(
 				runner.Run()
 			}
 		}
-	}()
+	})
 	var stopOnce stdsync.Once
 	return func() {
 		stopOnce.Do(func() {
@@ -913,11 +911,35 @@ func nearestExistingDir(path string) string {
 	return ""
 }
 
-func watchNearestExistingDir(
+func assistMemWatchRoots(targetDir string) []string {
+	targetDir = filepath.Clean(targetDir)
+	root := nearestExistingDir(targetDir)
+	if root == "" {
+		return nil
+	}
+	roots := []string{root}
+	if root == targetDir {
+		parent := filepath.Dir(targetDir)
+		if parent != "" && parent != targetDir {
+			roots = append(roots, parent)
+		}
+	}
+	return roots
+}
+
+func watchAssistMemLedgerDirs(
 	watcher *sync.Watcher, targetDir string,
 ) (string, bool) {
-	root := nearestExistingDir(targetDir)
-	return root, root != "" && watcher.WatchShallow(root)
+	roots := assistMemWatchRoots(targetDir)
+	if len(roots) == 0 {
+		return "", false
+	}
+	root := roots[0]
+	watched := watcher.WatchShallow(root)
+	for _, extra := range roots[1:] {
+		_ = watcher.WatchShallow(extra)
+	}
+	return root, watched
 }
 
 func pathChangeAffectsTarget(changed, target string) bool {
@@ -928,6 +950,15 @@ func pathChangeAffectsTarget(changed, target string) bool {
 	}
 	rel, err := filepath.Rel(changed, target)
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func pathChangeMayMoveTargetDir(changed, target string) bool {
+	changed = filepath.Clean(changed)
+	targetDir := filepath.Dir(filepath.Clean(target))
+	if _, err := os.Stat(targetDir); err == nil {
+		return false
+	}
+	return filepath.Dir(changed) == filepath.Dir(targetDir)
 }
 
 func syncAssistMemOnce(ctx context.Context, cfg config.Config, database db.Store) bool {
@@ -1065,18 +1096,6 @@ func startMemoryGC(ctx context.Context, cfg config.Config) {
 	go gc.Run(ctx, memorygc.DefaultInterval)
 }
 
-// startConsolidate starts the background consolidation worker and returns a
-// Controller so the server can arm/disarm it at runtime. The loop is ALWAYS
-// started (when the prerequisites are present) so that enabling it from the UI
-// takes effect without a process restart; ConsolidateEnabled (default OFF) only
-// sets the initial armed state. While disarmed every tick/trigger is a no-op,
-// so auto-LLM-writes into memory/user never happen without an explicit opt-in;
-// arming fires one immediate cycle (locked decision A2: "UI 能开启 + 开启后自动跑").
-//
-// It returns nil (and starts nothing) when no memory dir is configured/found or
-// when the store is not a local writer (PG/DuckDB serve modes never own the
-// SSOT files) — fail-open like the syncs above. A nil controller leaves the
-// server's enable endpoint reporting "not available", never panicking.
 // startSynthesize starts the background memory-synthesis worker. In normal
 // startup it provides a CanonicalStore, so synthesize writes raw-preserving
 // source='canonical' DB rows; the Python compact_memory path remains wired only
@@ -1113,45 +1132,6 @@ func startSynthesize(
 	}
 	ctrl := synthesize.NewController(worker, cfg.SynthesizeEnabled)
 	go ctrl.Run(ctx, cfg.ResolveSynthesizeInterval())
-	return ctrl
-}
-
-func startConsolidate(
-	ctx context.Context, cfg config.Config, database db.Store,
-) *consolidate.Controller {
-	dir := cfg.ResolveMemoryDir()
-	if dir == "" {
-		return nil
-	}
-	root := cfg.ResolveDotfilesRoot()
-	if root == "" {
-		return nil
-	}
-	writer, ok := database.(memory.Writer)
-	if !ok {
-		return nil
-	}
-	stagingDir := filepath.Join(root, "memory", ".staging")
-	rawDir := filepath.Join(stagingDir, "raw_memories")
-	embedCfg := cfg.ResolveUsageLLM("embed")
-	embedder := memorySyncEmbedder(cfg, nil)
-	resync := newMemoryResyncer(dir, writer, cfg, nil)
-	// Background batch consolidation is not interactive; give it a longer HTTP
-	// timeout than the 30s default so a momentarily slow provider response does
-	// not fail the whole cycle (reasoning is already disabled in ConsolidateLLM).
-	consolidateHTTP := &http.Client{Timeout: 90 * time.Second}
-	worker := consolidate.NewWorker(
-		stagingDir, rawDir, root,
-		llm.NewWithHTTPClient(cfg.ConsolidateLLM(), consolidateHTTP),
-		consolidate.PythonScriptRunner{},
-		consolidate.GitCommitter{Dir: dir},
-		resync,
-		consolidate.NewAuditLog(consolidate.AuditPath(dir)),
-		consolidate.NewStoreMemoryRecaller(database, embedder, embedCfg),
-	)
-	worker.BatchSize = cfg.ResolveConsolidateBatchSize()
-	ctrl := consolidate.NewController(worker, cfg.ConsolidateEnabled)
-	go ctrl.Run(ctx, cfg.ResolveConsolidateInterval())
 	return ctrl
 }
 

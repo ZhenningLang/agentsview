@@ -357,20 +357,37 @@ func (s *Server) handleSPA(w http.ResponseWriter, r *http.Request) {
 	if path == "" {
 		path = "index.html"
 	}
+	isIndex := path == "index.html"
+	isAsset := strings.HasPrefix(path, "assets/")
 
 	f, err := s.spaFS.Open(path)
 	if err == nil {
 		f.Close()
-		// For index.html with a base path, inject <base href>.
-		if s.basePath != "" && path == "index.html" {
+		if isIndex {
+			// Entry documents must revalidate; basePath entries also inject <base href>.
+			w.Header().Set("Cache-Control", "no-cache")
+			if s.basePath == "" {
+				r.URL.Path = "/"
+				s.spaHandler.ServeHTTP(w, r)
+				return
+			}
 			s.serveIndexWithBase(w, r)
 			return
+		}
+		if isAsset {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 		}
 		s.spaHandler.ServeHTTP(w, r)
 		return
 	}
 
+	if isAsset {
+		http.NotFound(w, r)
+		return
+	}
+
 	// SPA fallback: serve index.html for all routes
+	w.Header().Set("Cache-Control", "no-cache")
 	if s.basePath != "" {
 		s.serveIndexWithBase(w, r)
 		return

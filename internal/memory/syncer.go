@@ -136,7 +136,10 @@ func (s *Syncer) Sync(ctx context.Context) error {
 		}
 		m.SyncedAt = syncedAt
 		if err := populateMemoryEmbedding(ctx, s.embedder, &m, previous); err != nil {
-			return err
+			// Fail-soft per file, matching the parse path above: one note the
+			// provider refuses must not discard every other note's fresh
+			// vector and leave the mirror unwritten.
+			log.Printf("memory sync: %v", err)
 		}
 		memories = append(memories, m)
 	}
@@ -163,8 +166,60 @@ func loadPreviousEmbeddings(
 	return out
 }
 
+// maxEmbedInputTokens bounds the text handed to the embedding provider.
+// Providers reject oversized inputs outright (OpenAI's embedding models cap
+// at 8192 tokens) and a rejected note stays rejected no matter how often it
+// is retried, so the body is truncated instead. The budget sits well below
+// the ceiling to leave room for the estimate below being an estimate.
+const maxEmbedInputTokens = 6000
+
+// embeddingTokenEstimate over-counts the BPE tokens in text on purpose.
+// skills.Tokenizer is not usable here: its doc comment scopes it to
+// order-of-magnitude context sizing and it under-counts badly, scoring a
+// measured 9.1k-token note at 5.5k, which would sail straight past a hard
+// provider limit. Wide runes (CJK and friends) are charged a full token
+// each and narrow runes every two characters. Real BPE vocabularies emit
+// fewer tokens than that for both, so the estimate errs toward truncating
+// early rather than getting the request rejected.
+func embeddingTokenEstimate(text string) int {
+	var wide, narrow int
+	for _, r := range text {
+		if r >= 0x2E80 {
+			wide++
+		} else {
+			narrow++
+		}
+	}
+	return wide + (narrow+1)/2
+}
+
+// truncateForEmbedding shortens body until the estimate fits the embedding
+// budget. Losing tail content is preferable to the note carrying no vector
+// at all.
+func truncateForEmbedding(body string) string {
+	if embeddingTokenEstimate(body) <= maxEmbedInputTokens {
+		return body
+	}
+	runes := []rune(body)
+	// Each pass shrinks by at least 10%, so the loop is bounded even if the
+	// estimate scales non-linearly with length.
+	for len(runes) > 0 {
+		est := embeddingTokenEstimate(string(runes))
+		if est <= maxEmbedInputTokens {
+			break
+		}
+		scaled := len(runes) * maxEmbedInputTokens / est
+		if scaled >= len(runes) {
+			scaled = len(runes) * 9 / 10
+		}
+		runes = runes[:scaled]
+	}
+	return string(runes)
+}
+
 func populateMemoryEmbedding(
-	ctx context.Context, embedder Embedder, m *db.Memory, previous map[string]db.Memory,
+	ctx context.Context, embedder Embedder,
+	m *db.Memory, previous map[string]db.Memory,
 ) error {
 	// Embeddings are derived only from Body. Reuse by rel_path/source/body so
 	// frontmatter-only rewrites or lexical fallback resyncs keep safe vectors,
@@ -176,13 +231,32 @@ func populateMemoryEmbedding(
 	if embedder == nil {
 		return nil
 	}
-	vector, err := embedder.Embed(ctx, m.Body)
+	vector, err := embedder.Embed(ctx, truncateForEmbedding(m.Body))
 	if err != nil {
+		// Fail-soft, but never downgrade what is already stored: carry the
+		// previous vector forward so a provider outage cannot blank every
+		// note's embedding. Callers log and keep going; aborting the whole
+		// run meant no vector was ever persisted and every later sync
+		// re-embedded every note from scratch.
+		carryPreviousEmbedding(m, previous)
 		return fmt.Errorf("embedding memory %q: %w", m.RelPath, err)
 	}
 	m.LLMEmbedding = vector
 	m.LLMEmbeddingDim = len(vector)
 	return nil
+}
+
+// carryPreviousEmbedding restores the stored vector for a note whose fresh
+// embedding failed. The vector may be stale relative to the new body, which
+// is a deliberate trade: a slightly outdated vector keeps the note
+// semantically reachable, while dropping it silently removes it from recall.
+func carryPreviousEmbedding(m *db.Memory, previous map[string]db.Memory) {
+	old, ok := previous[m.RelPath]
+	if !ok || old.Source != m.Source || len(old.LLMEmbedding) == 0 {
+		return
+	}
+	m.LLMEmbedding = old.LLMEmbedding
+	m.LLMEmbeddingDim = old.LLMEmbeddingDim
 }
 
 func reusePreviousEmbedding(m *db.Memory, previous map[string]db.Memory) bool {

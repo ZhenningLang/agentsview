@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,7 +108,8 @@ func (s *CCSyncer) Sync(ctx context.Context) error {
 			}
 			m.SyncedAt = syncedAt
 			if err := populateMemoryEmbedding(ctx, s.embedder, &m, previous); err != nil {
-				return err
+				// Fail-soft per note, matching the parse path above.
+				log.Printf("cc memory sync: %v", err)
 			}
 			memories = append(memories, m)
 		}

@@ -7,8 +7,8 @@
     "prepare-sidecar": "bash ./scripts/prepare-sidecar.sh",
     "tauri:dev": "npm run prepare-sidecar && bash ./scripts/run-tauri.sh dev",
     "tauri:build": "npm run prepare-sidecar && bash ./scripts/run-tauri.sh build",
-    "tauri:build:macos-app": "npm run prepare-sidecar && bash ./scripts/run-tauri.sh build --bundles app",
-    "tauri:build:macos-dmg": "npm run prepare-sidecar && bash ./scripts/run-tauri.sh build --bundles dmg",
+    "tauri:build:macos-app": "npm run prepare-sidecar && bash ./scripts/run-tauri.sh build --bundles app; status=$?; bash ./scripts/reseal-macos-app.sh; exit $status",
+    "tauri:build:macos-dmg": "npm run prepare-sidecar && bash ./scripts/run-tauri.sh build --bundles dmg; status=$?; bash ./scripts/reseal-macos-app.sh; exit $status",
     "tauri:build:windows": "npm run prepare-sidecar && bash ./scripts/run-tauri.sh build --bundles nsis",
     "tauri:build:linux": "npm run prepare-sidecar && bash ./scripts/run-tauri.sh build --bundles appimage",
     "tauri": "tauri"

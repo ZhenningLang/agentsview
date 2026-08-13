@@ -34,6 +34,37 @@ func (e *fakeEmbedder) Embed(_ context.Context, _ string) ([]float32, error) {
 	return e.vector, nil
 }
 
+// failingEmbedder rejects exactly one body, mirroring a provider that refuses
+// a single oversized note while the rest of the batch embeds fine.
+type failingEmbedder struct {
+	vector   []float32
+	failBody string
+	err      error
+	calls    int
+}
+
+func (e *failingEmbedder) Embed(_ context.Context, input string) ([]float32, error) {
+	e.calls++
+	if input == e.failBody {
+		return nil, e.err
+	}
+	return e.vector, nil
+}
+
+// recordingEmbedder captures the last input so tests can assert on what was
+// actually sent to the provider.
+type recordingEmbedder struct {
+	vector    []float32
+	lastInput string
+	calls     int
+}
+
+func (e *recordingEmbedder) Embed(_ context.Context, input string) ([]float32, error) {
+	e.calls++
+	e.lastInput = input
+	return e.vector, nil
+}
+
 func (w *fakeWriter) ReplaceMemories(
 	_ context.Context, m []db.Memory,
 ) error {
@@ -258,7 +289,7 @@ func TestSyncWithEmbedderPopulatesMemoryEmbedding(t *testing.T) {
 	assert.Equal(t, 1, embedder.calls)
 }
 
-func TestSyncWithEmbedderReturnsErrorOnEmbeddingFailure(t *testing.T) {
+func TestSyncWithEmbedderKeepsMirrorOnEmbeddingFailure(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "memory")
 	writeNote(t, dir, "broken.md",
 		"title: Broken\ndate: 2026-06-20\nproblem_type: knowledge\nstatus: active",
@@ -266,10 +297,132 @@ func TestSyncWithEmbedderReturnsErrorOnEmbeddingFailure(t *testing.T) {
 	w := &fakeWriter{}
 	s := NewSyncerWithEmbedder(dir, w, nil, &fakeEmbedder{err: errors.New("embed failed")})
 
-	err := s.Sync(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "embedding memory")
-	assert.Empty(t, w.memories, "failed embed should not write a silent lexical-only replacement")
+	require.NoError(t, s.Sync(context.Background()),
+		"a provider rejection must not abort the run")
+	require.Len(t, w.memories, 1,
+		"the note stays mirrored lexically even without a vector")
+	assert.Empty(t, w.memories[0].LLMEmbedding)
+}
+
+// A single unembeddable note used to abort the whole run before
+// ReplaceMemoriesBySource, so no vector was ever persisted and every later
+// sync re-embedded every note from scratch.
+func TestSyncOneFailedEmbeddingDoesNotDiscardOtherVectors(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	for _, name := range []string{"a.md", "oversized.md", "z.md"} {
+		writeNote(t, dir, name,
+			"title: "+name+"\ndate: 2026-06-20\nproblem_type: knowledge\nstatus: active",
+			"body of "+name)
+	}
+	w := &fakeWriter{}
+	embedder := &failingEmbedder{
+		vector:   []float32{1, 0},
+		failBody: "body of oversized.md\n",
+		err:      errors.New("maximum context length is 8192 tokens"),
+	}
+	s := NewSyncerWithEmbedder(dir, w, nil, embedder)
+
+	require.NoError(t, s.Sync(context.Background()))
+	require.Len(t, w.memories, 3)
+	withVector := 0
+	for _, m := range w.memories {
+		if len(m.LLMEmbedding) > 0 {
+			withVector++
+		}
+	}
+	assert.Equal(t, 2, withVector,
+		"the two healthy notes keep their fresh vectors")
+}
+
+// The reuse path only works if the previous run actually persisted vectors,
+// which is what makes the fail-soft fix stop the repeated-billing loop.
+func TestSyncReusesVectorsAfterEarlierFailure(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	writeNote(t, dir, "good.md",
+		"title: Good\ndate: 2026-06-20\nproblem_type: knowledge\nstatus: active",
+		"stable body")
+	writeNote(t, dir, "oversized.md",
+		"title: Oversized\ndate: 2026-06-20\nproblem_type: knowledge\nstatus: active",
+		"too long")
+	w := &fakeWriter{}
+	embedder := &failingEmbedder{
+		vector:   []float32{1, 0},
+		failBody: "too long\n",
+		err:      errors.New("maximum context length is 8192 tokens"),
+	}
+	s := NewSyncerWithEmbedder(dir, w, nil, embedder)
+
+	require.NoError(t, s.Sync(context.Background()))
+	firstRun := embedder.calls
+	require.NoError(t, s.Sync(context.Background()))
+
+	assert.Equal(t, firstRun+1, embedder.calls,
+		"only the still-failing note is retried; healthy vectors are reused")
+}
+
+// A provider outage must not blank vectors that are already stored.
+func TestSyncFailedEmbeddingCarriesPreviousVectorForward(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	writeNote(t, dir, "stable.md",
+		"title: Stable\ndate: 2026-06-20\nproblem_type: knowledge\nstatus: active",
+		"changed body")
+	info, err := os.Stat(filepath.Join(dir, "stable.md"))
+	require.NoError(t, err)
+	w := &fakeWriter{memories: []db.Memory{{
+		RelPath: "stable.md", Source: db.SourceCrossAgent, Body: "old body\n",
+		SourceMtime: info.ModTime().Unix(), LLMEmbedding: []float32{0.25, 0.75}, LLMEmbeddingDim: 2,
+	}}}
+	s := NewSyncerWithEmbedder(dir, w, nil, &fakeEmbedder{err: errors.New("provider down")})
+
+	require.NoError(t, s.Sync(context.Background()))
+	require.Len(t, w.memories, 1)
+	assert.Equal(t, []float32{0.25, 0.75}, w.memories[0].LLMEmbedding,
+		"an outage keeps the stored vector rather than downgrading to lexical-only")
+}
+
+func TestTruncateForEmbeddingFitsBudget(t *testing.T) {
+	long := strings.Repeat("语义记忆内容", 20000)
+	require.Greater(t, embeddingTokenEstimate(long), maxEmbedInputTokens)
+
+	got := truncateForEmbedding(long)
+
+	assert.LessOrEqual(t, embeddingTokenEstimate(got), maxEmbedInputTokens)
+	assert.NotEmpty(t, got)
+}
+
+func TestTruncateForEmbeddingLeavesShortBodyIntact(t *testing.T) {
+	body := "short enough body"
+
+	assert.Equal(t, body, truncateForEmbedding(body))
+}
+
+// The note that stalled the real sync was Latin-heavy with a CJK minority:
+// the provider measured 9134 tokens where skills.Tokenizer scored 5501, so
+// this shape is exactly the one the estimate must not wave through.
+func TestTruncateForEmbeddingCatchesLatinHeavyMixedNote(t *testing.T) {
+	body := strings.Repeat("记忆", 1704) + strings.Repeat("memory note body. ", 835)
+	require.Greater(t, embeddingTokenEstimate(body), 8192,
+		"a note of this shape sits above the provider ceiling")
+
+	got := truncateForEmbedding(body)
+
+	assert.LessOrEqual(t, embeddingTokenEstimate(got), maxEmbedInputTokens)
+	assert.Less(t, len(got), len(body))
+}
+
+func TestSyncTruncatesOversizedBodyBeforeEmbedding(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	writeNote(t, dir, "huge.md",
+		"title: Huge\ndate: 2026-06-20\nproblem_type: knowledge\nstatus: active",
+		strings.Repeat("语义记忆内容", 20000))
+	w := &fakeWriter{}
+	embedder := &recordingEmbedder{vector: []float32{1, 0}}
+	s := NewSyncerWithEmbedder(dir, w, nil, embedder)
+
+	require.NoError(t, s.Sync(context.Background()))
+	require.Len(t, w.memories, 1)
+	assert.NotEmpty(t, w.memories[0].LLMEmbedding)
+	assert.LessOrEqual(t, embeddingTokenEstimate(embedder.lastInput), maxEmbedInputTokens)
 }
 
 func TestSyncWithEmbedderReusesUnchangedEmbedding(t *testing.T) {
@@ -421,7 +574,7 @@ func TestLedgerSyncerWithEmbedderDoesNotReuseChangedBodyEmbedding(t *testing.T) 
 	assert.Equal(t, 1, embedder.calls)
 }
 
-func TestLedgerSyncerWithEmbedderReturnsErrorOnEmbeddingFailure(t *testing.T) {
+func TestLedgerSyncerWithEmbedderKeepsMirrorOnEmbeddingFailure(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "entries.jsonl")
 	content := `{"created_at":"2026-07-01T13:36:35Z","id":"broken","project":"ordo_ai","scope":"project","status":"active","text":"assist body","type":"entrypoint"}` + "\n"
@@ -429,8 +582,8 @@ func TestLedgerSyncerWithEmbedderReturnsErrorOnEmbeddingFailure(t *testing.T) {
 	w := &fakeWriter{}
 	s := NewLedgerSyncerWithEmbedder(path, w, nil, &fakeEmbedder{err: errors.New("embed failed")})
 
-	err := s.Sync(context.Background())
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "embedding memory")
-	assert.Empty(t, w.memories, "failed embed should not write a silent lexical-only replacement")
+	require.NoError(t, s.Sync(context.Background()),
+		"a provider rejection must not abort the run")
+	require.Len(t, w.memories, 1)
+	assert.Empty(t, w.memories[0].LLMEmbedding)
 }
