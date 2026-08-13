@@ -62,6 +62,16 @@ func (p *PhaseStats) recordValidation(stats db.ValidationStats) {
 	p.ValidationTimestamps.Add(int64(stats.TimestampsBlanked))
 }
 
+func (p *PhaseStats) SanitizeSnapshot() SanitizeStats {
+	return SanitizeStats{
+		ControlCharsStripped: int(p.ValidationControlFields.Load()),
+		ModelClamped:         int(p.ValidationModels.Load()),
+		TokensClamped:        int(p.ValidationTokens.Load()),
+		RoleCoerced:          int(p.ValidationRoles.Load()),
+		TimestampsBlanked:    int(p.ValidationTimestamps.Load()),
+	}
+}
+
 // Log emits a single-line summary of accumulated phase totals. It is
 // a no-op when no batch ran (so non-bulk syncs stay quiet).
 func (p *PhaseStats) Log(label string) {

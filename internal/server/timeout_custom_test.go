@@ -47,6 +47,28 @@ func TestWithTimeout(t *testing.T) {
 			wantHeaderKey: "X-Custom",
 			wantHeaderVal: "value",
 		},
+		{
+			name:    "zero disables timeout",
+			timeout: 0,
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				time.Sleep(25 * time.Millisecond)
+				w.WriteHeader(http.StatusAccepted)
+				w.Write([]byte(`{"status":"ok"}`))
+			},
+			wantStatus: http.StatusAccepted,
+			wantBody:   `{"status":"ok"}`,
+		},
+		{
+			name:    "negative disables timeout",
+			timeout: -1 * time.Second,
+			handler: func(w http.ResponseWriter, r *http.Request) {
+				time.Sleep(25 * time.Millisecond)
+				w.WriteHeader(http.StatusAccepted)
+				w.Write([]byte(`{"status":"ok"}`))
+			},
+			wantStatus: http.StatusAccepted,
+			wantBody:   `{"status":"ok"}`,
+		},
 	}
 
 	for _, tt := range tests {

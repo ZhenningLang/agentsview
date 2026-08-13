@@ -205,6 +205,37 @@ func TestLoadPFlags_AppliesExplicitFlags(t *testing.T) {
 	assert.Equal(t, 9090, cfg.Port)
 }
 
+func TestLoad_WriteTimeout(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		cfg, err := loadConfigFromFlags(t)
+		require.NoError(t, err)
+		assert.Equal(t, 30*time.Second, cfg.WriteTimeout)
+	})
+
+	tests := []struct {
+		name  string
+		value string
+		want  time.Duration
+	}{
+		{name: "raised", value: "120s", want: 120 * time.Second},
+		{name: "zero disables", value: "0s", want: 0},
+		{name: "negative disables", value: "-1s", want: -1 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name+" flag", func(t *testing.T) {
+			cfg, err := loadConfigFromFlags(t, "-write-timeout", tt.value)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.WriteTimeout)
+		})
+		t.Run(tt.name+" pflag", func(t *testing.T) {
+			cfg, err := loadConfigFromPFlags(t, "--write-timeout", tt.value)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.WriteTimeout)
+		})
+	}
+}
+
 func TestLoadPFlags_AppliesAssistMemLedgerFlag(t *testing.T) {
 	tmp := setupTestEnv(t)
 	want := filepath.Join(tmp, "ledger", "entries.jsonl")

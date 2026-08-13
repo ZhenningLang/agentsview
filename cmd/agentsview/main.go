@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	stdsync "sync"
 	"syscall"
@@ -542,10 +544,52 @@ func printSyncSummary(stats sync.SyncStats, t time.Time) {
 	summary += fmt.Sprintf(
 		" in %s\n", time.Since(t).Round(time.Millisecond),
 	)
+	summary += formatAnomalySummary(stats.Anomalies)
 	fmt.Print(summary)
 	for _, w := range stats.Warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
 	}
+}
+
+func formatAnomalySummary(a sync.AnomalyStats) string {
+	if a.IsZero() {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Parser anomalies (this run):\n")
+	if a.MalformedLinesTotal > 0 {
+		fmt.Fprintf(&b, "  malformed lines: %d total\n", a.MalformedLinesTotal)
+		for _, agent := range slices.Sorted(maps.Keys(a.MalformedLinesByAgent)) {
+			fmt.Fprintf(&b, "    %s: %d\n", agent, a.MalformedLinesByAgent[agent])
+		}
+	}
+	if !a.Sanitize.IsZero() {
+		fmt.Fprintf(&b, "  sanitized fields: %d total\n", a.Sanitize.Total())
+		for _, line := range sanitizeBreakdownLines(a.Sanitize) {
+			b.WriteString("    " + line + "\n")
+		}
+	}
+	return b.String()
+}
+
+func sanitizeBreakdownLines(s sync.SanitizeStats) []string {
+	cats := []struct {
+		label string
+		count int
+	}{
+		{"control chars stripped", s.ControlCharsStripped},
+		{"model clamped", s.ModelClamped},
+		{"tokens clamped", s.TokensClamped},
+		{"role coerced", s.RoleCoerced},
+		{"timestamps blanked", s.TimestampsBlanked},
+	}
+	var out []string
+	for _, c := range cats {
+		if c.count > 0 {
+			out = append(out, fmt.Sprintf("%s: %d", c.label, c.count))
+		}
+	}
+	return out
 }
 
 func printSyncProgress(p sync.Progress) {

@@ -1,5 +1,7 @@
 package sync
 
+import gosync "sync"
+
 // Phase describes the current sync phase.
 type Phase string
 
@@ -38,19 +40,119 @@ type SyncResult struct {
 // produced at least one session — used by ResyncAll to compare
 // against Failed on the same unit.
 type SyncStats struct {
-	TotalSessions  int      `json:"total_sessions"`
-	Synced         int      `json:"synced"`
-	Skipped        int      `json:"skipped"`
-	Failed         int      `json:"failed"`
-	OrphanedCopied int      `json:"orphaned_copied,omitempty"`
-	Warnings       []string `json:"warnings,omitempty"`
-	Aborted        bool     `json:"aborted,omitempty"`
+	TotalSessions  int          `json:"total_sessions"`
+	Synced         int          `json:"synced"`
+	Skipped        int          `json:"skipped"`
+	Failed         int          `json:"failed"`
+	OrphanedCopied int          `json:"orphaned_copied,omitempty"`
+	Warnings       []string     `json:"warnings,omitempty"`
+	Aborted        bool         `json:"aborted,omitempty"`
+	Anomalies      AnomalyStats `json:"anomalies,omitzero"`
 
 	filesOK             int // unexported: file-level success counter
 	filesDiscovered     int // file-based total, excludes DB-backed agents
 	messagesIndexed     int // unexported: progress message counter
 	parserExcludedFiles int // file-level intentional parser exclusions
 	parserExcludedIDs   []string
+}
+
+type AnomalyStats struct {
+	MalformedLinesByAgent map[string]int `json:"malformed_lines_by_agent,omitempty"`
+	MalformedLinesTotal   int            `json:"malformed_lines_total,omitempty"`
+	Sanitize              SanitizeStats  `json:"sanitize,omitzero"`
+}
+
+type SanitizeStats struct {
+	ControlCharsStripped int `json:"control_chars_stripped,omitempty"`
+	ModelClamped         int `json:"model_clamped,omitempty"`
+	TokensClamped        int `json:"tokens_clamped,omitempty"`
+	RoleCoerced          int `json:"role_coerced,omitempty"`
+	TimestampsBlanked    int `json:"timestamps_blanked,omitempty"`
+}
+
+func (s SanitizeStats) Total() int {
+	return s.ControlCharsStripped + s.ModelClamped + s.TokensClamped +
+		s.RoleCoerced + s.TimestampsBlanked
+}
+
+func (s SanitizeStats) IsZero() bool {
+	return s.Total() == 0
+}
+
+func (a AnomalyStats) IsZero() bool {
+	return a.MalformedLinesTotal == 0 && a.Sanitize.IsZero()
+}
+
+func (a *AnomalyStats) RecordMalformedLines(agent string, n int) {
+	if n <= 0 {
+		return
+	}
+	if a.MalformedLinesByAgent == nil {
+		a.MalformedLinesByAgent = make(map[string]int)
+	}
+	a.MalformedLinesByAgent[agent] += n
+	a.MalformedLinesTotal += n
+}
+
+func (a *AnomalyStats) addSanitize(s SanitizeStats) {
+	a.Sanitize.ControlCharsStripped += s.ControlCharsStripped
+	a.Sanitize.ModelClamped += s.ModelClamped
+	a.Sanitize.TokensClamped += s.TokensClamped
+	a.Sanitize.RoleCoerced += s.RoleCoerced
+	a.Sanitize.TimestampsBlanked += s.TimestampsBlanked
+}
+
+func (a *AnomalyStats) merge(o AnomalyStats) {
+	for agent, n := range o.MalformedLinesByAgent {
+		a.RecordMalformedLines(agent, n)
+	}
+	a.addSanitize(o.Sanitize)
+}
+
+type anomalyAccumulator struct {
+	mu             gosync.Mutex
+	stats          AnomalyStats
+	malformedFiles map[string]bool
+}
+
+func (a *anomalyAccumulator) reset() {
+	a.mu.Lock()
+	a.stats = AnomalyStats{}
+	a.malformedFiles = nil
+	a.mu.Unlock()
+}
+
+func (a *anomalyAccumulator) recordMalformedLines(agent, sourcePath string, n int) {
+	if n <= 0 {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if sourcePath != "" {
+		if a.malformedFiles == nil {
+			a.malformedFiles = make(map[string]bool)
+		}
+		if a.malformedFiles[sourcePath] {
+			return
+		}
+		a.malformedFiles[sourcePath] = true
+	}
+	a.stats.RecordMalformedLines(agent, n)
+}
+
+func (a *anomalyAccumulator) recordSanitize(s SanitizeStats) {
+	if s.IsZero() {
+		return
+	}
+	a.mu.Lock()
+	a.stats.addSanitize(s)
+	a.mu.Unlock()
+}
+
+func (a *anomalyAccumulator) applyTo(s *SyncStats) {
+	a.mu.Lock()
+	s.Anomalies.merge(a.stats)
+	a.mu.Unlock()
 }
 
 // RecordSkip increments the skipped session counter.

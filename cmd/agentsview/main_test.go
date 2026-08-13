@@ -142,6 +142,25 @@ func TestSetupLogFile(t *testing.T) {
 		"log file missing message")
 }
 
+func TestFormatAnomalySummary(t *testing.T) {
+	assert.Equal(t, "", formatAnomalySummary(sync.AnomalyStats{}))
+
+	got := formatAnomalySummary(sync.AnomalyStats{
+		MalformedLinesByAgent: map[string]int{"codex": 2, "claude": 1},
+		MalformedLinesTotal:   3,
+		Sanitize: sync.SanitizeStats{
+			TokensClamped:        4,
+			ControlCharsStripped: 1,
+		},
+	})
+	assert.Contains(t, got, "Parser anomalies (this run):")
+	assert.Contains(t, got, "malformed lines: 3 total")
+	assert.Contains(t, got, "    claude: 1\n    codex: 2")
+	assert.Contains(t, got, "sanitized fields: 5 total")
+	assert.Contains(t, got, "control chars stripped: 1\n")
+	assert.Contains(t, got, "tokens clamped: 4\n")
+}
+
 func TestSetupLogFileOpenFailure(t *testing.T) {
 	origOutput := log.Writer()
 	t.Cleanup(func() { log.SetOutput(origOutput) })

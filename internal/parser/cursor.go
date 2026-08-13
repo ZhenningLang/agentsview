@@ -2,6 +2,7 @@ package parser
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -238,10 +239,7 @@ func extractAssistantContent(
 		if toolName, ok := strings.CutPrefix(
 			trimmed, "[Tool call] ",
 		); ok {
-			toolCalls = append(toolCalls, ParsedToolCall{
-				ToolName: toolName,
-				Category: NormalizeToolCategory(toolName),
-			})
+			bodyStart := i + 1
 			i++
 			for i < len(lines) {
 				if isBlockBodyEnd(lines[i]) {
@@ -249,6 +247,13 @@ func extractAssistantContent(
 				}
 				i++
 			}
+			inputJSON := cursorToolInputJSON(toolName, lines[bodyStart:i])
+			toolCalls = append(toolCalls, ParsedToolCall{
+				ToolName:  toolName,
+				Category:  NormalizeToolCategory(toolName),
+				InputJSON: inputJSON,
+				SkillName: inferToolSkillName(toolName, inputJSON),
+			})
 			continue
 		}
 
@@ -295,6 +300,47 @@ func isBlockBodyEnd(line string) bool {
 	// Non-empty line at left margin ends the block.
 	return trimmed != "" && len(line) > 0 && line[0] != ' ' &&
 		line[0] != '\t'
+}
+
+func cursorToolInputJSON(toolName string, body []string) string {
+	if strings.EqualFold(toolName, "ApplyPatch") {
+		return strings.TrimSpace(strings.Join(trimIndentedLines(body), "\n"))
+	}
+	trimmed := strings.TrimSpace(strings.Join(trimIndentedLines(body), "\n"))
+	if trimmed == "" {
+		return ""
+	}
+	if gjson.Valid(trimmed) {
+		return trimmed
+	}
+	m := make(map[string]string)
+	for _, line := range strings.Split(trimmed, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		m[key] = strings.TrimSpace(value)
+	}
+	if len(m) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func trimIndentedLines(lines []string) []string {
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, strings.TrimSpace(line))
+	}
+	return out
 }
 
 // CursorSessionID derives a session ID from a transcript file

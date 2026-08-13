@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -109,6 +111,33 @@ func TestOpenAPICommandEmitsSpec(t *testing.T) {
 	assert.Contains(t, spec.Paths["/api/v1/sessions"], "get")
 	require.Contains(t, spec.Paths, "/api/v1/sessions/{id}/rename")
 	assert.Contains(t, spec.Paths["/api/v1/sessions/{id}/rename"], "patch")
+}
+
+func TestServeCommandsExposeWriteTimeout(t *testing.T) {
+	commands := [][]string{
+		{"serve"},
+		{"pg", "serve"},
+		{"duckdb", "serve"},
+	}
+	for _, path := range commands {
+		t.Run(strings.Join(path, " "), func(t *testing.T) {
+			cmd := newRootCommand()
+			for _, part := range path {
+				var next *cobra.Command
+				for _, child := range cmd.Commands() {
+					if child.Name() == part {
+						next = child
+						break
+					}
+				}
+				require.NotNil(t, next, "command %q", path)
+				cmd = next
+			}
+			flag := cmd.Flags().Lookup("write-timeout")
+			require.NotNil(t, flag)
+			assert.Equal(t, (30 * time.Second).String(), flag.DefValue)
+		})
+	}
 }
 
 func TestRootNoArgsShowsHelp(t *testing.T) {

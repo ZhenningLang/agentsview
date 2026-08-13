@@ -41,6 +41,7 @@ type codexSessionBuilder struct {
 	startedAt                time.Time
 	endedAt                  time.Time
 	sessionID                string
+	cwd                      string
 	project                  string
 	ordinal                  int
 	currentModel             string
@@ -126,6 +127,7 @@ func (b *codexSessionBuilder) handleSessionMeta(
 	b.sessionID = payload.Get("id").Str
 
 	if cwd := payload.Get("cwd").Str; cwd != "" {
+		b.cwd = cwd
 		branch := payload.Get("git.branch").Str
 		if proj := ExtractProjectFromCwdWithBranch(cwd, branch); proj != "" {
 			b.project = proj
@@ -319,6 +321,7 @@ func (b *codexSessionBuilder) handleFunctionCall(
 
 	content := formatCodexFunctionCall(name, payload)
 	inputJSON := extractCodexInputJSON(payload)
+	skillName := inferCodexSkillNameWithBase(name, inputJSON, b.cwd)
 	waitAgentIDs := []string(nil)
 	if isCodexWaitAgentCall(name) && callID != "" {
 		args, _ := parseCodexFunctionArgs(payload)
@@ -338,6 +341,7 @@ func (b *codexSessionBuilder) handleFunctionCall(
 			ToolName:  name,
 			Category:  NormalizeToolCategory(name),
 			InputJSON: inputJSON,
+			SkillName: skillName,
 		}},
 	})
 	if callID != "" {
@@ -1324,6 +1328,30 @@ func readCodexModelAtOffset(
 	return model
 }
 
+func readCodexCWDAtOffset(path string, offset int64) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	lr := newLineReader(io.LimitReader(f, offset), maxLineSize)
+	var cwd string
+	for {
+		line, ok := lr.next()
+		if !ok {
+			break
+		}
+		if !gjson.Valid(line) || gjson.Get(line, "type").Str != codexTypeSessionMeta {
+			continue
+		}
+		if value := gjson.Get(line, "payload.cwd").Str; value != "" {
+			cwd = value
+		}
+	}
+	return cwd
+}
+
 // seedCodexUserDedup scans a Codex JSONL prefix [0, offset) to recover
 // the state the re-emitted-prompt dedup needs when resuming an
 // incremental parse: the full content of the first real user message,
@@ -1414,6 +1442,7 @@ func ParseCodexSessionFrom(
 	b := newCodexSessionBuilder(includeExec)
 	b.ordinal = startOrdinal
 	b.currentModel = readCodexModelAtOffset(path, offset)
+	b.cwd = readCodexCWDAtOffset(path, offset)
 	// Recover the re-emitted-prompt dedup state from the already-parsed
 	// prefix so a replay appended across syncs is dropped just as a
 	// full parse would.

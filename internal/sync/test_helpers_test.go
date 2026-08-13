@@ -59,8 +59,12 @@ func assertSessionProject(t *testing.T, database *db.DB, sessionID string, want 
 func runSyncAndAssert(t *testing.T, engine *sync.Engine, want sync.SyncStats) sync.SyncStats {
 	t.Helper()
 	stats := engine.SyncAll(context.Background(), nil)
+	opts := []cmp.Option{cmpopts.IgnoreUnexported(sync.SyncStats{})}
+	if want.Anomalies.IsZero() {
+		opts = append(opts, cmpopts.IgnoreFields(sync.SyncStats{}, "Anomalies"))
+	}
 	diff := cmp.Diff(want, stats,
-		cmpopts.IgnoreUnexported(sync.SyncStats{}),
+		opts...,
 	)
 	require.Empty(t, diff, "SyncAll() mismatch (-want +got):\n%s", diff)
 	return stats

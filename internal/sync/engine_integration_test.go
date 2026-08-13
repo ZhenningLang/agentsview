@@ -1350,6 +1350,23 @@ func TestSyncEngineSkipCache(t *testing.T) {
 	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1 + 0, Synced: 1, Skipped: 0})
 }
 
+func TestSyncEngineReportsMalformedLineAnomalies(t *testing.T) {
+	env := setupTestEnv(t)
+
+	env.writeClaudeSession(
+		t, "test-proj", "anomaly-test.jsonl",
+		"not json at all\x00\x01",
+	)
+
+	stats := env.engine.SyncAll(context.Background(), nil)
+	assert.Equal(t, 1, stats.Anomalies.MalformedLinesTotal)
+	assert.Equal(t, 1, stats.Anomalies.MalformedLinesByAgent["claude"])
+	assert.True(t, stats.Anomalies.Sanitize.IsZero())
+
+	stats = env.engine.SyncAll(context.Background(), nil)
+	assert.True(t, stats.Anomalies.IsZero())
+}
+
 func TestSyncEngineFileAppend(t *testing.T) {
 	env := setupTestEnv(t)
 
