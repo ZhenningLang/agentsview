@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.kenn.io/agentsview/internal/db"
@@ -598,22 +599,125 @@ func TestSessionUsage_Server(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	out, err := runSessionUsageForTest(t, "bare-id", "json", srv.URL)
-	require.NoError(t, err)
+	out, stderr, code := runSessionUsageForTest(t, "bare-id", "json", srv.URL)
+	require.Equalf(t, tokenUseExitOK, code, "stdout=%q stderr=%q", out, stderr)
+	assert.Empty(t, stderr)
 	assert.JSONEq(t, `{"session_id":"codex:bare-id","agent":"codex","project":"p","total_output_tokens":10,"peak_context_tokens":20,"has_token_data":true,"cost_usd":0.42,"has_cost":true,"models":["gpt"],"server_running":true}`, out)
 	assert.Contains(t, paths, "/api/v1/sessions/codex:bare-id")
 	assert.Contains(t, paths, "/api/v1/sessions/codex:bare-id/usage")
 }
 
-func runSessionUsageForTest(t *testing.T, id, format, server string) (string, error) {
+func TestSessionUsageServerExitSemantics(t *testing.T) {
+	tests := []struct {
+		name     string
+		usage    string
+		wantCode int
+		wantOut  string
+	}{
+		{
+			name:     "not found",
+			usage:    ``,
+			wantCode: tokenUseExitNotFound,
+			wantOut:  "",
+		},
+		{
+			name:     "no data",
+			usage:    `{"session_id":"codex:bare-id","agent":"codex"}`,
+			wantCode: tokenUseExitNoTokenData,
+			wantOut:  `{"session_id":"codex:bare-id","agent":"codex","project":"","total_output_tokens":0,"peak_context_tokens":0,"has_token_data":false,"cost_usd":0,"has_cost":false,"models":null,"server_running":true}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/sessions/codex:bare-id":
+					_, _ = w.Write([]byte(`{"id":"codex:bare-id","agent":"codex"}`))
+				case "/api/v1/sessions/codex:bare-id/usage":
+					if tt.usage == "" {
+						http.NotFound(w, r)
+						return
+					}
+					_, _ = w.Write([]byte(tt.usage))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(srv.Close)
+
+			out, stderr, code := runSessionUsageForTest(t, "bare-id", "json", srv.URL)
+			assert.Equalf(t, tt.wantCode, code, "stdout=%q stderr=%q", out, stderr)
+			if tt.wantOut == "" {
+				assert.Empty(t, out)
+			} else {
+				assert.JSONEq(t, tt.wantOut, out)
+			}
+			assert.Empty(t, stderr)
+		})
+	}
+}
+
+func TestResolveServiceSessionID_KimiColonRawID(t *testing.T) {
+	rawID := "proj-hash:uuid-with-colon"
+	canonical := "kimi:" + rawID
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.URL.Path == "/api/v1/sessions/"+canonical {
+			_, _ = w.Write([]byte(`{"id":"` + canonical + `","agent":"kimi"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	cmd := newTestSessionServerCommand(t, srv.URL)
+	svc, cleanup, err := resolveService(cmd)
+	require.NoError(t, err)
+	defer cleanup()
+
+	got, err := resolveServiceSessionID(context.Background(), svc, rawID)
+	require.NoError(t, err)
+	assert.Equal(t, canonical, got)
+	assert.Contains(t, paths, "/api/v1/sessions/"+rawID)
+	assert.Contains(t, paths, "/api/v1/sessions/"+canonical)
+}
+
+func TestResolveServiceSessionID_KnownPrefixNotExpanded(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	cmd := newTestSessionServerCommand(t, srv.URL)
+	svc, cleanup, err := resolveService(cmd)
+	require.NoError(t, err)
+	defer cleanup()
+
+	_, err = resolveServiceSessionID(context.Background(), svc, "codex:missing")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "session not found")
+	assert.Equal(t, []string{"/api/v1/sessions/codex:missing"}, paths)
+}
+
+func runSessionUsageForTest(t *testing.T, id, format, server string) (string, string, int) {
 	t.Helper()
-	root := newRootCommand()
-	buf := &bytes.Buffer{}
-	root.SetOut(buf)
-	root.SetErr(buf)
-	root.SetArgs([]string{"session", "usage", id, "--server", server, "--format", format})
-	err := root.Execute()
-	return buf.String(), err
+	root := newTestSessionServerCommand(t, server)
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	code := runRemoteSessionUsageToWriters(root, server, id, format, stdout, stderr)
+	return stdout.String(), stderr.String(), code
+}
+
+func newTestSessionServerCommand(t *testing.T, server string) *cobra.Command {
+	t.Helper()
+	cmd := &cobra.Command{Use: "test"}
+	cmd.SetContext(context.Background())
+	cmd.Flags().String("server", server, "")
+	cmd.Flags().String("server-token-file", "", "")
+	return cmd
 }
 
 // TestSessionSync_UnknownID_ReportsNoFilePath verifies that the

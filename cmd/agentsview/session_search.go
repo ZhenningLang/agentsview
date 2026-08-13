@@ -164,24 +164,30 @@ func printContentMatchesHumanAt(w io.Writer, res *service.ContentSearchResult, t
 }
 
 func writeSearchRows(w io.Writer, rows [][]string, termWidth int) {
+	if termWidth > 0 && termWidth < minSearchTableWidth() {
+		writeCompactSearchRows(w, rows, termWidth)
+		return
+	}
 	widths := []int{2, 5, 3, 7, 8, 7}
 	for _, row := range rows {
 		for i := 0; i < len(row)-1; i++ {
 			widths[i] = max(widths[i], runewidth.StringWidth(row[i]))
 		}
 	}
-	projectCap, locationCap := 24, 28
 	if termWidth > 0 {
+		projectCap, locationCap := 24, 28
 		widths[3] = min(widths[3], projectCap)
 		widths[4] = min(widths[4], locationCap)
+		shrinkSearchColumns(widths, termWidth)
 	}
 	for _, row := range rows {
 		cells := append([]string(nil), row...)
 		if termWidth > 0 {
-			cells[3] = cellTruncate(cells[3], widths[3])
-			cells[4] = cellTruncate(cells[4], widths[4])
+			for i := 0; i < len(cells)-1; i++ {
+				cells[i] = cellTruncate(cells[i], widths[i])
+			}
 			fixed := widths[0] + widths[1] + widths[2] + widths[3] + widths[4] + 10
-			budget := max(1, termWidth-fixed)
+			budget := max(0, termWidth-fixed)
 			cells[5] = cellTruncate(cells[5], budget)
 		}
 		for i, cell := range cells {
@@ -200,8 +206,45 @@ func writeSearchRows(w io.Writer, rows [][]string, termWidth int) {
 	}
 }
 
+func writeCompactSearchRows(w io.Writer, rows [][]string, termWidth int) {
+	for i, row := range rows {
+		line := "MATCH SNIPPET"
+		if i > 0 {
+			line = strings.TrimSpace(row[1] + " " + row[5])
+		}
+		fmt.Fprintln(w, cellTruncate(line, termWidth))
+	}
+}
+
+func shrinkSearchColumns(widths []int, termWidth int) {
+	minWidths := []int{2, 5, 3, 7, 8}
+	for fixedWidth(widths) > termWidth && widths[4] > minWidths[4] {
+		widths[4]--
+	}
+	for fixedWidth(widths) > termWidth && widths[3] > minWidths[3] {
+		widths[3]--
+	}
+	for fixedWidth(widths) > termWidth && widths[1] > minWidths[1] {
+		widths[1]--
+	}
+	for fixedWidth(widths) > termWidth && widths[0] > minWidths[0] {
+		widths[0]--
+	}
+}
+
+func fixedWidth(widths []int) int {
+	return widths[0] + widths[1] + widths[2] + widths[3] + widths[4] + 10
+}
+
+func minSearchTableWidth() int {
+	return fixedWidth([]int{2, 5, 3, 7, 8})
+}
+
 func cellTruncate(s string, width int) string {
-	if width <= 0 || runewidth.StringWidth(s) <= width {
+	if width <= 0 {
+		return ""
+	}
+	if runewidth.StringWidth(s) <= width {
 		return s
 	}
 	return runewidth.Truncate(s, width, "…")

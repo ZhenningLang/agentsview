@@ -209,30 +209,172 @@ func TestSearchContentFTSFallsBackToSubstring(t *testing.T) {
 
 func TestSearchContentMatchTimestampIsRFC3339(t *testing.T) {
 	ctx := context.Background()
-	store, _ := newSyncedStore(t)
+	local := newLocalDB(t)
+	const sessionID = "duck-search-timestamps"
+	instants := map[string]string{
+		"messages":            "2026-01-17T00:01:02.123456Z",
+		"tool_input":          "2026-01-17T00:02:03.123456Z",
+		"tool_result_content": "2026-01-17T00:03:04.123456Z",
+		"tool_result_events":  "2026-01-17T00:04:05.123456Z",
+	}
+	_, err := local.WriteSessionBatchAtomic([]db.SessionBatchWrite{{
+		Session: syncSession(sessionID, "alpha", "timestamp fixture",
+			instants["messages"], 1),
+		Messages: []db.Message{
+			syncMessage(sessionID, 0, "assistant", "duck message needle", instants["messages"]),
+			syncMessage(sessionID, 1, "assistant", "duck input wrapper", instants["tool_input"],
+				db.ToolCall{
+					ToolName:  "Bash",
+					Category:  "shell",
+					ToolUseID: "duck-tool-input-ts",
+					InputJSON: `{"query":"duck input needle"}`,
+				}),
+			syncMessage(sessionID, 2, "assistant", "duck result content wrapper", instants["tool_result_content"],
+				db.ToolCall{
+					ToolName:      "Bash",
+					Category:      "shell",
+					ToolUseID:     "",
+					ResultContent: "duck result content needle",
+				}),
+			syncMessage(sessionID, 3, "assistant", "duck result event wrapper", instants["tool_result_events"],
+				db.ToolCall{
+					ToolName:  "Bash",
+					Category:  "shell",
+					ToolUseID: "duck-tool-event-ts",
+					ResultEvents: []db.ToolResultEvent{{
+						ToolUseID:  "duck-tool-event-ts",
+						Source:     "stdout",
+						Content:    "duck result event needle",
+						EventIndex: 0,
+						Timestamp:  instants["tool_result_events"],
+					}},
+				}),
+		},
+		DataVersion:     1,
+		ReplaceMessages: true,
+	}})
+	require.NoError(t, err)
 
-	for _, mode := range []string{"substring", "regex"} {
-		t.Run(mode, func(t *testing.T) {
-			pattern := "duck result"
-			if mode == "regex" {
-				pattern = `duck\s+result`
-			}
+	syncer := newTestSync(t, filepath.Join(t.TempDir(), "search-timestamps.duckdb"), local, SyncOptions{})
+	_, err = syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	store := NewStoreFromDB(syncer.DB())
+
+	assertMatchTimestamp := func(t *testing.T, got db.ContentSearchPage, want string) {
+		t.Helper()
+		require.Len(t, got.Matches, 1)
+		parsed, err := time.Parse(time.RFC3339Nano, got.Matches[0].Timestamp)
+		require.NoError(t, err, "timestamp %q", got.Matches[0].Timestamp)
+		wantTime, err := time.Parse(time.RFC3339Nano, want)
+		require.NoError(t, err)
+		assert.True(t, parsed.Equal(wantTime), "got %s want %s", parsed, wantTime)
+		assert.Equal(t, time.UTC, parsed.Location())
+	}
+
+	tests := []struct {
+		name      string
+		sources   []string
+		location  string
+		substring string
+		regex     string
+		want      string
+	}{
+		{
+			name:      "messages",
+			sources:   []string{"messages"},
+			location:  "message",
+			substring: "message needle",
+			regex:     `message\s+needle`,
+			want:      instants["messages"],
+		},
+		{
+			name:      "tool input",
+			sources:   []string{"tool_input"},
+			location:  "tool_input",
+			substring: "input needle",
+			regex:     `input\s+needle`,
+			want:      instants["tool_input"],
+		},
+		{
+			name:      "tool result content",
+			sources:   []string{"tool_result"},
+			location:  "tool_result",
+			substring: "content needle",
+			regex:     `content\s+needle`,
+			want:      instants["tool_result_content"],
+		},
+		{
+			name:      "tool result event",
+			sources:   []string{"tool_result"},
+			location:  "tool_result",
+			substring: "event needle",
+			regex:     `event\s+needle`,
+			want:      instants["tool_result_events"],
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name+" substring", func(t *testing.T) {
 			got, err := store.SearchContent(ctx, db.ContentSearchFilter{
-				Pattern:        pattern,
-				Mode:           mode,
-				Sources:        []string{"tool_result"},
+				Pattern:        tt.substring,
+				Mode:           "substring",
+				Sources:        tt.sources,
 				Limit:          10,
 				IncludeOneShot: true,
 			})
 			require.NoError(t, err)
-			require.NotEmpty(t, got.Matches)
-			for _, match := range got.Matches {
-				parsed, err := time.Parse(time.RFC3339Nano, match.Timestamp)
-				require.NoError(t, err, "timestamp %q", match.Timestamp)
-				assert.Equal(t, time.UTC, parsed.Location())
-			}
+			require.Len(t, got.Matches, 1)
+			assert.Equal(t, tt.location, got.Matches[0].Location)
+			assertMatchTimestamp(t, got, tt.want)
+		})
+		t.Run(tt.name+" regex", func(t *testing.T) {
+			got, err := store.SearchContent(ctx, db.ContentSearchFilter{
+				Pattern:        tt.regex,
+				Mode:           "regex",
+				Sources:        tt.sources,
+				Limit:          10,
+				IncludeOneShot: true,
+			})
+			require.NoError(t, err)
+			require.Len(t, got.Matches, 1)
+			assert.Equal(t, tt.location, got.Matches[0].Location)
+			assertMatchTimestamp(t, got, tt.want)
 		})
 	}
+}
+
+func TestListSessionsActiveSinceUsesSessionActivity(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+	endedFresh := syncSession("duck-ended-fresh", "alpha", "ended fresh", "2026-01-01T00:00:00.000Z", 2)
+	endedAt := "2026-06-15T10:00:00.000Z"
+	endedFresh.EndedAt = &endedAt
+	startedFresh := syncSession("duck-started-fresh", "alpha", "started fresh", "2026-06-15T09:00:00.000Z", 2)
+	startedFresh.EndedAt = nil
+	createdFresh := syncSession("duck-created-fresh", "alpha", "created fresh", "2026-06-15T08:00:00.000Z", 2)
+	createdFresh.StartedAt = nil
+	createdFresh.EndedAt = nil
+	stale := syncSession("duck-stale", "alpha", "stale", "2026-05-01T00:00:00.000Z", 2)
+	_, err := local.WriteSessionBatchAtomic([]db.SessionBatchWrite{
+		{Session: endedFresh, DataVersion: 1, ReplaceMessages: true},
+		{Session: startedFresh, DataVersion: 1, ReplaceMessages: true},
+		{Session: createdFresh, DataVersion: 1, ReplaceMessages: true},
+		{Session: stale, DataVersion: 1, ReplaceMessages: true},
+	})
+	require.NoError(t, err)
+
+	syncer := newTestSync(t, filepath.Join(t.TempDir(), "active-since.duckdb"), local, SyncOptions{})
+	_, err = syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	store := NewStoreFromDB(syncer.DB())
+
+	page, err := store.ListSessions(ctx, db.SessionFilter{
+		ActiveSince: "2026-06-01T00:00:00Z",
+		Limit:       10,
+	})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{
+		"duck-ended-fresh", "duck-started-fresh", "duck-created-fresh",
+	}, duckSessionIDs(page.Sessions))
 }
 
 func TestSearchContentInvalidModeReturnsInputError(t *testing.T) {

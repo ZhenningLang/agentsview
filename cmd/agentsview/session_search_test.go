@@ -136,6 +136,59 @@ func TestContentSnippetBudget(t *testing.T) {
 	assert.LessOrEqual(t, runewidth.StringWidth(line), 64)
 }
 
+func TestPrintContentMatchesTableLongIDCJKStaysWithinWidth(t *testing.T) {
+	res := &service.ContentSearchResult{Matches: []db.ContentMatch{{
+		SessionID: "kimicode:projecthash-with-extra-long-prefix:12345678-1234-1234-1234-123456789abc",
+		Project:   "中文项目名称非常非常长",
+		Location:  "tool_result",
+		ToolName:  "工具调用名称非常非常长",
+		Ordinal:   123456,
+		Timestamp: "2026-08-13T11:59:00Z",
+		Snippet:   strings.Repeat("中文 mixed ", 20),
+	}}}
+	var out strings.Builder
+	require.NoError(t, printContentMatchesHumanAt(&out, res, 80, time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)))
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		assert.LessOrEqual(t, runewidth.StringWidth(line), 80, "line=%q", line)
+	}
+	assert.Contains(t, out.String(), "…")
+}
+
+func TestPrintContentMatchesTableNarrowFallbackStaysWithinWidth(t *testing.T) {
+	res := &service.ContentSearchResult{Matches: []db.ContentMatch{{
+		SessionID: "kimicode:projecthash:12345678-1234-1234-1234-123456789abc",
+		Project:   "中文项目名称非常非常长",
+		Location:  "tool_result",
+		ToolName:  "工具调用名称非常非常长",
+		Ordinal:   123456,
+		Timestamp: "2026-08-13T11:59:00Z",
+		Snippet:   strings.Repeat("中文 mixed ", 20),
+	}}}
+	var out strings.Builder
+	require.NoError(t, printContentMatchesHumanAt(&out, res, 24, time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)))
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	require.Len(t, lines, 2)
+	assert.Equal(t, "MATCH SNIPPET", lines[0])
+	for _, line := range lines {
+		assert.LessOrEqual(t, runewidth.StringWidth(line), 24, "line=%q", line)
+	}
+}
+
+func TestPrintContentMatchesTableWideTerminalKeepsLongID(t *testing.T) {
+	longID := "kimicode:projecthash-with-extra-long-prefix:12345678-1234-1234-1234-123456789abc"
+	res := &service.ContentSearchResult{Matches: []db.ContentMatch{{
+		SessionID: longID,
+		Project:   "agentsview",
+		Location:  "message",
+		Ordinal:   7,
+		Timestamp: "2026-08-13T11:59:00Z",
+		Snippet:   "needle",
+	}}}
+	var out strings.Builder
+	require.NoError(t, printContentMatchesHumanAt(&out, res, 200, time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)))
+	assert.Contains(t, out.String(), longID)
+}
+
 func TestHumanizeMatchAge(t *testing.T) {
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	assert.Equal(t, "now", humanizeMatchAge("2026-08-13T12:00:01Z", now))

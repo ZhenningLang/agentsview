@@ -23,43 +23,60 @@ func newSessionUsageCommand() *cobra.Command {
 		Short:        "Show token usage and cost estimate for a session",
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		Run: func(cmd *cobra.Command, args []string) {
 			if remote, _ := cmd.Flags().GetString("server"); remote != "" {
-				return runRemoteSessionUsage(cmd, remote, args[0], outputFormat(cmd))
+				code := runRemoteSessionUsage(cmd, remote, args[0], outputFormat(cmd))
+				os.Exit(code)
 			}
 			runSessionUsage(args[0], outputFormat(cmd))
-			return nil
 		},
 	}
 }
 
-func runRemoteSessionUsage(cmd *cobra.Command, remote, sessionID, format string) error {
+func runRemoteSessionUsage(cmd *cobra.Command, remote, sessionID, format string) int {
+	return runRemoteSessionUsageToWriters(cmd, remote, sessionID, format,
+		cmd.OutOrStdout(), cmd.ErrOrStderr())
+}
+
+func runRemoteSessionUsageToWriters(cmd *cobra.Command, remote, sessionID, format string, stdout, stderr io.Writer) int {
 	token, err := explicitServerToken(cmd)
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return tokenUseExitErr
 	}
 	svc, cleanup, err := resolveService(cmd)
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return tokenUseExitErr
 	}
 	defer cleanup()
 	resolved, err := resolveServiceSessionID(cmd.Context(), svc, sessionID)
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "%v\n", err)
+		if !strings.HasPrefix(err.Error(), "session not found:") {
+			return tokenUseExitErr
+		}
+		return tokenUseExitNotFound
 	}
 	out, code, err := remoteSessionUsageData(cmd.Context(), remote, token, resolved)
 	if err != nil {
-		return err
+		fmt.Fprintf(stderr, "error: %v\n", err)
+		return tokenUseExitErr
 	}
-	if code != tokenUseExitOK {
-		return fmt.Errorf("session usage unavailable for %s", sessionID)
+	if out != nil {
+		if format == "json" {
+			enc := json.NewEncoder(stdout)
+			enc.SetIndent("", "  ")
+			if err := enc.Encode(out); err != nil {
+				fmt.Fprintf(stderr, "error: %v\n", err)
+				return tokenUseExitErr
+			}
+		} else if err := renderSessionUsageHuman(stdout, out); err != nil {
+			fmt.Fprintf(stderr, "error: %v\n", err)
+			return tokenUseExitErr
+		}
 	}
-	if format == "json" {
-		enc := json.NewEncoder(cmd.OutOrStdout())
-		enc.SetIndent("", "  ")
-		return enc.Encode(out)
-	}
-	return renderSessionUsageHuman(cmd.OutOrStdout(), out)
+	return code
 }
 
 func remoteSessionUsageData(ctx context.Context, remote, token, id string) (*sessionUsageOutput, int, error) {

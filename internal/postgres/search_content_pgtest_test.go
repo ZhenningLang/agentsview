@@ -100,16 +100,16 @@ func insertCSToolCall(
 func insertCSToolResultEvent(
 	t *testing.T, store *Store,
 	sessionID string, messageOrdinal, callIndex, eventIndex int,
-	toolUseID, content string,
+	toolUseID, content, timestamp string,
 ) {
 	t.Helper()
 	_, err := store.DB().Exec(`
 		INSERT INTO tool_result_events
 			(session_id, tool_call_message_ordinal, call_index,
-			 tool_use_id, source, status, content, event_index)
-		VALUES ($1, $2, $3, $4, 'stdout', 'ok', $5, $6)
+			 tool_use_id, source, status, content, event_index, timestamp)
+		VALUES ($1, $2, $3, $4, 'stdout', 'ok', $5, $6, $7::timestamptz)
 		ON CONFLICT DO NOTHING`,
-		sessionID, messageOrdinal, callIndex, toolUseID, content, eventIndex,
+		sessionID, messageOrdinal, callIndex, toolUseID, content, eventIndex, timestamp,
 	)
 	require.NoError(t, err, "insert tool_result_event")
 }
@@ -144,15 +144,28 @@ func TestPGSearchContentSubstringMessages(t *testing.T) {
 
 func TestPGSearchContentMatchTimestampIsRFC3339(t *testing.T) {
 	store := setupContentSearch(t)
-	want := time.Date(2026, 3, 22, 10, 15, 30, 123456000, time.UTC)
+	wants := map[string]time.Time{
+		"message":        time.Date(2026, 3, 22, 10, 15, 30, 123456000, time.UTC),
+		"tool_input":     time.Date(2026, 3, 22, 10, 16, 30, 123456000, time.UTC),
+		"result_content": time.Date(2026, 3, 22, 10, 17, 30, 123456000, time.UTC),
+		"result_event":   time.Date(2026, 3, 22, 10, 18, 30, 123456000, time.UTC),
+	}
 	insertCSSession(t, store, "cs-ts", "proj", "claude",
 		"2026-03-22T10:00:00Z", "2026-03-22T10:30:00Z")
 	insertCSMessage(t, store, "cs-ts", 0, "assistant",
-		"running timestamp tool", want.Format(time.RFC3339Nano), false)
+		"running timestamp tool", wants["message"].Format(time.RFC3339Nano), false)
+	insertCSMessage(t, store, "cs-ts", 1, "assistant",
+		"running input timestamp tool", wants["tool_input"].Format(time.RFC3339Nano), false)
 	insertCSToolCall(t, store, "cs-ts", 0, 0,
-		"Bash", "ts-tu1", `{"command":"TSNEEDLE"}`, "TSRESULTNEEDLE output")
-	insertCSToolResultEvent(t, store, "cs-ts", 0, 0, 0,
-		"ts-tu1", "TSEVENTNEEDLE output")
+		"Bash", "", `{"command":"unused"}`, "TSRESULTNEEDLE output")
+	insertCSToolCall(t, store, "cs-ts", 1, 0,
+		"Bash", "ts-tu-input", `{"command":"TSNEEDLE"}`, "")
+	insertCSMessage(t, store, "cs-ts", 2, "assistant",
+		"running event timestamp tool", wants["result_event"].Format(time.RFC3339Nano), false)
+	insertCSToolCall(t, store, "cs-ts", 2, 0,
+		"Bash", "ts-tu-event", `{"command":"unused"}`, "unused result")
+	insertCSToolResultEvent(t, store, "cs-ts", 2, 0, 0,
+		"ts-tu-event", "TSEVENTNEEDLE output", wants["result_event"].Format(time.RFC3339Nano))
 
 	tests := []struct {
 		name     string
@@ -160,6 +173,7 @@ func TestPGSearchContentMatchTimestampIsRFC3339(t *testing.T) {
 		mode     string
 		sources  []string
 		location string
+		want     time.Time
 	}{
 		{
 			name:     "message substring",
@@ -167,6 +181,7 @@ func TestPGSearchContentMatchTimestampIsRFC3339(t *testing.T) {
 			mode:     "substring",
 			sources:  []string{"messages"},
 			location: "message",
+			want:     wants["message"],
 		},
 		{
 			name:     "tool input substring",
@@ -174,6 +189,15 @@ func TestPGSearchContentMatchTimestampIsRFC3339(t *testing.T) {
 			mode:     "substring",
 			sources:  []string{"tool_input"},
 			location: "tool_input",
+			want:     wants["tool_input"],
+		},
+		{
+			name:     "tool result content substring",
+			pattern:  "TSRESULTNEEDLE",
+			mode:     "substring",
+			sources:  []string{"tool_result"},
+			location: "tool_result",
+			want:     wants["message"],
 		},
 		{
 			name:     "tool result event substring",
@@ -181,6 +205,7 @@ func TestPGSearchContentMatchTimestampIsRFC3339(t *testing.T) {
 			mode:     "substring",
 			sources:  []string{"tool_result"},
 			location: "tool_result",
+			want:     wants["result_event"],
 		},
 		{
 			name:     "regex",
@@ -188,6 +213,7 @@ func TestPGSearchContentMatchTimestampIsRFC3339(t *testing.T) {
 			mode:     "regex",
 			sources:  []string{"tool_input", "tool_result"},
 			location: "tool_input",
+			want:     wants["tool_input"],
 		},
 	}
 
@@ -203,7 +229,7 @@ func TestPGSearchContentMatchTimestampIsRFC3339(t *testing.T) {
 			assert.Equal(t, tt.location, m.Location)
 			parsed, err := time.Parse(time.RFC3339Nano, m.Timestamp)
 			require.NoError(t, err, "timestamp %q", m.Timestamp)
-			assert.True(t, parsed.Equal(want), "timestamp = %s want %s", parsed, want)
+			assert.True(t, parsed.Equal(tt.want), "timestamp = %s want %s", parsed, tt.want)
 		})
 	}
 }
@@ -294,7 +320,7 @@ func TestPGSearchContentToolResultEvents(t *testing.T) {
 	insertCSToolCall(t, store, "cs-tre1", 0, 0,
 		"Bash", "tu1", `{"command":"ls"}`, "")
 	insertCSToolResultEvent(t, store, "cs-tre1", 0, 0, 0,
-		"tu1", "EVENTNEEDLE in event output")
+		"tu1", "EVENTNEEDLE in event output", "2026-05-01T10:00:00Z")
 
 	ctx := context.Background()
 	got, err := store.SearchContent(ctx, db.ContentSearchFilter{
@@ -320,7 +346,7 @@ func TestPGSearchContentToolResultDedup(t *testing.T) {
 		"Bash", "tu1", `{"command":"echo"}`,
 		"DUPNEEDLE in result_content")
 	insertCSToolResultEvent(t, store, "cs-dup1", 0, 0, 0,
-		"tu1", "DUPNEEDLE in event")
+		"tu1", "DUPNEEDLE in event", "2026-05-01T10:00:00Z")
 
 	ctx := context.Background()
 	got, err := store.SearchContent(ctx, db.ContentSearchFilter{
@@ -508,7 +534,7 @@ func TestPGSearchContentEmptyToolUseIDNotSuppressed(t *testing.T) {
 	// Call 1: empty tool_use_id, result delivered as an event.
 	insertCSToolCall(t, store, "cs-empti", 0, 1,
 		"Bash", "", `{"command":"b"}`, "")
-	insertCSToolResultEvent(t, store, "cs-empti", 0, 1, 0, "", "FINDB event")
+	insertCSToolResultEvent(t, store, "cs-empti", 0, 1, 0, "", "FINDB event", "2026-05-01T10:00:00Z")
 
 	ctx := context.Background()
 	for _, mode := range []string{"substring", "regex"} {
@@ -756,7 +782,7 @@ func TestPGSearchContentIncludeChildren(t *testing.T) {
 	insertCSToolCall(t, store, "ic-child2", 0, 0,
 		"Bash", "child2-tu1", `{"command":"ls"}`, "")
 	insertCSToolResultEvent(t, store, "ic-child2", 0, 0, 0,
-		"child2-tu1", "CHILDNEEDLE in event output")
+		"child2-tu1", "CHILDNEEDLE in event output", "2026-05-01T10:00:00Z")
 
 	ctx := context.Background()
 
