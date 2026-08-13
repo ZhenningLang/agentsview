@@ -36,7 +36,9 @@ type Skill struct {
 	// InvocationCount and TotalPromptTokens are usage-derived (joined
 	// from tool_calls.skill_name at query time, not stored in the
 	// dimension table). TotalPromptTokens = InvocationCount * PromptTokens.
-	// They count only skill-mechanism invocations, not inline use.
+	// They count explicit Skill tool calls plus inferred SKILL.md read
+	// attributions stored in tool_calls.skill_name; inline use without a
+	// tool-call attribution is not counted.
 	InvocationCount   int `json:"invocation_count"`
 	TotalPromptTokens int `json:"total_prompt_tokens"`
 }
@@ -119,11 +121,11 @@ func scanSkill(rows *sql.Rows) (Skill, error) {
 	return s, nil
 }
 
-// skillInvocationCounts returns invocation counts per skill name from
-// tool_calls. This is the C4 usage join: it counts only invocations that
-// went through the Skill tool mechanism (tool_calls.skill_name), not
-// inline use, and does not touch NormalizeToolCategory. Works on all
-// three backends because tool_calls is mirrored everywhere.
+// skillInvocationCounts returns attribution counts per skill name from
+// tool_calls. This is the C4 usage join: it counts explicit Skill tool
+// calls and parser-inferred SKILL.md read attributions stored in
+// tool_calls.skill_name, and does not touch NormalizeToolCategory. Works
+// on all three backends because tool_calls is mirrored everywhere.
 func (db *DB) skillInvocationCounts(ctx context.Context) (map[string]int, error) {
 	rows, err := db.getReader().QueryContext(ctx,
 		`SELECT skill_name, COUNT(*) FROM tool_calls
@@ -191,13 +193,17 @@ func (db *DB) GetSkill(
 	if err != nil {
 		return nil, fmt.Errorf("getting skill: %w", err)
 	}
-	defer rows.Close()
 	if !rows.Next() {
+		defer rows.Close()
 		return nil, rows.Err()
 	}
 	s, err := scanSkill(rows)
 	if err != nil {
+		rows.Close()
 		return nil, fmt.Errorf("scan skill: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
 	}
 	var n int
 	if err := db.getReader().QueryRowContext(ctx,

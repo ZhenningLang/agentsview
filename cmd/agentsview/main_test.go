@@ -7,8 +7,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -116,6 +118,28 @@ func captureStdout(t *testing.T, fn func()) string {
 	return string(data)
 }
 
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	require.NoError(t, err, "pipe")
+	os.Stderr = w
+	t.Cleanup(func() {
+		os.Stderr = orig
+	})
+
+	fn()
+
+	require.NoError(t, w.Close(), "close stderr pipe writer")
+	os.Stderr = orig
+
+	data, err := io.ReadAll(r)
+	require.NoError(t, err, "read stderr pipe")
+	require.NoError(t, r.Close(), "close stderr pipe reader")
+	return string(data)
+}
+
 func TestSetupLogFile(t *testing.T) {
 	origOutput := log.Writer()
 
@@ -159,6 +183,33 @@ func TestFormatAnomalySummary(t *testing.T) {
 	assert.Contains(t, got, "sanitized fields: 5 total")
 	assert.Contains(t, got, "control chars stripped: 1\n")
 	assert.Contains(t, got, "tokens clamped: 4\n")
+}
+
+func TestSyncSummaryAnomalyBlockMatchesStdoutAndStderr(t *testing.T) {
+	stats := sync.SyncStats{
+		Synced: 2,
+		Anomalies: sync.AnomalyStats{
+			MalformedLinesByAgent: map[string]int{"codex": 2, "claude": 1},
+			MalformedLinesTotal:   3,
+			Sanitize: sync.SanitizeStats{
+				TokensClamped:        4,
+				ControlCharsStripped: 1,
+			},
+		},
+	}
+	started := time.Now()
+	stdout := captureStdout(t, func() { printSyncSummary(stats, started) })
+	stderr := captureStderr(t, func() { printSyncSummaryStderr(stats, started) })
+
+	assert.Equal(t, anomalyBlock(stdout), anomalyBlock(stderr))
+}
+
+func anomalyBlock(out string) string {
+	i := strings.Index(out, "Parser anomalies (this run):")
+	if i < 0 {
+		return ""
+	}
+	return out[i:]
 }
 
 func TestSetupLogFileOpenFailure(t *testing.T) {

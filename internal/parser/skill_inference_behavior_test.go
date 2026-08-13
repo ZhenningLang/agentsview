@@ -51,8 +51,14 @@ func TestInferCodexSkillNameReadCommandClassification(t *testing.T) {
 	}{
 		{"cat relative", "cat '" + relPath + "'", "shell-reader"},
 		{"grep file operand", "rg --glob '*.md' name '" + relPath + "'", "shell-reader"},
+		{"grep pattern file ignored", "grep -f '" + relPath + "' ignored.txt", ""},
+		{"grep pattern file keeps later file operand", "grep -f patterns.txt '" + relPath + "'", "shell-reader"},
+		{"grep equals pattern file keeps later file operand", "grep --file=patterns.txt '" + relPath + "'", "shell-reader"},
+		{"rg pattern file keeps later file operand", "rg -f patterns.txt '" + relPath + "'", "shell-reader"},
+		{"rg pattern before file", "rg name '" + relPath + "'", "shell-reader"},
 		{"multi segment", "printf hi && head -n 5 '" + relPath + "'", "shell-reader"},
 		{"write verb ignored", "cp " + relPath + " /tmp/SKILL.md", ""},
+		{"python verb ignored", "python '" + relPath + "'", ""},
 		{"redirect target ignored", "printf hi > " + relPath, ""},
 		{"glob ignored", "cat " + filepath.Join("skills", "*", "SKILL.md"), ""},
 		{"sed inplace ignored", "sed -i s/a/b/ " + relPath, ""},
@@ -72,6 +78,7 @@ func TestInferCodexSkillNameReadCommandClassification(t *testing.T) {
 func TestSkillNameFromPathFrontmatterAndSafety(t *testing.T) {
 	root := t.TempDir()
 	frontmatterPath := writeSkillFixture(t, root, filepath.Join("skills", "frontmatter"), "front-name")
+	homeSkillPath := writeSkillFixture(t, root, ".", "home-skill")
 	missingPath := filepath.Join(root, "skills", "fallback", "SKILL.md")
 	barePath := "SKILL.md"
 	tooLargePath := filepath.Join(root, "skills", "large", "SKILL.md")
@@ -83,6 +90,10 @@ func TestSkillNameFromPathFrontmatterAndSafety(t *testing.T) {
 	assert.Equal(t, "fallback", skillNameFromPath(missingPath, ""))
 	assert.Empty(t, skillNameFromPath(barePath, ""))
 	assert.Empty(t, skillNameFromPath(filepath.Join(root, "skills", "*", "SKILL.md"), ""))
+	t.Setenv("HOME", filepath.Dir(homeSkillPath))
+	assert.Equal(t, "home-skill", skillNameFromPath("~/SKILL.md", ""))
+	assert.Equal(t, "win-skill", skillNameFromPath(`C:\Users\me\skills\win-skill\SKILL.md`, ""),
+		"Windows-style path separators should be understood as skill paths")
 	assert.Equal(t, "large", skillNameFromPath(tooLargePath, ""),
 		"frontmatter past the 64KiB read bound should fall back to parent directory")
 
@@ -92,6 +103,21 @@ func TestSkillNameFromPathFrontmatterAndSafety(t *testing.T) {
 		require.NoError(t, os.Symlink(frontmatterPath, symlinkPath))
 		assert.Equal(t, "link", skillNameFromPath(symlinkPath, ""),
 			"symlink frontmatter must not be followed; fallback to directory is allowed")
+	}
+}
+
+func TestInferSkillNameFromJSONPathsUsesDeterministicPathKeys(t *testing.T) {
+	root := t.TempDir()
+	preferred := writeSkillFixture(t, root, filepath.Join("skills", "preferred"), "preferred")
+	other := writeSkillFixture(t, root, filepath.Join("skills", "other"), "other")
+	input, err := json.Marshal(map[string]any{
+		"zzz":  other,
+		"path": preferred,
+	})
+	require.NoError(t, err)
+
+	for range 20 {
+		assert.Equal(t, "preferred", inferSkillNameFromJSONPaths(string(input), ""))
 	}
 }
 
@@ -115,6 +141,25 @@ func TestParseCodexSessionFrom_SkillNameUsesSeededCWD(t *testing.T) {
 	require.Len(t, msgs, 1)
 	require.Len(t, msgs[0].ToolCalls, 1)
 	assert.Equal(t, "incremental", msgs[0].ToolCalls[0].SkillName)
+}
+
+func TestParseCodexSession_SkillNameUsesToolWorkdirOverSessionCWD(t *testing.T) {
+	sessionRoot := t.TempDir()
+	toolRoot := t.TempDir()
+	writeSkillFixture(t, sessionRoot, filepath.Join("skills", "wrong"), "wrong")
+	writeSkillFixture(t, toolRoot, filepath.Join("skills", "tool"), "tool")
+	content := testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON("skill-workdir", sessionRoot, "user", tsEarly),
+		testjsonl.CodexMsgJSON("user", "read skill", tsEarlyS1),
+		testjsonl.CodexFunctionCallArgsJSON("exec_command", map[string]any{
+			"cmd":     "cat skills/tool/SKILL.md",
+			"workdir": toolRoot,
+		}, tsEarlyS5),
+	)
+	_, msgs := runCodexParserTest(t, "codex-skill-workdir.jsonl", content, false)
+	require.Len(t, msgs, 2)
+	require.Len(t, msgs[1].ToolCalls, 1)
+	assert.Equal(t, "tool", msgs[1].ToolCalls[0].SkillName)
 }
 
 func appendTestFile(t *testing.T, path, text string) {
@@ -155,4 +200,17 @@ func TestCursorPlainTextToolInputJSONAndSkillName(t *testing.T) {
 	require.Len(t, calls, 1)
 	assert.JSONEq(t, `{"path":"`+path+`"}`, calls[0].InputJSON)
 	assert.Equal(t, "cursor", calls[0].SkillName)
+}
+
+func TestCursorApplyPatchDoesNotInferSkillName(t *testing.T) {
+	lines := []string{
+		"[Tool call] ApplyPatch",
+		"  *** Begin Patch",
+		"  *** Update File: skills/reviewer/SKILL.md",
+		"  *** End Patch",
+	}
+	_, _, calls := extractAssistantContent(lines)
+	require.Len(t, calls, 1)
+	assert.NotEmpty(t, calls[0].InputJSON)
+	assert.Empty(t, calls[0].SkillName)
 }

@@ -1535,6 +1535,8 @@ func (e *Engine) ResyncAll(
 	ctx context.Context, onProgress ProgressFunc,
 ) (stats SyncStats) {
 	e.syncMu.Lock()
+	e.phaseStats.Reset()
+	e.anomalies.reset()
 	// Defers LIFO: Unlock runs before emit.
 	defer func() {
 		if stats.Synced > 0 {
@@ -5766,6 +5768,9 @@ func (e *Engine) writeIncremental(
 		e.blockedResultCategories,
 	)
 	stats := db.ValidateAndSanitize(nil, dbMsgs, nil)
+	// Incremental parsing has message deltas, not parser session summaries, so
+	// malformed-line anomaly counts remain full-parse only. This path still
+	// reports sanitize anomalies for appended messages.
 	e.recordValidation(inc.sessionID, string(inc.agent), stats)
 
 	// Adjust counts for blocked-category filtering.

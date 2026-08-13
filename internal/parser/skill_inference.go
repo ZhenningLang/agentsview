@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -113,13 +114,33 @@ func inferSkillNameFromValue(v any, baseDir string) string {
 			}
 		}
 	case map[string]any:
-		for _, item := range x {
+		for _, key := range []string{
+			"file_path", "filepath", "path", "target_file", "target",
+			"filename", "name", "files", "paths", "arguments", "input",
+		} {
+			if item, ok := x[key]; ok {
+				if name := inferSkillNameFromValue(item, baseDir); name != "" {
+					return name
+				}
+			}
+		}
+		for _, key := range sortedMapKeys(x) {
+			item := x[key]
 			if name := inferSkillNameFromValue(item, baseDir); name != "" {
 				return name
 			}
 		}
 	}
 	return ""
+}
+
+func sortedMapKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func skillPathsFromCommand(cmd string) []string {
@@ -223,8 +244,16 @@ func skillPathsFromSearchArgs(args []string) []string {
 			if before, _, ok := strings.Cut(arg, "="); ok {
 				flag = before
 			}
-			if flag == "-e" || flag == "-f" || flag == "--regexp" || flag == "--file" {
+			if flag == "-e" || flag == "--regexp" {
 				patternSeen = true
+			}
+			if flag == "-f" || flag == "--file" {
+				patternSeen = true
+				// Pattern files are not searched file operands.
+				if !strings.Contains(arg, "=") {
+					i++
+				}
+				continue
 			}
 			if searchFlagTakesValue(flag) && !strings.Contains(arg, "=") {
 				i++
@@ -242,9 +271,9 @@ func skillPathsFromSearchArgs(args []string) []string {
 
 func searchFlagTakesValue(flag string) bool {
 	switch flag {
-	case "-A", "-B", "-C", "-m", "-e", "-f", "-g", "-t", "-T",
+	case "-A", "-B", "-C", "-m", "-e", "-g", "-t", "-T",
 		"--after-context", "--before-context", "--context", "--max-count",
-		"--regexp", "--file", "--glob", "--type", "--type-not":
+		"--regexp", "--glob", "--type", "--type-not":
 		return true
 	default:
 		return false
@@ -277,7 +306,12 @@ func skillNameFromPath(path, baseDir string) string {
 	if skillPathIsBare(path) {
 		return ""
 	}
-	return filepath.Base(filepath.Dir(resolved))
+	return skillDirBase(resolved)
+}
+
+func skillDirBase(path string) string {
+	path = strings.ReplaceAll(path, "\\", "/")
+	return filepath.Base(filepath.Dir(path))
 }
 
 func resolveSkillPath(path, baseDir string) (string, bool) {
