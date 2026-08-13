@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -139,6 +140,72 @@ func TestPGSearchContentSubstringMessages(t *testing.T) {
 	assert.Equal(t, 0, m.Ordinal)
 	assert.Equal(t, "user", m.Role)
 	assert.NotEmpty(t, m.Snippet)
+}
+
+func TestPGSearchContentMatchTimestampIsRFC3339(t *testing.T) {
+	store := setupContentSearch(t)
+	want := time.Date(2026, 3, 22, 10, 15, 30, 123456000, time.UTC)
+	insertCSSession(t, store, "cs-ts", "proj", "claude",
+		"2026-03-22T10:00:00Z", "2026-03-22T10:30:00Z")
+	insertCSMessage(t, store, "cs-ts", 0, "assistant",
+		"running timestamp tool", want.Format(time.RFC3339Nano), false)
+	insertCSToolCall(t, store, "cs-ts", 0, 0,
+		"Bash", "ts-tu1", `{"command":"TSNEEDLE"}`, "TSRESULTNEEDLE output")
+	insertCSToolResultEvent(t, store, "cs-ts", 0, 0, 0,
+		"ts-tu1", "TSEVENTNEEDLE output")
+
+	tests := []struct {
+		name     string
+		pattern  string
+		mode     string
+		sources  []string
+		location string
+	}{
+		{
+			name:     "message substring",
+			pattern:  "timestamp tool",
+			mode:     "substring",
+			sources:  []string{"messages"},
+			location: "message",
+		},
+		{
+			name:     "tool input substring",
+			pattern:  "TSNEEDLE",
+			mode:     "substring",
+			sources:  []string{"tool_input"},
+			location: "tool_input",
+		},
+		{
+			name:     "tool result event substring",
+			pattern:  "TSEVENTNEEDLE",
+			mode:     "substring",
+			sources:  []string{"tool_result"},
+			location: "tool_result",
+		},
+		{
+			name:     "regex",
+			pattern:  "TSNEEDLE",
+			mode:     "regex",
+			sources:  []string{"tool_input", "tool_result"},
+			location: "tool_input",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := store.SearchContent(context.Background(), db.ContentSearchFilter{
+				Pattern: tt.pattern, Mode: tt.mode,
+				Sources: tt.sources, Limit: 10, IncludeOneShot: true,
+			})
+			require.NoError(t, err)
+			require.NotEmpty(t, got.Matches)
+			m := got.Matches[0]
+			assert.Equal(t, tt.location, m.Location)
+			parsed, err := time.Parse(time.RFC3339Nano, m.Timestamp)
+			require.NoError(t, err, "timestamp %q", m.Timestamp)
+			assert.True(t, parsed.Equal(want), "timestamp = %s want %s", parsed, want)
+		})
+	}
 }
 
 // TestPGSearchContentRedactsStraddlingSecret pins the PG default (non-reveal)

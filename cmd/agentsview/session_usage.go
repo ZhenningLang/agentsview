@@ -3,14 +3,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 func newSessionUsageCommand() *cobra.Command {
@@ -19,24 +23,71 @@ func newSessionUsageCommand() *cobra.Command {
 		Short:        "Show token usage and cost estimate for a session",
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
-		// usage uses the direct token-use path (local SQLite +
-		// on-demand sync), not the SessionService layer, so it cannot
-		// honor --server. Reject it here with the same "--server not
-		// yet implemented" error the service-backed session commands
-		// return via resolveService, rather than silently querying
-		// local data for a daemon-targeted request. PreRunE surfaces
-		// the error through Execute (exit 1); Run keeps os.Exit for
-		// the 0/2/3 usage codes.
-		PreRunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if remote, _ := cmd.Flags().GetString("server"); remote != "" {
-				return errors.New("--server not yet implemented")
+				return runRemoteSessionUsage(cmd, remote, args[0], outputFormat(cmd))
 			}
+			runSessionUsage(args[0], outputFormat(cmd))
 			return nil
 		},
-		Run: func(cmd *cobra.Command, args []string) {
-			runSessionUsage(args[0], outputFormat(cmd))
-		},
 	}
+}
+
+func runRemoteSessionUsage(cmd *cobra.Command, remote, sessionID, format string) error {
+	token, err := explicitServerToken(cmd)
+	if err != nil {
+		return err
+	}
+	svc, cleanup, err := resolveService(cmd)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	resolved, err := resolveServiceSessionID(cmd.Context(), svc, sessionID)
+	if err != nil {
+		return err
+	}
+	out, code, err := remoteSessionUsageData(cmd.Context(), remote, token, resolved)
+	if err != nil {
+		return err
+	}
+	if code != tokenUseExitOK {
+		return fmt.Errorf("session usage unavailable for %s", sessionID)
+	}
+	if format == "json" {
+		enc := json.NewEncoder(cmd.OutOrStdout())
+		enc.SetIndent("", "  ")
+		return enc.Encode(out)
+	}
+	return renderSessionUsageHuman(cmd.OutOrStdout(), out)
+}
+
+func remoteSessionUsageData(ctx context.Context, remote, token, id string) (*sessionUsageOutput, int, error) {
+	client := &http.Client{Timeout: 30 * time.Second}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimSuffix(remote, "/")+"/api/v1/sessions/"+url.PathEscape(id)+"/usage", nil)
+	if err != nil {
+		return nil, tokenUseExitErr, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, tokenUseExitErr, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, tokenUseExitNotFound, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, tokenUseExitErr, fmt.Errorf("session usage: HTTP %d", resp.StatusCode)
+	}
+	var usage db.SessionUsage
+	if err := json.NewDecoder(resp.Body).Decode(&usage); err != nil {
+		return nil, tokenUseExitErr, err
+	}
+	return &sessionUsageOutput{SessionUsage: usage, ServerRunning: true}, usageExitCode(&usage), nil
 }
 
 // runSessionUsage computes usage for one session and renders it,

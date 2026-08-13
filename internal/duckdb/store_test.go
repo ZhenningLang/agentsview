@@ -207,6 +207,34 @@ func TestSearchContentFTSFallsBackToSubstring(t *testing.T) {
 	assert.Equal(t, "message", got.Matches[0].Location)
 }
 
+func TestSearchContentMatchTimestampIsRFC3339(t *testing.T) {
+	ctx := context.Background()
+	store, _ := newSyncedStore(t)
+
+	for _, mode := range []string{"substring", "regex"} {
+		t.Run(mode, func(t *testing.T) {
+			pattern := "duck result"
+			if mode == "regex" {
+				pattern = `duck\s+result`
+			}
+			got, err := store.SearchContent(ctx, db.ContentSearchFilter{
+				Pattern:        pattern,
+				Mode:           mode,
+				Sources:        []string{"tool_result"},
+				Limit:          10,
+				IncludeOneShot: true,
+			})
+			require.NoError(t, err)
+			require.NotEmpty(t, got.Matches)
+			for _, match := range got.Matches {
+				parsed, err := time.Parse(time.RFC3339Nano, match.Timestamp)
+				require.NoError(t, err, "timestamp %q", match.Timestamp)
+				assert.Equal(t, time.UTC, parsed.Location())
+			}
+		})
+	}
+}
+
 func TestSearchContentInvalidModeReturnsInputError(t *testing.T) {
 	ctx := context.Background()
 	store, _ := newSyncedStore(t)

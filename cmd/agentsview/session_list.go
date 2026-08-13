@@ -5,7 +5,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"io"
+	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	"go.kenn.io/agentsview/internal/db"
@@ -22,7 +23,7 @@ func newSessionListCommand() *cobra.Command {
 		includeAutomated, includeChildren       bool
 		outcome, healthGrade                    string
 		minToolFailures                         int
-		hasSecret                               bool
+		hasSecret, resume, active               bool
 		cursor                                  string
 		limit                                   int
 	)
@@ -38,6 +39,9 @@ func newSessionListCommand() *cobra.Command {
 			}
 			defer cleanup()
 
+			if (resume || active) && !cmd.Flags().Changed("active-since") {
+				activeSince = time.Now().UTC().Add(-resumeActiveWindow).Format(time.RFC3339)
+			}
 			f := service.ListFilter{
 				Project:          project,
 				ExcludeProject:   excludeProject,
@@ -70,7 +74,8 @@ func newSessionListCommand() *cobra.Command {
 			if outputFormat(cmd) == "json" {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(list)
 			}
-			return printSessionListHuman(cmd.OutOrStdout(), list)
+			home, _ := os.UserHomeDir()
+			return printSessionListHumanAt(cmd.OutOrStdout(), list, time.Now(), home)
 		},
 	}
 
@@ -111,6 +116,10 @@ func newSessionListCommand() *cobra.Command {
 		"Minimum tool-failure signal count (0 is a valid filter)")
 	flags.BoolVar(&hasSecret, "has-secret", false,
 		"Only sessions with detected secret leaks")
+	flags.BoolVar(&resume, "resume", false,
+		"Show recently active sessions from the last 15 minutes")
+	flags.BoolVar(&active, "active", false,
+		"Alias for --resume")
 	flags.StringVar(&cursor, "cursor", "",
 		"Pagination cursor from a previous response")
 	flags.IntVar(&limit, "limit", 0,
@@ -118,38 +127,5 @@ func newSessionListCommand() *cobra.Command {
 			"Maximum sessions to return (default %d, max %d)",
 			db.DefaultSessionLimit, db.MaxSessionLimit,
 		))
-
 	return cmd
-}
-
-// printSessionListHuman writes a compact columnar summary of the
-// session list, with a trailing hint when another page is
-// available. Prints "(no sessions)" for empty lists.
-func printSessionListHuman(
-	w io.Writer, list *service.SessionList,
-) error {
-	if len(list.Sessions) == 0 {
-		fmt.Fprintln(w, "(no sessions)")
-		return nil
-	}
-	fmt.Fprintf(w, "%-40s  %-20s  %-15s  %s\n",
-		"ID", "PROJECT", "AGENT", "STARTED")
-	for _, s := range list.Sessions {
-		started := "-"
-		if s.StartedAt != nil && len(*s.StartedAt) >= 16 {
-			started = (*s.StartedAt)[:16]
-		}
-		fmt.Fprintf(w, "%-40s  %-20s  %-15s  %s\n",
-			sanitizeTerminal(s.ID),
-			sanitizeTerminal(s.Project),
-			sanitizeTerminal(s.Agent),
-			sanitizeTerminal(started))
-	}
-	if list.NextCursor != "" {
-		// Cursor is an opaque server-minted string. Sanitize too
-		// so a malicious DB row can't feed escapes through a hint.
-		fmt.Fprintf(w, "\nMore results: --cursor %s\n",
-			sanitizeTerminal(list.NextCursor))
-	}
-	return nil
 }

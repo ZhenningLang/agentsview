@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
+	"github.com/mattn/go-runewidth"
 	"github.com/spf13/cobra"
 	"go.kenn.io/agentsview/internal/service"
+	"golang.org/x/term"
 )
 
 func newSessionSearchCommand() *cobra.Command {
@@ -91,7 +94,13 @@ func newSessionSearchCommand() *cobra.Command {
 			if outputFormat(cmd) == "json" {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(res)
 			}
-			return printContentMatchesHuman(cmd.OutOrStdout(), res)
+			width := 0
+			if f, ok := cmd.OutOrStdout().(interface{ Fd() uintptr }); ok && term.IsTerminal(int(f.Fd())) {
+				if w, _, err := term.GetSize(int(f.Fd())); err == nil {
+					width = w
+				}
+			}
+			return printContentMatchesHumanAt(cmd.OutOrStdout(), res, width, time.Now())
 		},
 	}
 	flags := cmd.Flags()
@@ -120,23 +129,80 @@ func newSessionSearchCommand() *cobra.Command {
 
 // printContentMatchesHuman writes one line per match, terminal-sanitized.
 func printContentMatchesHuman(w io.Writer, res *service.ContentSearchResult) error {
+	return printContentMatchesHumanAt(w, res, 0, time.Now())
+}
+
+func printContentMatchesHumanAt(w io.Writer, res *service.ContentSearchResult, termWidth int, now time.Time) error {
 	if len(res.Matches) == 0 {
 		fmt.Fprintln(w, "(no matches)")
+		if res.NextCursor != 0 {
+			fmt.Fprintf(w, "More results: --cursor %d\n", res.NextCursor)
+		}
 		return nil
 	}
+	rows := make([][]string, 0, len(res.Matches)+1)
+	rows = append(rows, []string{"ID", "MATCH", "AGE", "PROJECT", "LOCATION", "SNIPPET"})
 	for _, m := range res.Matches {
 		loc := m.Location
 		if m.ToolName != "" {
 			loc = m.Location + ":" + m.ToolName
 		}
-		fmt.Fprintf(w, "%s  #%d  %s  %s\n",
-			sanitizeTerminal(m.SessionID), m.Ordinal,
-			sanitizeTerminal(m.Project), sanitizeTerminal(loc))
-		fmt.Fprintf(w, "    %s\n",
-			sanitizeTerminal(strings.ReplaceAll(m.Snippet, "\n", " ")))
+		rows = append(rows, []string{
+			sanitizeTerminal(m.SessionID),
+			fmt.Sprintf("#%d", m.Ordinal),
+			humanizeMatchAge(m.Timestamp, now),
+			sanitizeTerminal(collapseWhitespace(m.Project)),
+			sanitizeTerminal(collapseWhitespace(loc)),
+			sanitizeTerminal(collapseWhitespace(m.Snippet)),
+		})
 	}
+	writeSearchRows(w, rows, termWidth)
 	if res.NextCursor != 0 {
 		fmt.Fprintf(w, "\nMore results: --cursor %d\n", res.NextCursor)
 	}
 	return nil
+}
+
+func writeSearchRows(w io.Writer, rows [][]string, termWidth int) {
+	widths := []int{2, 5, 3, 7, 8, 7}
+	for _, row := range rows {
+		for i := 0; i < len(row)-1; i++ {
+			widths[i] = max(widths[i], runewidth.StringWidth(row[i]))
+		}
+	}
+	projectCap, locationCap := 24, 28
+	if termWidth > 0 {
+		widths[3] = min(widths[3], projectCap)
+		widths[4] = min(widths[4], locationCap)
+	}
+	for _, row := range rows {
+		cells := append([]string(nil), row...)
+		if termWidth > 0 {
+			cells[3] = cellTruncate(cells[3], widths[3])
+			cells[4] = cellTruncate(cells[4], widths[4])
+			fixed := widths[0] + widths[1] + widths[2] + widths[3] + widths[4] + 10
+			budget := max(1, termWidth-fixed)
+			cells[5] = cellTruncate(cells[5], budget)
+		}
+		for i, cell := range cells {
+			if i > 0 {
+				fmt.Fprint(w, "  ")
+			}
+			fmt.Fprint(w, cell)
+			if i < len(cells)-1 {
+				pad := widths[i] - runewidth.StringWidth(cell)
+				if pad > 0 {
+					fmt.Fprint(w, strings.Repeat(" ", pad))
+				}
+			}
+		}
+		fmt.Fprintln(w)
+	}
+}
+
+func cellTruncate(s string, width int) string {
+	if width <= 0 || runewidth.StringWidth(s) <= width {
+		return s
+	}
+	return runewidth.Truncate(s, width, "…")
 }

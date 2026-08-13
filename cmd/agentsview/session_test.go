@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,6 +162,147 @@ func TestSessionList_JSONShape(t *testing.T) {
 		"stdout should be valid JSON: %q", out)
 	assert.Equal(t, 2, got.Total)
 	assert.Len(t, got.Sessions, 2)
+}
+
+func TestSessionList_ServerFlagDoesNotSendConfigToken(t *testing.T) {
+	dataDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+	require.NoError(t, os.WriteFile(filepath.Join(dataDir, "config.toml"), []byte(`auth_token = "local-secret"`), 0o600))
+	var auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		assert.Equal(t, "/api/v1/sessions", r.URL.Path)
+		assert.Equal(t, "proj", r.URL.Query().Get("project"))
+		_, _ = w.Write([]byte(`{"sessions":[{"id":"remote","project":"proj","agent":"codex","message_count":2,"user_message_count":2}],"total":1}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	out, err := executeCommand(newRootCommand(), "session", "list", "--server", srv.URL, "--project", "proj", "--json")
+	require.NoError(t, err)
+	assert.Empty(t, auth)
+	assert.Contains(t, out, "remote")
+}
+
+func TestSessionList_ServerTokenFileOverridesEnv(t *testing.T) {
+	t.Setenv("AGENTSVIEW_SERVER_TOKEN", "env-secret")
+	tokenFile := filepath.Join(t.TempDir(), "token")
+	require.NoError(t, os.WriteFile(tokenFile, []byte("file-secret\n"), 0o600))
+	var auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"sessions":[],"total":0}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := executeCommand(newRootCommand(), "session", "list", "--server", srv.URL, "--server-token-file", tokenFile, "--json")
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer file-secret", auth)
+}
+
+func TestSessionList_ServerEnvToken(t *testing.T) {
+	t.Setenv("AGENTSVIEW_SERVER_TOKEN", "env-secret")
+	var auth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"sessions":[],"total":0}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	_, err := executeCommand(newRootCommand(), "session", "list", "--server", srv.URL, "--json")
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer env-secret", auth)
+}
+
+func TestSessionGet_Server(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/sessions/codex:remote", r.URL.Path)
+		_, _ = w.Write([]byte(`{"id":"codex:remote","project":"proj","agent":"codex"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	out, err := executeCommand(newRootCommand(), "session", "get", "codex:remote", "--server", srv.URL, "--json")
+	require.NoError(t, err)
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &got))
+	assert.Equal(t, "codex:remote", got["id"])
+	assert.Equal(t, "proj", got["project"])
+	assert.Equal(t, "codex", got["agent"])
+}
+
+func TestSessionMessages_Server(t *testing.T) {
+	var messagesQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/sessions/codex:remote":
+			_, _ = w.Write([]byte(`{"id":"codex:remote","project":"proj","agent":"codex"}`))
+		case "/api/v1/sessions/codex:remote/messages":
+			messagesQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"messages":[{"session_id":"codex:remote","ordinal":1,"role":"user","content":"hello","timestamp":"2026-08-13T12:00:00Z"}],"count":1}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	out, err := executeCommand(newRootCommand(), "session", "messages", "codex:remote", "--server", srv.URL, "--from", "1", "--limit", "2", "--direction", "desc", "--json")
+	require.NoError(t, err)
+	assert.Contains(t, messagesQuery, "from=1")
+	assert.Contains(t, messagesQuery, "limit=2")
+	assert.Contains(t, messagesQuery, "direction=desc")
+	assert.Contains(t, out, "hello")
+}
+
+func TestSessionToolCalls_Server(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/sessions/codex:remote":
+			_, _ = w.Write([]byte(`{"id":"codex:remote","project":"proj","agent":"codex"}`))
+		case "/api/v1/sessions/codex:remote/tool-calls":
+			_, _ = w.Write([]byte(`{"tool_calls":[{"ordinal":1,"timestamp":"2026-08-13T12:00:00Z","tool_use_id":"tu1","tool_name":"Bash","category":"shell","input_json":"{}","result_length":3}],"count":1}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	out, err := executeCommand(newRootCommand(), "session", "tool-calls", "codex:remote", "--server", srv.URL, "--json")
+	require.NoError(t, err)
+	assert.Contains(t, out, "Bash")
+}
+
+func TestSessionSearch_Server(t *testing.T) {
+	var query string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/search/content", r.URL.Path)
+		query = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"matches":[{"session_id":"codex:remote","project":"proj","agent":"codex","location":"message","role":"user","ordinal":1,"timestamp":"2026-08-13T12:00:00Z","snippet":"needle"}]}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	out, err := executeCommand(newRootCommand(), "session", "search", "needle", "--server", srv.URL, "--project", "proj", "--json")
+	require.NoError(t, err)
+	assert.Contains(t, query, "pattern=needle")
+	assert.Contains(t, query, "project=proj")
+	assert.Contains(t, out, "needle")
+}
+
+func TestSessionWatch_Server(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/sessions/codex:remote":
+			_, _ = w.Write([]byte(`{"id":"codex:remote","project":"proj","agent":"codex"}`))
+		case "/api/v1/sessions/codex:remote/watch":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: update\ndata: {\"id\":\"codex:remote\"}\n\n"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	out, err := executeCommand(newRootCommand(), "session", "watch", "codex:remote", "--server", srv.URL)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"event":"update","data":"{\"id\":\"codex:remote\"}"}`, strings.TrimSpace(out))
 }
 
 func TestSessionList_FilterByProject(t *testing.T) {
@@ -437,21 +580,40 @@ func TestSessionExport_RejectsFormatFlag(t *testing.T) {
 	assert.Contains(t, err.Error(), "--format not supported")
 }
 
-// TestSessionUsage_RejectsServerFlag verifies that `session usage`
-// rejects the inherited --server flag instead of silently querying
-// the local SQLite archive. usage uses the direct token-use path
-// (not the SessionService layer), so a user explicitly targeting a
-// daemon must get the same "not yet implemented" error the other
-// session commands return — not stale or local-only data.
-func TestSessionUsage_RejectsServerFlag(t *testing.T) {
-	dataDir := t.TempDir()
-	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+// TestSessionUsage_Server verifies that `session usage --server`
+// resolves the session remotely and fetches usage from the same
+// explicit daemon target rather than querying local SQLite data.
+func TestSessionUsage_Server(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/api/v1/sessions/codex:bare-id":
+			_, _ = w.Write([]byte(`{"id":"codex:bare-id","agent":"codex"}`))
+		case "/api/v1/sessions/codex:bare-id/usage":
+			_, _ = w.Write([]byte(`{"session_id":"codex:bare-id","agent":"codex","project":"p","total_output_tokens":10,"peak_context_tokens":20,"has_token_data":true,"cost_usd":0.42,"has_cost":true,"models":["gpt"]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
 
-	_, err := executeCommand(newRootCommand(),
-		"session", "usage", "some-id",
-		"--server", "http://localhost:9999")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "--server not yet implemented")
+	out, err := runSessionUsageForTest(t, "bare-id", "json", srv.URL)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"session_id":"codex:bare-id","agent":"codex","project":"p","total_output_tokens":10,"peak_context_tokens":20,"has_token_data":true,"cost_usd":0.42,"has_cost":true,"models":["gpt"],"server_running":true}`, out)
+	assert.Contains(t, paths, "/api/v1/sessions/codex:bare-id")
+	assert.Contains(t, paths, "/api/v1/sessions/codex:bare-id/usage")
+}
+
+func runSessionUsageForTest(t *testing.T, id, format, server string) (string, error) {
+	t.Helper()
+	root := newRootCommand()
+	buf := &bytes.Buffer{}
+	root.SetOut(buf)
+	root.SetErr(buf)
+	root.SetArgs([]string{"session", "usage", id, "--server", server, "--format", format})
+	err := root.Execute()
+	return buf.String(), err
 }
 
 // TestSessionSync_UnknownID_ReportsNoFilePath verifies that the
@@ -473,6 +635,29 @@ func TestSessionSync_UnknownID_ReportsNoFilePath(t *testing.T) {
 		"error should come from directBackend.Sync validation, not ErrReadOnly")
 	assert.NotContains(t, err.Error(), "read-only",
 		"engine must be plumbed; got ErrReadOnly-style message: %v", err)
+}
+
+func TestSessionSync_ServerFlagTreatsPathShapedArgAsRemotePath(t *testing.T) {
+	var body struct {
+		Path string `json:"path"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/api/v1/sessions/sync", r.URL.Path)
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		_, _ = w.Write([]byte(`{"id":"remote"}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	out, err := executeCommand(newRootCommand(), "session", "sync", "--server", srv.URL, "/remote/path.jsonl", "--json")
+	require.NoError(t, err)
+	assert.Equal(t, "/remote/path.jsonl", body.Path)
+	assert.Contains(t, out, "remote")
+}
+
+func TestSessionExport_RejectsServerFlag(t *testing.T) {
+	_, err := executeCommand(newRootCommand(), "session", "export", "s1", "--server", "http://127.0.0.1:1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "local-only")
 }
 
 // TestSessionSync_AgainstReadOnlyDaemon_Refuses verifies the CLI

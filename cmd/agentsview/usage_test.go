@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -156,6 +157,54 @@ func TestFormatDailyUsageJSON(t *testing.T) {
 		assert.Contains(t, totals, f,
 			"missing field %q in totals", f)
 	}
+}
+
+func TestPrintUsageStatuslineJSON(t *testing.T) {
+	var out bytes.Buffer
+	report := usageStatuslineReport("2026-08-13", db.UsageTotals{TotalCost: 25.000001}, "codex")
+	require.NoError(t, printUsageStatuslineJSON(&out, report))
+
+	assert.JSONEq(t, `{"date":"2026-08-13","cost":{"microdollars":25000001},"agent":"codex"}`,
+		out.String())
+}
+
+func TestUsageStatuslineCommandOutputFlags(t *testing.T) {
+	cmd := newUsageStatuslineCommand()
+	assert.NotNil(t, cmd.Flags().Lookup("json"))
+	assert.NotNil(t, cmd.Flags().Lookup("format"))
+}
+
+func TestPrintUsageStatuslineJSONOmitAgentAndKeepZeroCost(t *testing.T) {
+	var out bytes.Buffer
+	report := usageStatuslineReport("2026-08-13", db.UsageTotals{TotalCost: 0}, "")
+	require.NoError(t, printUsageStatuslineJSON(&out, report))
+
+	assert.JSONEq(t, `{"date":"2026-08-13","cost":{"microdollars":0}}`, out.String())
+}
+
+func TestUsageStatuslineMicrodollarRounding(t *testing.T) {
+	tests := []struct {
+		name string
+		cost float64
+		want int64
+	}{
+		{name: "exact", cost: 0.000001, want: 1},
+		{name: "nearest rounds up", cost: 0.0000015, want: 2},
+		{name: "nearest rounds down", cost: 0.00000149, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := usageStatuslineReport("2026-08-13", db.UsageTotals{TotalCost: tt.cost}, "")
+			assert.Equal(t, tt.want, got.Cost.Microdollars)
+		})
+	}
+}
+
+func TestUsageStatuslineHumanUnchanged(t *testing.T) {
+	var out bytes.Buffer
+	report := usageStatuslineReport("2026-08-13", db.UsageTotals{TotalCost: 0.42}, "claude")
+	require.NoError(t, printUsageStatuslineHuman(&out, report))
+	assert.Equal(t, "$0.42 today (claude)\n", out.String())
 }
 
 func TestRefreshPricingIfStale_FreshAttemptSkipsFetch(t *testing.T) {
