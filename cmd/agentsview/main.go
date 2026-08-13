@@ -911,13 +911,6 @@ func nearestExistingDir(path string) string {
 	return ""
 }
 
-func watchNearestExistingDir(
-	watcher *sync.Watcher, targetDir string,
-) (string, bool) {
-	root := nearestExistingDir(targetDir)
-	return root, root != "" && watcher.WatchShallow(root)
-}
-
 func assistMemWatchRoots(targetDir string) []string {
 	targetDir = filepath.Clean(targetDir)
 	root := nearestExistingDir(targetDir)
