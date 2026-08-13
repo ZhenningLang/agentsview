@@ -258,6 +258,35 @@ func TestStartAssistMemSyncRearmsAfterLedgerDirectoryRename(t *testing.T) {
 	}, 3*time.Second, 20*time.Millisecond)
 }
 
+func TestAssistMemWatchRootsIncludesParentForDirectoryRename(t *testing.T) {
+	dataDir := t.TempDir()
+	memoryDir := filepath.Join(dataDir, "memory")
+	ledgerDir := filepath.Join(memoryDir, "ledger")
+	require.NoError(t, os.MkdirAll(ledgerDir, 0o755))
+
+	assert.Equal(t,
+		[]string{filepath.Clean(ledgerDir), filepath.Clean(memoryDir)},
+		assistMemWatchRoots(ledgerDir),
+	)
+
+	relocatedDir := filepath.Join(memoryDir, "ledger-old")
+	require.NoError(t, os.Rename(ledgerDir, relocatedDir))
+	assert.Equal(t, []string{filepath.Clean(memoryDir)}, assistMemWatchRoots(ledgerDir))
+	assert.True(t, pathChangeMayMoveTargetDir(relocatedDir, filepath.Join(ledgerDir, "entries.jsonl")))
+}
+
+func TestPathChangeMayMoveTargetDirIgnoresSiblingsWhileTargetExists(t *testing.T) {
+	dataDir := t.TempDir()
+	memoryDir := filepath.Join(dataDir, "memory")
+	ledgerDir := filepath.Join(memoryDir, "ledger")
+	require.NoError(t, os.MkdirAll(ledgerDir, 0o755))
+
+	assert.False(t, pathChangeMayMoveTargetDir(
+		filepath.Join(memoryDir, "INDEX.md"),
+		filepath.Join(ledgerDir, "entries.jsonl"),
+	))
+}
+
 func TestSerialRunnerDoesNotOverlapAssistMemSyncs(t *testing.T) {
 	entered := make(chan struct{}, 2)
 	release := make(chan struct{}, 2)

@@ -825,7 +825,7 @@ func startAssistMemSyncWithRearmHook(
 	watcher, err := sync.NewWatcher(watcherDebounce, func(paths []string) {
 		for _, changed := range paths {
 			if pathChangeAffectsTarget(changed, path) || pathChangeMayMoveTargetDir(changed, path) {
-				root, watched := watchNearestExistingDir(
+				root, watched := watchAssistMemLedgerDirs(
 					watcher, filepath.Dir(path),
 				)
 				if onRearm != nil {
@@ -846,7 +846,7 @@ func startAssistMemSyncWithRearmHook(
 	if err != nil {
 		log.Printf("assist-mem watcher: %v", err)
 	} else {
-		root, watched := watchNearestExistingDir(watcher, filepath.Dir(path))
+		root, watched := watchAssistMemLedgerDirs(watcher, filepath.Dir(path))
 		if onRearm != nil {
 			onRearm(root, watched)
 		}
@@ -918,6 +918,37 @@ func watchNearestExistingDir(
 	return root, root != "" && watcher.WatchShallow(root)
 }
 
+func assistMemWatchRoots(targetDir string) []string {
+	targetDir = filepath.Clean(targetDir)
+	root := nearestExistingDir(targetDir)
+	if root == "" {
+		return nil
+	}
+	roots := []string{root}
+	if root == targetDir {
+		parent := filepath.Dir(targetDir)
+		if parent != "" && parent != targetDir {
+			roots = append(roots, parent)
+		}
+	}
+	return roots
+}
+
+func watchAssistMemLedgerDirs(
+	watcher *sync.Watcher, targetDir string,
+) (string, bool) {
+	roots := assistMemWatchRoots(targetDir)
+	if len(roots) == 0 {
+		return "", false
+	}
+	root := roots[0]
+	watched := watcher.WatchShallow(root)
+	for _, extra := range roots[1:] {
+		_ = watcher.WatchShallow(extra)
+	}
+	return root, watched
+}
+
 func pathChangeAffectsTarget(changed, target string) bool {
 	changed = filepath.Clean(changed)
 	target = filepath.Clean(target)
@@ -931,6 +962,9 @@ func pathChangeAffectsTarget(changed, target string) bool {
 func pathChangeMayMoveTargetDir(changed, target string) bool {
 	changed = filepath.Clean(changed)
 	targetDir := filepath.Dir(filepath.Clean(target))
+	if _, err := os.Stat(targetDir); err == nil {
+		return false
+	}
 	return filepath.Dir(changed) == filepath.Dir(targetDir)
 }
 
