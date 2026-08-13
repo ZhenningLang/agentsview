@@ -170,7 +170,7 @@ func sqliteLLMTableColumns(t *testing.T, d *DB, table string) map[string]sqliteL
 }
 
 func sqliteColumnListHasExact(cols, column string) bool {
-	for _, part := range strings.Split(cols, ",") {
+	for part := range strings.SplitSeq(cols, ",") {
 		if strings.TrimSpace(part) == column {
 			return true
 		}

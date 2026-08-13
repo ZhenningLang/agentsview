@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"syscall"
 	"time"
 )
 
@@ -66,17 +65,18 @@ func (w Writer) Write(ctx context.Context, c Candidate) (WriteResult, error) {
 		return WriteResult{}, err
 	}
 	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	unlock, err := acquireFileLock(lock)
+	if err != nil {
 		return WriteResult{}, err
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	defer func() { _ = unlock() }()
 
 	if existing, err := os.ReadFile(target); err == nil {
 		if sameStableCandidate(string(existing), c) {
 			return WriteResult{Status: WriteDeduped, CandidateID: c.ID, Path: targetRel}, nil
 		}
 		bak := filepath.Join(targetDir, fmt.Sprintf("%s.%d.bak", filepath.Base(target), time.Now().Unix()))
-		_ = os.WriteFile(bak, []byte(fmt.Sprintf("{\"status\":\"drift_refused\",\"candidate_id\":\"%s\",\"existing_size\":%d}\n", c.ID, len(existing))), 0o600)
+		_ = os.WriteFile(bak, fmt.Appendf(nil, "{\"status\":\"drift_refused\",\"candidate_id\":\"%s\",\"existing_size\":%d}\n", c.ID, len(existing)), 0o600)
 		return WriteResult{Status: WriteDriftRefused, CandidateID: c.ID, Path: targetRel, Reason: "target differs from canonical candidate"}, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return WriteResult{}, err

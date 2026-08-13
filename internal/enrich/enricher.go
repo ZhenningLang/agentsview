@@ -131,9 +131,7 @@ func (e *Enricher) Run(ctx context.Context, opts Options) (Stats, error) {
 	total := len(candidates)
 	done := 0
 	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for candidate := range jobs {
 				result, usage := e.processCandidate(ctx, candidate, opts.Now)
 				mu.Lock()
@@ -154,7 +152,7 @@ func (e *Enricher) Run(ctx context.Context, opts Options) (Stats, error) {
 				}
 				mu.Unlock()
 			}
-		}()
+		})
 	}
 	for _, candidate := range candidates {
 		select {

@@ -1,4 +1,4 @@
-//go:build duckdbtest
+//go:build cgo && duckdbtest
 
 package duckdb
 

@@ -11,7 +11,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/mattn/go-sqlite3"
 	"go.kenn.io/agentsview/internal/secrets"
 )
 
@@ -585,22 +584,6 @@ func firstToken(q string) string {
 		return ""
 	}
 	return fields[0]
-}
-
-// classifyFTSError maps a malformed FTS query into a SearchInputError so HTTP
-// callers return 400 rather than 500. The FTS query's SQL is fixed and every
-// argument except the MATCH pattern is parameterized, so a generic
-// SQLITE_ERROR can only come from the user-supplied pattern (e.g. unbalanced
-// quotes or stray operators). Operational failures (I/O, corruption, busy)
-// carry distinct SQLite codes and pass through unchanged.
-func classifyFTSError(err error) error {
-	var sqliteErr sqlite3.Error
-	if errors.As(err, &sqliteErr) && sqliteErr.Code == sqlite3.ErrError {
-		return &SearchInputError{
-			Msg: fmt.Sprintf("search: invalid FTS query: %s", sqliteErr.Error()),
-		}
-	}
-	return err
 }
 
 // prepareFTSQueryDB wraps a multi-word query in quotes for FTS phrase

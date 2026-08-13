@@ -15,8 +15,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	_ "github.com/mattn/go-sqlite3"
-
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/parser"
 )

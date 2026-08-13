@@ -55,8 +55,7 @@ func TestController_DisabledDoesNotRun(t *testing.T) {
 	defer cancel()
 
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() { defer wg.Done(); ctrl.Run(ctx, 5*time.Millisecond) }()
+	wg.Go(func() { ctrl.Run(ctx, 5*time.Millisecond) })
 
 	// Give the loop several intervals' worth of ticks while disabled.
 	time.Sleep(40 * time.Millisecond)
@@ -71,8 +70,7 @@ func TestController_DisabledDoesNotRun(t *testing.T) {
 // at construction runs one cycle right away (no waiting a full interval).
 func TestController_EnabledAtStartRunsImmediately(t *testing.T) {
 	ctrl, calls := newCountingController(t, true)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go ctrl.Run(ctx, time.Hour) // long interval: only the startup cycle should fire
 	if !waitFor(func() bool { return calls() >= 1 }, time.Second) {
@@ -86,8 +84,7 @@ func TestController_EnabledAtStartRunsImmediately(t *testing.T) {
 // full interval — proving "UI 能开启 + 开启后自动跑" without a restart.
 func TestController_RuntimeEnableTriggersImmediateRun(t *testing.T) {
 	ctrl, calls := newCountingController(t, false)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	go ctrl.Run(ctx, time.Hour) // long interval so only an enable-trigger can run a cycle
 

@@ -84,9 +84,9 @@ func TestMemoryRecallDisabledEnvelopeWhenEmbeddingUnavailable(t *testing.T) {
 	w := postJSON(te, "/api/v1/memory/recall", `{"query":"semantic query","top_k":5}`)
 	assertStatus(t, w, http.StatusOK)
 	resp := decode[struct {
-		Disabled bool          `json:"disabled"`
-		Hits     []interface{} `json:"hits"`
-		Count    int           `json:"count"`
+		Disabled bool  `json:"disabled"`
+		Hits     []any `json:"hits"`
+		Count    int   `json:"count"`
 	}](t, w)
 	assert.True(t, resp.Disabled)
 	assert.Empty(t, resp.Hits)

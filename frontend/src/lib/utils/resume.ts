@@ -20,7 +20,7 @@ RESUME_AGENTS["amp"] = (id) =>
 RESUME_AGENTS["kilo"] = (id) =>
   `kilo --session ${shellQuote(id)}`;
 RESUME_AGENTS["kimicode"] = (id) =>
-  `kimi --session ${shellQuote(id.split(":")[0])}`;
+  `kimi --session ${shellQuote(id.split(":")[0] ?? "")}`;
 
 /**
  * Agents whose resume commands require server-resolved parameters

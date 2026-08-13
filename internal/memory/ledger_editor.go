@@ -83,6 +83,9 @@ func (e *LedgerEditor) Archive(ctx context.Context, relPath, baseSHA string) (st
 	if err := json.Unmarshal([]byte(content), &entry); err != nil {
 		return "", fmt.Errorf("invalid assist-mem JSON: %w", err)
 	}
+	if entry == nil {
+		return "", fmt.Errorf("invalid assist-mem JSON: null entry")
+	}
 	entry["status"] = "archived"
 	next, err := json.Marshal(entry)
 	if err != nil {

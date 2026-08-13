@@ -455,7 +455,7 @@ func targetState(root, name string) (exists, archived bool, supersededBy string)
 }
 
 func frontmatterValue(text, key string) string {
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		left, right, ok := strings.Cut(line, ":")
 		if ok && strings.TrimSpace(left) == key {
 			return strings.TrimSpace(right)

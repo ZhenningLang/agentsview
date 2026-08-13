@@ -308,7 +308,11 @@ func (db *DB) GetSkillTokenCost(
 		d.Tokens += s.DescriptionTokens
 	}
 	for _, dom := range order {
-		rep.ByDomain = append(rep.ByDomain, *byDomain[dom])
+		d := byDomain[dom]
+		if d == nil {
+			continue
+		}
+		rep.ByDomain = append(rep.ByDomain, *d)
 	}
 	rep.Skills = skills
 	return rep, nil

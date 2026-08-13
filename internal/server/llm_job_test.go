@@ -60,7 +60,7 @@ func TestLLMEnrichmentJobRunsToCompletion(t *testing.T) {
 		withLLMConfig(enrichEnabledConfig))
 
 	const n = 3
-	for i := 0; i < n; i++ {
+	for i := range n {
 		seedEnrichCandidate(t, te, fmt.Sprintf("s%d", i))
 	}
 
@@ -127,7 +127,7 @@ func TestLLMEnrichmentJobReportsTokensAndCost(t *testing.T) {
 		}))
 
 	const n = 2
-	for i := 0; i < n; i++ {
+	for i := range n {
 		seedEnrichCandidate(t, te, fmt.Sprintf("s%d", i))
 	}
 
@@ -212,7 +212,7 @@ func TestLLMEnrichmentJobReportsEmbedCost(t *testing.T) {
 		}))
 
 	const n = 2
-	for i := 0; i < n; i++ {
+	for i := range n {
 		seedEnrichCandidate(t, te, fmt.Sprintf("s%d", i))
 	}
 
@@ -294,7 +294,7 @@ func TestLLMEnrichmentJobEmbedCostDerivesFromBaseURL(t *testing.T) {
 		}))
 
 	const n = 2
-	for i := 0; i < n; i++ {
+	for i := range n {
 		seedEnrichCandidate(t, te, fmt.Sprintf("s%d", i))
 	}
 

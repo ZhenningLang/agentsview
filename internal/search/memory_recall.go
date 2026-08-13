@@ -180,28 +180,6 @@ func withoutCoveredRawHits(hits []MemoryRecallHit, covered map[string]struct{}) 
 	return out
 }
 
-func suppressCoveredRaw(hits []MemoryRecallHit) []MemoryRecallHit {
-	covered := map[string]struct{}{}
-	for _, hit := range hits {
-		for _, ref := range coveredRefs(hit) {
-			covered[memoryRefKey(ref.Source, ref.RelPath)] = struct{}{}
-		}
-	}
-	if len(covered) == 0 {
-		return hits
-	}
-	out := hits[:0]
-	for _, hit := range hits {
-		if hit.Source != db.SourceCanonical {
-			if _, ok := covered[memoryRefKey(hit.Source, hit.RelPath)]; ok {
-				continue
-			}
-		}
-		out = append(out, hit)
-	}
-	return out
-}
-
 func coveredRefs(hit MemoryRecallHit) []canonicalCoveredRef {
 	if hit.Source != db.SourceCanonical || strings.TrimSpace(hit.CanonicalCoveredRefs) == "" {
 		return nil

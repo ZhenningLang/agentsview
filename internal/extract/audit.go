@@ -97,7 +97,7 @@ func (a *AuditLog) Read(limit int) ([]RunRecord, error) {
 		return nil, fmt.Errorf("opening audit log: %w", err)
 	}
 	defer f.Close()
-	var all []RunRecord
+	all := []RunRecord{}
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
@@ -114,9 +114,6 @@ func (a *AuditLog) Read(limit int) ([]RunRecord, error) {
 	}
 	if limit > 0 && len(all) > limit {
 		all = all[:limit]
-	}
-	if all == nil {
-		all = []RunRecord{}
 	}
 	return all, nil
 }

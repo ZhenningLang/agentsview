@@ -34,7 +34,7 @@ func sampleMessages(messages []db.Message) []string {
 	} else {
 		step := float64(len(middle)-1) / 3
 		last := -1
-		for i := 0; i < 4; i++ {
+		for i := range 4 {
 			idx := int(float64(i)*step + 0.5)
 			if idx <= last {
 				idx = last + 1

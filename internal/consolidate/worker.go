@@ -473,7 +473,7 @@ func parseScriptResults(stdout string) map[string]string {
 
 func splitNonEmptyLines(s string) []string {
 	var out []string
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		if t := strings.TrimSpace(line); t != "" {
 			out = append(out, t)
 		}

@@ -814,7 +814,7 @@ func TestLLMEnrichDefaultLimitIsBounded(t *testing.T) {
 		c.ReenrichIdleMinutes = 30
 		c.Concurrency = 1
 	}))
-	for i := 0; i < 30; i++ {
+	for i := range 30 {
 		seedLLMEligibleSessionID(t, te, "llm-eligible-"+string(rune('a'+i)))
 	}
 
