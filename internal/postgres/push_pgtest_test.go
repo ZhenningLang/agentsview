@@ -164,7 +164,9 @@ func TestPushNestedToolFingerprintRepairsDirtyPGAndThenNoOps(t *testing.T) {
 
 	_, err = pg.Exec(`
 		UPDATE tool_calls SET tool_name = 'R' || chr(7) || 'ead'
-		WHERE session_id = $1;
+		WHERE session_id = $1`, sessionID)
+	require.NoError(t, err)
+	_, err = pg.Exec(`
 		UPDATE tool_result_events SET source = 'custo' || chr(7) || 'm'
 		WHERE session_id = $1`, sessionID)
 	require.NoError(t, err)
@@ -241,7 +243,9 @@ func TestPushExactMessageAndUsageFingerprintRepairsDirtyPGAndThenNoOps(t *testin
 			thinking_text = 'idea',
 			has_thinking = FALSE,
 			timestamp = '2026-01-01T00:00:01Z'
-		WHERE session_id = $1;
+		WHERE session_id = $1`, sessionID)
+	require.NoError(t, err)
+	_, err = pg.Exec(`
 		UPDATE usage_events SET
 			occurred_at = '2026-01-01T00:00:01Z'
 		WHERE session_id = $1`, sessionID)

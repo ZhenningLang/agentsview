@@ -318,11 +318,12 @@ func TestFileAtCommitInvalidRef(t *testing.T) {
 }
 
 func TestPythonRootFor(t *testing.T) {
-	root, ok := pythonRootFor("/home/u/.dotfiles/memory/user")
+	dotfiles := filepath.Join(string(filepath.Separator), "home", "u", ".dotfiles")
+	root, ok := pythonRootFor(filepath.Join(dotfiles, "memory", "user"))
 	require.True(t, ok)
-	assert.Equal(t, "/home/u/.dotfiles", root)
+	assert.Equal(t, dotfiles, root)
 
-	_, ok = pythonRootFor("/tmp/some/fixture")
+	_, ok = pythonRootFor(filepath.Join(string(filepath.Separator), "tmp", "some", "fixture"))
 	assert.False(t, ok)
 }
 

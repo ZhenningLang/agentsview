@@ -824,7 +824,7 @@ func startAssistMemSyncWithRearmHook(
 	var watcher *sync.Watcher
 	watcher, err := sync.NewWatcher(watcherDebounce, func(paths []string) {
 		for _, changed := range paths {
-			if pathChangeAffectsTarget(changed, path) {
+			if pathChangeAffectsTarget(changed, path) || pathChangeMayMoveTargetDir(changed, path) {
 				root, watched := watchNearestExistingDir(
 					watcher, filepath.Dir(path),
 				)
@@ -926,6 +926,12 @@ func pathChangeAffectsTarget(changed, target string) bool {
 	}
 	rel, err := filepath.Rel(changed, target)
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func pathChangeMayMoveTargetDir(changed, target string) bool {
+	changed = filepath.Clean(changed)
+	targetDir := filepath.Dir(filepath.Clean(target))
+	return filepath.Dir(changed) == filepath.Dir(targetDir)
 }
 
 func syncAssistMemOnce(ctx context.Context, cfg config.Config, database db.Store) bool {

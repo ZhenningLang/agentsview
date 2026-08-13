@@ -464,12 +464,14 @@ func TestSaveLLMConfig_PersistsLLMSectionAndPreservesExistingKeys(t *testing.T) 
 	}
 	require.NoError(t, cfg.SaveLLMConfig(llm))
 
-	info, err := os.Stat(filepath.Join(tmp, configFileName))
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(filepath.Join(tmp, configFileName))
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
 
 	var result map[string]any
-	_, err = toml.DecodeFile(filepath.Join(tmp, configFileName), &result)
+	_, err := toml.DecodeFile(filepath.Join(tmp, configFileName), &result)
 	require.NoError(t, err)
 	assert.Equal(t, "value", result["custom_key"])
 	assert.Equal(t, map[string]any{"mode": "clipboard"}, result["terminal"])

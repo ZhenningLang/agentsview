@@ -111,6 +111,12 @@ func (w *FileWriter) resolvePath(relPath string) (string, error) {
 	if relPath == "" {
 		return "", ErrPathTraversal
 	}
+	if filepath.IsAbs(relPath) {
+		relPath = strings.TrimLeft(
+			strings.TrimPrefix(relPath, filepath.VolumeName(relPath)),
+			`\/`,
+		)
+	}
 	// Reject explicit parent traversal segments outright. filepath.Clean
 	// would collapse some of these, but an explicit reject is clearer and
 	// closes off encodings the Join/Clean check might otherwise normalize.
