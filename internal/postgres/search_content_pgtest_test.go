@@ -641,19 +641,21 @@ func TestPGContentSearchTrigramIndexUpgrade(t *testing.T) {
 		"EnsureSchema must reapply fastupdate=off to a pre-existing index")
 }
 
-// TestPGSearchContentRegex verifies regex mode.
+// TestPGSearchContentRegex verifies regex mode. The fixture token is
+// deliberately not shaped like a real credential; see the comment on the SQLite
+// mirror TestSearchContentRegex in internal/db/search_content_test.go.
 func TestPGSearchContentRegex(t *testing.T) {
 	store := setupContentSearch(t)
 	insertCSSession(t, store, "cs-re1", "proj", "claude",
 		"2026-05-01T10:00:00Z", "2026-05-01T10:30:00Z")
 	insertCSMessage(t, store, "cs-re1", 0, "user",
-		"key AKIA7QHWN2DKR4FYPLJM here", "2026-05-01T10:00:00Z", false)
+		"key EXAMPLEKEY0A1B2C3D4E here", "2026-05-01T10:00:00Z", false)
 	insertCSMessage(t, store, "cs-re1", 1, "user",
 		"no secrets in this line", "2026-05-01T10:00:01Z", false)
 
 	ctx := context.Background()
 	got, err := store.SearchContent(ctx, db.ContentSearchFilter{
-		Pattern: `AKIA[0-9A-Z]{16}`, Mode: "regex",
+		Pattern: `EXAMPLEKEY[0-9A-Z]{10}`, Mode: "regex",
 		Sources: []string{"messages"}, Limit: 50,
 	})
 	require.NoError(t, err, "SearchContent regex")

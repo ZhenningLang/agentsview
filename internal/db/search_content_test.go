@@ -287,6 +287,13 @@ func TestSearchContentPaginationStableAcrossTies(t *testing.T) {
 	}
 }
 
+// The fixture token is deliberately not shaped like a real credential. What
+// this test needs from it is a literal prefix followed by a counted,
+// uppercase-only character class embedded in surrounding words; an
+// AWS-key-shaped string satisfies that too, but it also trips secret scanners
+// on every push that touches this file. Keep it obviously synthetic. The PG
+// mirror in internal/postgres/search_content_pgtest_test.go uses the same
+// fixture.
 func TestSearchContentRegex(t *testing.T) {
 	d := testDB(t)
 	seedSearchSession(t, d, "r1", "proj", [][2]string{
