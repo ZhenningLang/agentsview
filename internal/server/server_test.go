@@ -924,7 +924,8 @@ type projectListResponse struct {
 }
 
 type syncStatusResponse struct {
-	LastSync string `json:"last_sync"`
+	LastSync string          `json:"last_sync"`
+	Stats    *sync.SyncStats `json:"stats"`
 }
 
 type githubConfigResponse struct {
@@ -1806,6 +1807,23 @@ func TestSyncStatus(t *testing.T) {
 	if resp.LastSync == "" {
 		t.Fatal("expected last_sync field")
 	}
+}
+
+func TestSyncStatusReportsAnomalies(t *testing.T) {
+	te := setup(t)
+	te.writeProjectFile(
+		t, "test-project", "sync-status-anomaly.jsonl",
+		"not json at all\x00\x01",
+	)
+
+	te.engine.SyncAll(context.Background(), nil)
+	w := te.get(t, "/api/v1/sync/status")
+	assertStatus(t, w, http.StatusOK)
+
+	resp := decode[syncStatusResponse](t, w)
+	require.NotNil(t, resp.Stats)
+	assert.Equal(t, 1, resp.Stats.Anomalies.MalformedLinesTotal)
+	assert.Equal(t, 1, resp.Stats.Anomalies.MalformedLinesByAgent["claude"])
 }
 
 func TestCORSHeaders(t *testing.T) {

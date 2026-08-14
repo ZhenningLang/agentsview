@@ -46,6 +46,53 @@ func TestSyncFullPushCreatesExpectedRows(t *testing.T) {
 	assert.Equal(t, "alpha first", firstMessage)
 }
 
+func TestPushPreservesInferredSkillName(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+	const sessionID = "duck-inferred-skill"
+	started := "2026-01-01T00:00:00.000Z"
+	require.NoError(t, local.UpsertSession(db.Session{
+		ID: sessionID, Project: "p", Machine: "local", Agent: "codex",
+		StartedAt: &started, CreatedAt: started, MessageCount: 1,
+	}))
+	require.NoError(t, local.InsertMessages([]db.Message{{
+		SessionID: sessionID, Ordinal: 0, Role: "assistant",
+		Content: "tool", ContentLength: 4, HasToolUse: true,
+		ToolCalls: []db.ToolCall{
+			{
+				ToolName: "exec_command", Category: "Bash", ToolUseID: "call_1",
+				InputJSON: `{"cmd":"cat skills/duck/SKILL.md"}`,
+				SkillName: "duck-skill",
+			},
+			{
+				ToolName: "exec_command", Category: "Bash", ToolUseID: "call_empty",
+				InputJSON: `{"cmd":"cat README.md"}`,
+			},
+		},
+	}}))
+	require.NoError(t, local.ReplaceSkills(ctx, []db.Skill{{
+		Name: "duck-skill", Domain: "test", Role: "canonical", PromptTokens: 11,
+	}}))
+	syncer := newTestSync(t, filepath.Join(t.TempDir(), "mirror.duckdb"), local, SyncOptions{})
+
+	result, err := syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.SessionsPushed)
+
+	store := NewStoreFromDB(syncer.DB())
+	msgs, err := store.GetAllMessages(ctx, sessionID)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	require.Len(t, msgs[0].ToolCalls, 2)
+	assert.Equal(t, "duck-skill", msgs[0].ToolCalls[0].SkillName)
+	assert.Empty(t, msgs[0].ToolCalls[1].SkillName)
+	skill, err := store.GetSkill(ctx, "duck-skill")
+	require.NoError(t, err)
+	require.NotNil(t, skill)
+	assert.Equal(t, 1, skill.InvocationCount)
+	assert.Equal(t, 11, skill.TotalPromptTokens)
+}
+
 func TestSyncFullPushBlanksUnparseableMessageTimestamp(t *testing.T) {
 	ctx := context.Background()
 	local := newLocalDB(t)

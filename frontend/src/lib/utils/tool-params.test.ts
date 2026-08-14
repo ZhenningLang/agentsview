@@ -684,3 +684,202 @@ describe("generateFallbackContent - agent__intent filtering", () => {
     expect(result).not.toContain("agent__intent");
   });
 });
+
+describe("generateFallbackContent line cap", () => {
+  const longCommand = Array.from(
+    { length: 260 },
+    (_, i) => `echo ${i}`,
+  ).join("\n");
+
+  it("keeps the default 200-line display cap", () => {
+    const cases: Array<[string, Record<string, unknown>, number]> = [
+      ["Bash", { command: longCommand }, 201],
+      [
+        "Edit",
+        {
+          old_string: Array.from({ length: 150 }, (_, i) => `o${i}`).join("\n"),
+          new_string: Array.from({ length: 150 }, (_, i) => `n${i}`).join("\n"),
+        },
+        201,
+      ],
+      ["Edit", { diff: longCommand }, 201],
+      ["Edit", { patch: longCommand }, 201],
+      [
+        "Write",
+        { content: Array.from({ length: 260 }, (_, i) => `l${i}`).join("\n") },
+        202,
+      ],
+      ["CustomTool", { blob: longCommand }, 201],
+    ];
+
+    for (const [tool, params, expectedLines] of cases) {
+      const out = generateFallbackContent(tool, params)!;
+      expect(out).toContain("lines total");
+      expect(out.split("\n")).toHaveLength(expectedLines);
+    }
+  });
+
+  it("emits the exact input with no truncation marker when uncapped", () => {
+    const out = generateFallbackContent(
+      "Bash",
+      { command: longCommand },
+      { maxLines: null },
+    )!;
+    expect(out).toBe(`command: ${longCommand}`);
+    expect(out).not.toContain("lines total");
+  });
+
+  it("uncaps Edit, Write and generic shapes alike", () => {
+    const editOut = generateFallbackContent(
+      "Edit",
+      { old_string: "a\nb", new_string: "c\nd" },
+      { maxLines: null },
+    );
+    expect(editOut).toBe("@@ -1,2 +1,2 @@\n-a\n-b\n+c\n+d");
+
+    const writeOut = generateFallbackContent(
+      "Write",
+      { content: Array.from({ length: 260 }, (_, i) => `l${i}`).join("\n") },
+      { maxLines: null },
+    )!;
+    expect(writeOut.split("\n")).toHaveLength(261);
+    expect(writeOut).not.toContain("lines total");
+
+    const genericOut = generateFallbackContent(
+      "CustomTool",
+      { blob: longCommand },
+      { maxLines: null },
+    )!;
+    expect(genericOut).toBe(`blob: ${longCommand}`);
+  });
+
+  it("still hides internal params when uncapped", () => {
+    const out = generateFallbackContent(
+      "Bash",
+      { command: "ls", agent__intent: "peek", _i: 3 },
+      { maxLines: null },
+    );
+    expect(out).toBe("command: ls");
+  });
+
+  it("prefers a pre-computed patch over old/new reconstruction", () => {
+    const out = generateFallbackContent(
+      "Edit",
+      { patch: "@@ -1 +1 @@\n-a\n+b", old_string: "a", new_string: "b" },
+      { maxLines: null },
+    );
+    expect(out).toBe("@@ -1 +1 @@\n-a\n+b");
+  });
+
+  it("still prefers diff over patch", () => {
+    const out = generateFallbackContent(
+      "Edit",
+      { diff: "from-diff", patch: "from-patch" },
+      { maxLines: null },
+    );
+    expect(out).toBe("from-diff");
+  });
+});
+
+describe("generateFallbackContent Pi edits[] shapes", () => {
+  // 500 chars, well past the 400-char per-edit display truncation.
+  const longText = "x".repeat(500);
+  const longLines = Array.from({ length: 260 }, (_, i) => `pi line ${i}`);
+
+  const shapes: Array<[string, Record<string, unknown>]> = [
+    ["set_line", { edits: [{ set_line: { anchor: "a1", new_text: longText } }] }],
+    [
+      "replace_lines",
+      {
+        edits: [
+          {
+            replace_lines: {
+              start_anchor: "s",
+              end_anchor: "e",
+              new_text: longText,
+            },
+          },
+        ],
+      },
+    ],
+    ["insert_after", { edits: [{ insert_after: { anchor: "a", text: longText } }] }],
+    ["op/lines", { edits: [{ op: "replace", pos: "3", lines: [longText] }] }],
+    ["op/content", { edits: [{ tag: "t", content: [longText] }] }],
+  ];
+
+  it.each(shapes)("copies %s edits uncapped and unmarked", (_name, params) => {
+    const out = generateFallbackContent("Edit", params, { maxLines: null })!;
+    expect(out).toContain(longText);
+    expect(out).not.toContain("…");
+    expect(out).not.toContain("lines total");
+  });
+
+  it.each(shapes)("still truncates %s edits for display", (_name, params) => {
+    const out = generateFallbackContent("Edit", params)!;
+    expect(out).not.toContain(longText);
+    expect(out).toContain("…");
+  });
+
+  it("applies the line cap to Pi edits for display but not for copy", () => {
+    const params = { edits: [{ op: "replace", pos: "1", lines: longLines }] };
+
+    const display = generateFallbackContent("Edit", params)!;
+    expect(display.split("\n").length).toBeLessThanOrEqual(201);
+
+    const copied = generateFallbackContent("Edit", params, { maxLines: null })!;
+    expect(copied.split("\n")).toHaveLength(longLines.length + 1);
+    expect(copied).not.toContain("lines total");
+    expect(copied.endsWith("pi line 259")).toBe(true);
+  });
+
+  // A Pi edit pushes its whole multi-line payload into ONE `lines[]` element,
+  // so a cap that counts array elements is not a cap on rendered lines at all.
+  // These fixtures are built from short/empty lines specifically so the
+  // per-edit 400-character truncation cannot mask the line cap.
+  it.each([
+    ["500 empty lines in one entry", Array(500).fill("")],
+    ["300 one-character lines in one entry", Array(300).fill("x")],
+  ])("caps the rendered line count for %s", (_name, lines) => {
+    const params = { edits: [{ op: "replace", pos: "1", lines }] };
+
+    const display = generateFallbackContent("Edit", params)!;
+    const rendered = display.split("\n");
+    expect(rendered.length).toBeLessThanOrEqual(201);
+    expect(display).toContain("lines total");
+
+    // Copy mode still hands over every line.
+    const copied = generateFallbackContent("Edit", params, { maxLines: null })!;
+    expect(copied).not.toContain("lines total");
+    expect(copied.split("\n")).toHaveLength(lines.length + 1);
+  });
+
+  it("caps the rendered line count across many short edits", () => {
+    // 6 entries x (1 header + 40 body lines) = 246 rendered lines, each entry
+    // well under the 400-character per-edit truncation.
+    const body = Array.from({ length: 40 }, (_, i) => `l${i}`);
+    const params = {
+      edits: Array.from({ length: 6 }, (_, i) => ({
+        op: "replace",
+        pos: String(i),
+        lines: body,
+      })),
+    };
+
+    const display = generateFallbackContent("Edit", params)!;
+    expect(display.split("\n").length).toBeLessThanOrEqual(201);
+    expect(display).toContain("... (246 lines total)");
+
+    const copied = generateFallbackContent("Edit", params, { maxLines: null })!;
+    expect(copied.split("\n")).toHaveLength(246);
+    expect(copied).not.toContain("lines total");
+  });
+
+  it("leaves the old/new truncation marker semantics untouched", () => {
+    const out = generateFallbackContent("Edit", {
+      old_string: Array.from({ length: 150 }, (_, i) => `o${i}`).join("\n"),
+      new_string: Array.from({ length: 150 }, (_, i) => `n${i}`).join("\n"),
+    })!;
+    expect(out.split("\n")).toHaveLength(201);
+    expect(out.endsWith("... (300 lines total)")).toBe(true);
+  });
+});

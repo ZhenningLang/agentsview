@@ -66,6 +66,8 @@ func ExtractTextContent(
 					if tc.SkillName == "" {
 						tc.SkillName = block.Get("input.name").Str
 					}
+				default:
+					tc.SkillName = inferToolSkillName(name, tc.InputJSON)
 				}
 				toolCalls = append(toolCalls, tc)
 			}

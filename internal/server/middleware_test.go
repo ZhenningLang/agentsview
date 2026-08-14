@@ -146,6 +146,42 @@ func TestMiddlewareTimeout(t *testing.T) {
 	}
 }
 
+func TestHumaWriteTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		timeout    time.Duration
+		wantStatus int
+	}{
+		{"positive timeout", 10 * time.Millisecond, http.StatusServiceUnavailable},
+		{"zero disables timeout", 0, http.StatusOK},
+		{"negative disables timeout", -1 * time.Second, http.StatusOK},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			srv := testServer(t, tt.timeout, withHandlerDelay(50*time.Millisecond))
+			ln, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			port := ln.Addr().(*net.TCPAddr).Port
+			srv.SetPort(port)
+			ts := httptest.NewUnstartedServer(srv.Handler())
+			ts.Listener = ln
+			ts.Start()
+			t.Cleanup(ts.Close)
+
+			resp, err := ts.Client().Get(ts.URL + "/api/v1/stats")
+			require.NoError(t, err)
+			defer resp.Body.Close()
+			assert.Equal(t, tt.wantStatus, resp.StatusCode)
+			if tt.wantStatus == http.StatusServiceUnavailable {
+				assertTimeoutResponse(t, resp)
+			}
+		})
+	}
+}
+
 // parseCSP splits a Content-Security-Policy string into a map of
 // directive name -> source list.
 func parseCSP(csp string) map[string]string {

@@ -30,6 +30,9 @@ func (s *Server) withTimeout(
 			h(w, r)
 		}
 	}
+	if s.cfg.WriteTimeout <= 0 {
+		return http.HandlerFunc(inner)
+	}
 
 	handler := http.TimeoutHandler(
 		inner, s.cfg.WriteTimeout, msg,

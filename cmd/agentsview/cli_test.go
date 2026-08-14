@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -110,6 +113,33 @@ func TestOpenAPICommandEmitsSpec(t *testing.T) {
 	assert.Contains(t, spec.Paths["/api/v1/sessions/{id}/rename"], "patch")
 }
 
+func TestServeCommandsExposeWriteTimeout(t *testing.T) {
+	commands := [][]string{
+		{"serve"},
+		{"pg", "serve"},
+		{"duckdb", "serve"},
+	}
+	for _, path := range commands {
+		t.Run(strings.Join(path, " "), func(t *testing.T) {
+			cmd := newRootCommand()
+			for _, part := range path {
+				var next *cobra.Command
+				for _, child := range cmd.Commands() {
+					if child.Name() == part {
+						next = child
+						break
+					}
+				}
+				require.NotNil(t, next, "command %q", path)
+				cmd = next
+			}
+			flag := cmd.Flags().Lookup("write-timeout")
+			require.NotNil(t, flag)
+			assert.Equal(t, (30 * time.Second).String(), flag.DefValue)
+		})
+	}
+}
+
 func TestRootNoArgsShowsHelp(t *testing.T) {
 	out, err := executeCommand(newRootCommand())
 	require.NoError(t, err, "Execute")
@@ -171,6 +201,44 @@ func TestRootVersionFlag(t *testing.T) {
 	got, err := executeCommand(newRootCommand(), "--version")
 	require.NoError(t, err, "Execute")
 	assert.Contains(t, got, "agentsview ", "version output = %q", got)
+}
+
+func TestVersionJSONContractDoesNotRequireRuntimeState(t *testing.T) {
+	t.Setenv("AGENTSVIEW_DATA_DIR", filepath.Join(t.TempDir(), "not-a-dir"))
+	oldVersion, oldCommit, oldBuildDate := version, commit, buildDate
+	version, commit, buildDate = "v1.2.3", "abc123", "2026-07-12T14:30:00Z"
+	t.Cleanup(func() { version, commit, buildDate = oldVersion, oldCommit, oldBuildDate })
+
+	out, err := executeCommand(newRootCommand(), "version", "--json")
+	require.NoError(t, err)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &got), "stdout = %q", out)
+	assert.Equal(t, map[string]any{
+		"schema_version": float64(1),
+		"name":           "agentsview",
+		"version":        "v1.2.3",
+		"commit":         "abc123",
+		"build_date":     "2026-07-12T14:30:00Z",
+	}, got)
+}
+
+func TestVersionFormatJSONContract(t *testing.T) {
+	oldVersion, oldCommit, oldBuildDate := version, commit, buildDate
+	version, commit, buildDate = "v9", "deadbeef", "2026-08-13T00:00:00Z"
+	t.Cleanup(func() { version, commit, buildDate = oldVersion, oldCommit, oldBuildDate })
+
+	out, err := executeCommand(newRootCommand(), "version", "--format", "json")
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"schema_version":1,"name":"agentsview","version":"v9","commit":"deadbeef","build_date":"2026-08-13T00:00:00Z"}`, out)
+}
+
+func TestVersionHuman(t *testing.T) {
+	out, err := executeCommand(newRootCommand(), "version")
+	require.NoError(t, err)
+	assert.Contains(t, out, "agentsview ")
+	assert.Contains(t, out, "commit ")
+	assert.Contains(t, out, "built ")
 }
 
 func TestNormalizeLegacyLongFlags(t *testing.T) {

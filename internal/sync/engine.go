@@ -107,6 +107,7 @@ type Engine struct {
 	// write path. Exposed via PhaseStats() so a CLI driver can log the
 	// totals after a sync pass completes.
 	phaseStats PhaseStats
+	anomalies  anomalyAccumulator
 }
 
 // PhaseStats returns the engine's phase counter. The values reflect only
@@ -276,12 +277,17 @@ func (e *Engine) SyncPaths(paths []string) {
 	if len(files) == 0 {
 		e.syncMu.Lock()
 		e.phaseStats.Reset()
+		e.anomalies.reset()
+		e.mu.Lock()
+		e.lastSyncStats = SyncStats{}
+		e.mu.Unlock()
 		e.syncMu.Unlock()
 		return
 	}
 
 	e.syncMu.Lock()
 	e.phaseStats.Reset()
+	e.anomalies.reset()
 	// Defers run LIFO: the emit closure (declared first) runs AFTER
 	// syncMu.Unlock, so an Emitter implementation cannot widen the
 	// critical section or deadlock by re-entering sync code. The
@@ -299,6 +305,7 @@ func (e *Engine) SyncPaths(paths []string) {
 		context.Background(), results, len(files), len(files), nil,
 		syncWriteDefault,
 	)
+	e.anomalies.applyTo(&stats)
 	e.persistSkipCache()
 
 	e.mu.Lock()
@@ -1528,6 +1535,8 @@ func (e *Engine) ResyncAll(
 	ctx context.Context, onProgress ProgressFunc,
 ) (stats SyncStats) {
 	e.syncMu.Lock()
+	e.phaseStats.Reset()
+	e.anomalies.reset()
 	// Defers LIFO: Unlock runs before emit.
 	defer func() {
 		if stats.Synced > 0 {
@@ -2053,13 +2062,15 @@ func (e *Engine) SyncAllSince(
 func (e *Engine) syncAllLocked(
 	ctx context.Context, onProgress ProgressFunc, since time.Time,
 	writeMode syncWriteMode, auditSameStat bool,
-) SyncStats {
+) (stats SyncStats) {
 	if ctx.Err() != nil {
 		return SyncStats{Aborted: true}
 	}
 
 	e.recordSyncStarted()
 	e.phaseStats.Reset()
+	e.anomalies.reset()
+	defer func() { e.anomalies.applyTo(&stats) }()
 
 	t0 := time.Now()
 
@@ -2117,7 +2128,7 @@ func (e *Engine) syncAllLocked(
 
 	tWorkers := time.Now()
 	results := e.startWorkers(ctx, all, auditSameStat)
-	stats := e.collectAndBatch(
+	stats = e.collectAndBatch(
 		ctx, results, len(all), progressTotal, onProgress, writeMode,
 	)
 	if verbose {
@@ -2520,7 +2531,9 @@ func (e *Engine) syncAllLocked(
 
 	e.mu.Lock()
 	e.lastSync = time.Now()
-	e.lastSyncStats = stats
+	persisted := stats
+	e.anomalies.applyTo(&persisted)
+	e.lastSyncStats = persisted
 	e.mu.Unlock()
 
 	e.recordSyncFinished()
@@ -5587,6 +5600,9 @@ func (e *Engine) prepareSessionWrite(
 	}
 	s.IsAutomated = isAutomatedFromSession(s)
 	e.recordValidation(s.ID, string(pw.sess.Agent), stats)
+	e.anomalies.recordMalformedLines(
+		string(pw.sess.Agent), pw.sess.File.Path, s.ParserMalformedLines,
+	)
 
 	if e.shouldPreserveOpenCodeArchive(
 		pw.sess.Agent, pw.sess.File.Path, s.ID,
@@ -5604,6 +5620,13 @@ func (e *Engine) recordValidation(
 		return
 	}
 	e.phaseStats.recordValidation(stats)
+	e.anomalies.recordSanitize(SanitizeStats{
+		ControlCharsStripped: stats.ControlCharsStripped,
+		ModelClamped:         stats.ModelClamped,
+		TokensClamped:        stats.TokensClamped,
+		RoleCoerced:          stats.RoleCoerced,
+		TimestampsBlanked:    stats.TimestampsBlanked,
+	})
 	log.Printf(
 		"parser validation session=%s agent=%s controls=%d models=%d tokens=%d roles=%d timestamps=%d",
 		sessionID, agent,
@@ -5745,6 +5768,9 @@ func (e *Engine) writeIncremental(
 		e.blockedResultCategories,
 	)
 	stats := db.ValidateAndSanitize(nil, dbMsgs, nil)
+	// Incremental parsing has message deltas, not parser session summaries, so
+	// malformed-line anomaly counts remain full-parse only. This path still
+	// reports sanitize anomalies for appended messages.
 	e.recordValidation(inc.sessionID, string(inc.agent), stats)
 
 	// Adjust counts for blocked-category filtering.

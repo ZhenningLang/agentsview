@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -99,16 +100,16 @@ func insertCSToolCall(
 func insertCSToolResultEvent(
 	t *testing.T, store *Store,
 	sessionID string, messageOrdinal, callIndex, eventIndex int,
-	toolUseID, content string,
+	toolUseID, content, timestamp string,
 ) {
 	t.Helper()
 	_, err := store.DB().Exec(`
 		INSERT INTO tool_result_events
 			(session_id, tool_call_message_ordinal, call_index,
-			 tool_use_id, source, status, content, event_index)
-		VALUES ($1, $2, $3, $4, 'stdout', 'ok', $5, $6)
+			 tool_use_id, source, status, content, event_index, timestamp)
+		VALUES ($1, $2, $3, $4, 'stdout', 'ok', $5, $6, $7::timestamptz)
 		ON CONFLICT DO NOTHING`,
-		sessionID, messageOrdinal, callIndex, toolUseID, content, eventIndex,
+		sessionID, messageOrdinal, callIndex, toolUseID, content, eventIndex, timestamp,
 	)
 	require.NoError(t, err, "insert tool_result_event")
 }
@@ -139,6 +140,98 @@ func TestPGSearchContentSubstringMessages(t *testing.T) {
 	assert.Equal(t, 0, m.Ordinal)
 	assert.Equal(t, "user", m.Role)
 	assert.NotEmpty(t, m.Snippet)
+}
+
+func TestPGSearchContentMatchTimestampIsRFC3339(t *testing.T) {
+	store := setupContentSearch(t)
+	wants := map[string]time.Time{
+		"message":        time.Date(2026, 3, 22, 10, 15, 30, 123456000, time.UTC),
+		"tool_input":     time.Date(2026, 3, 22, 10, 16, 30, 123456000, time.UTC),
+		"result_content": time.Date(2026, 3, 22, 10, 17, 30, 123456000, time.UTC),
+		"result_event":   time.Date(2026, 3, 22, 10, 18, 30, 123456000, time.UTC),
+	}
+	insertCSSession(t, store, "cs-ts", "proj", "claude",
+		"2026-03-22T10:00:00Z", "2026-03-22T10:30:00Z")
+	insertCSMessage(t, store, "cs-ts", 0, "assistant",
+		"running timestamp tool", wants["message"].Format(time.RFC3339Nano), false)
+	insertCSMessage(t, store, "cs-ts", 1, "assistant",
+		"running input timestamp tool", wants["tool_input"].Format(time.RFC3339Nano), false)
+	insertCSToolCall(t, store, "cs-ts", 0, 0,
+		"Bash", "", `{"command":"unused"}`, "TSRESULTNEEDLE output")
+	insertCSToolCall(t, store, "cs-ts", 1, 0,
+		"Bash", "ts-tu-input", `{"command":"TSNEEDLE"}`, "")
+	insertCSMessage(t, store, "cs-ts", 2, "assistant",
+		"running event timestamp tool", wants["result_event"].Format(time.RFC3339Nano), false)
+	insertCSToolCall(t, store, "cs-ts", 2, 0,
+		"Bash", "ts-tu-event", `{"command":"unused"}`, "unused result")
+	insertCSToolResultEvent(t, store, "cs-ts", 2, 0, 0,
+		"ts-tu-event", "TSEVENTNEEDLE output", wants["result_event"].Format(time.RFC3339Nano))
+
+	tests := []struct {
+		name     string
+		pattern  string
+		mode     string
+		sources  []string
+		location string
+		want     time.Time
+	}{
+		{
+			name:     "message substring",
+			pattern:  "timestamp tool",
+			mode:     "substring",
+			sources:  []string{"messages"},
+			location: "message",
+			want:     wants["message"],
+		},
+		{
+			name:     "tool input substring",
+			pattern:  "TSNEEDLE",
+			mode:     "substring",
+			sources:  []string{"tool_input"},
+			location: "tool_input",
+			want:     wants["tool_input"],
+		},
+		{
+			name:     "tool result content substring",
+			pattern:  "TSRESULTNEEDLE",
+			mode:     "substring",
+			sources:  []string{"tool_result"},
+			location: "tool_result",
+			want:     wants["message"],
+		},
+		{
+			name:     "tool result event substring",
+			pattern:  "TSEVENTNEEDLE",
+			mode:     "substring",
+			sources:  []string{"tool_result"},
+			location: "tool_result",
+			want:     wants["result_event"],
+		},
+		{
+			name:     "regex",
+			pattern:  "TSNEEDLE",
+			mode:     "regex",
+			sources:  []string{"tool_input", "tool_result"},
+			location: "tool_input",
+			want:     wants["tool_input"],
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := store.SearchContent(context.Background(), db.ContentSearchFilter{
+				Pattern: tt.pattern, Mode: tt.mode,
+				Sources: tt.sources, Limit: 10, IncludeOneShot: true,
+			})
+			require.NoError(t, err)
+			require.NotEmpty(t, got.Matches)
+			m := got.Matches[0]
+			assert.Equal(t, tt.location, m.Location)
+			parsed, err := time.Parse(time.RFC3339Nano, m.Timestamp)
+			require.NoError(t, err, "timestamp %q", m.Timestamp)
+			assert.True(t, parsed.Equal(tt.want), "timestamp = %s want %s", parsed, tt.want)
+		})
+	}
 }
 
 // TestPGSearchContentRedactsStraddlingSecret pins the PG default (non-reveal)
@@ -227,7 +320,7 @@ func TestPGSearchContentToolResultEvents(t *testing.T) {
 	insertCSToolCall(t, store, "cs-tre1", 0, 0,
 		"Bash", "tu1", `{"command":"ls"}`, "")
 	insertCSToolResultEvent(t, store, "cs-tre1", 0, 0, 0,
-		"tu1", "EVENTNEEDLE in event output")
+		"tu1", "EVENTNEEDLE in event output", "2026-05-01T10:00:00Z")
 
 	ctx := context.Background()
 	got, err := store.SearchContent(ctx, db.ContentSearchFilter{
@@ -253,7 +346,7 @@ func TestPGSearchContentToolResultDedup(t *testing.T) {
 		"Bash", "tu1", `{"command":"echo"}`,
 		"DUPNEEDLE in result_content")
 	insertCSToolResultEvent(t, store, "cs-dup1", 0, 0, 0,
-		"tu1", "DUPNEEDLE in event")
+		"tu1", "DUPNEEDLE in event", "2026-05-01T10:00:00Z")
 
 	ctx := context.Background()
 	got, err := store.SearchContent(ctx, db.ContentSearchFilter{
@@ -441,7 +534,7 @@ func TestPGSearchContentEmptyToolUseIDNotSuppressed(t *testing.T) {
 	// Call 1: empty tool_use_id, result delivered as an event.
 	insertCSToolCall(t, store, "cs-empti", 0, 1,
 		"Bash", "", `{"command":"b"}`, "")
-	insertCSToolResultEvent(t, store, "cs-empti", 0, 1, 0, "", "FINDB event")
+	insertCSToolResultEvent(t, store, "cs-empti", 0, 1, 0, "", "FINDB event", "2026-05-01T10:00:00Z")
 
 	ctx := context.Background()
 	for _, mode := range []string{"substring", "regex"} {
@@ -548,19 +641,21 @@ func TestPGContentSearchTrigramIndexUpgrade(t *testing.T) {
 		"EnsureSchema must reapply fastupdate=off to a pre-existing index")
 }
 
-// TestPGSearchContentRegex verifies regex mode.
+// TestPGSearchContentRegex verifies regex mode. The fixture token is
+// deliberately not shaped like a real credential; see the comment on the SQLite
+// mirror TestSearchContentRegex in internal/db/search_content_test.go.
 func TestPGSearchContentRegex(t *testing.T) {
 	store := setupContentSearch(t)
 	insertCSSession(t, store, "cs-re1", "proj", "claude",
 		"2026-05-01T10:00:00Z", "2026-05-01T10:30:00Z")
 	insertCSMessage(t, store, "cs-re1", 0, "user",
-		"key AKIA7QHWN2DKR4FYPLJM here", "2026-05-01T10:00:00Z", false)
+		"key EXAMPLEKEY0A1B2C3D4E here", "2026-05-01T10:00:00Z", false)
 	insertCSMessage(t, store, "cs-re1", 1, "user",
 		"no secrets in this line", "2026-05-01T10:00:01Z", false)
 
 	ctx := context.Background()
 	got, err := store.SearchContent(ctx, db.ContentSearchFilter{
-		Pattern: `AKIA[0-9A-Z]{16}`, Mode: "regex",
+		Pattern: `EXAMPLEKEY[0-9A-Z]{10}`, Mode: "regex",
 		Sources: []string{"messages"}, Limit: 50,
 	})
 	require.NoError(t, err, "SearchContent regex")
@@ -689,7 +784,7 @@ func TestPGSearchContentIncludeChildren(t *testing.T) {
 	insertCSToolCall(t, store, "ic-child2", 0, 0,
 		"Bash", "child2-tu1", `{"command":"ls"}`, "")
 	insertCSToolResultEvent(t, store, "ic-child2", 0, 0, 0,
-		"child2-tu1", "CHILDNEEDLE in event output")
+		"child2-tu1", "CHILDNEEDLE in event output", "2026-05-01T10:00:00Z")
 
 	ctx := context.Background()
 

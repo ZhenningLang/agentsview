@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -367,6 +368,8 @@ func newUsageStatuslineCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&cfg.Agent, "agent", "", "Filter by agent name")
+	cmd.Flags().StringVar(&cfg.Format, "format", "human", "Output format: human or json")
+	cmd.Flags().BoolVar(&cfg.JSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&cfg.Offline, "offline", false, "Use fallback pricing only")
 	cmd.Flags().BoolVar(&cfg.NoSync, "no-sync", false, "Skip on-demand sync before querying")
 	return cmd
@@ -567,16 +570,37 @@ func newDuckDBQuackCommand() *cobra.Command {
 }
 
 func newVersionCommand() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:          "version",
 		Short:        "Show version information",
 		GroupID:      groupMeta,
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
+			if outputFormat(cmd) == "json" {
+				_ = json.NewEncoder(cmd.OutOrStdout()).Encode(versionOutput{
+					SchemaVersion: 1,
+					Name:          "agentsview",
+					Version:       version,
+					Commit:        commit,
+					BuildDate:     buildDate,
+				})
+				return
+			}
 			printVersion(cmd.OutOrStdout())
 		},
 	}
+	cmd.Flags().String("format", "human", "Output format: human or json")
+	cmd.Flags().Bool("json", false, "Output as JSON")
+	return cmd
+}
+
+type versionOutput struct {
+	SchemaVersion int    `json:"schema_version"`
+	Name          string `json:"name"`
+	Version       string `json:"version"`
+	Commit        string `json:"commit"`
+	BuildDate     string `json:"build_date"`
 }
 
 func printVersion(w io.Writer) {

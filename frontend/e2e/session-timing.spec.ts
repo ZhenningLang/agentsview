@@ -40,13 +40,22 @@ test.describe("Session Vital Signs", () => {
   test("renders all four sections", async ({ page }) => {
     await gotoShowcase(page);
 
-    // Section headers live inside `.v-h > span` (text-only spans),
-    // not semantic <h*> headings, so we match by text on .v-h
-    // instead of the plan-sketch's `getByRole("heading")`.
-    const headers = page
-      .locator(".v-section .v-h > span:first-child")
-      .filter({ hasText: /^(Session|Time spent|Timeline|Calls)$/ });
-    await expect(headers).toHaveCount(4);
+    // Section headers are `.v-h` elements, not semantic <h*> headings, so we
+    // match by text instead of the plan-sketch's `getByRole("heading")`.
+    // Calls is a `<button class="v-h">` disclosure and the rest are `<header>`,
+    // so the label lives in the first child of `.v-h` in both shapes. Pin the
+    // exact labels and their order rather than a substring filter.
+    const headerLabels = await page
+      .locator(".v-section .v-h")
+      .evaluateAll((els) =>
+        els.map((el) => (el.firstElementChild?.textContent ?? "").trim()),
+      );
+    expect(headerLabels).toEqual([
+      "Session",
+      "Time spent",
+      "Timeline",
+      "Calls",
+    ]);
 
     await expect(
       page.locator(".v-section .v-h", { hasText: "Session" }),
@@ -59,6 +68,75 @@ test.describe("Session Vital Signs", () => {
     ).toBeVisible();
     await expect(
       page.locator(".v-section .v-h", { hasText: "Calls" }),
+    ).toBeVisible();
+  });
+
+  // The Calls header carries two class contracts on one element (`.v-h` for
+  // section typography, `.v-h-toggle` for the disclosure affordance). Equal
+  // specificity means the later rule silently wins, so this pins the rendered
+  // result rather than the DOM shape — no jsdom tier can see it, because
+  // component CSS is not injected there.
+  test("Calls disclosure keeps the section-header typography", async ({
+    page,
+  }) => {
+    await gotoShowcase(page);
+
+    const styleOf = (label: string) =>
+      page
+        .locator(".v-section .v-h")
+        .filter({ hasText: label })
+        .first()
+        .evaluate((el) => {
+          const cs = getComputedStyle(el);
+          return {
+            fontSize: cs.fontSize,
+            fontWeight: cs.fontWeight,
+            fontFamily: cs.fontFamily,
+            textTransform: cs.textTransform,
+            letterSpacing: cs.letterSpacing,
+            color: cs.color,
+          };
+        });
+
+    const timeline = await styleOf("Timeline");
+    const calls = await styleOf("Calls");
+
+    expect(calls).toEqual(timeline);
+    // Guard against both headers drifting together into the parent's defaults.
+    expect(timeline.textTransform).toBe("uppercase");
+    expect(timeline.fontSize).toBe("9px");
+  });
+
+  test("Calls detail collapses, persists across reload, and restores", async ({
+    page,
+  }) => {
+    await gotoShowcase(page);
+
+    const callsHeader = page.locator(".v-section .v-h", { hasText: "Calls" });
+    await expect(callsHeader).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator(".scale-axis")).toBeVisible();
+
+    await callsHeader.click();
+    await expect(callsHeader).toHaveAttribute("aria-expanded", "false");
+    // The aggregate summary survives; only the axis and rows go away.
+    await expect(callsHeader).toContainText("call");
+    await expect(page.locator(".scale-axis")).toHaveCount(0);
+    await expect(page.locator(".calls")).toHaveCount(0);
+
+    await page.reload();
+    await expect(page.locator("aside.vitals")).toBeVisible({ timeout: 5_000 });
+    const afterReload = page.locator(".v-section .v-h", { hasText: "Calls" });
+    await expect(afterReload).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator(".calls")).toHaveCount(0);
+
+    await afterReload.click();
+    await expect(afterReload).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator(".calls .call").first()).toBeVisible({
+      timeout: 5_000,
+    });
+    // Existing call interactions still work after restoring the detail.
+    await expect(
+      page.locator(".cgroup .call button.chev").first(),
     ).toBeVisible();
   });
 

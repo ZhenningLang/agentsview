@@ -7,6 +7,7 @@
   import { categoryToken } from "../../utils/categoryToken.js";
   import { displayToolName } from "../../utils/toolDisplay.js";
   import { ui } from "../../stores/ui.svelte.js";
+  import { ChevronRightIcon } from "../../icons.js";
   import type {
     CallTiming,
     SessionTiming,
@@ -453,97 +454,112 @@
 
     {#if timing.turns.length > 0}
       <section class="v-section">
-        <header class="v-h">
-          <span>Calls</span>
+        <button
+          type="button"
+          class="v-h v-h-toggle"
+          aria-expanded={ui.vitalsCallsExpanded}
+          onclick={() => ui.toggleVitalsCalls()}
+        >
+          <span class="v-h-label">
+            <ChevronRightIcon
+              size="10"
+              strokeWidth="2.4"
+              aria-hidden="true"
+              class={ui.vitalsCallsExpanded ? "v-chevron open" : "v-chevron"}
+            />
+            <span>Calls</span>
+          </span>
           <span class="v-meta">
             {timing.tool_call_count} call{timing.tool_call_count === 1
               ? ""
               : "s"}{timing.running ? " · 1 running" : ""}
           </span>
-        </header>
-        <div class="scale-axis">
-          <span>0</span>
-          <span>{formatDuration(timing.total_duration_ms / 4)}</span>
-          <span>{formatDuration(timing.total_duration_ms / 2)}</span>
-          <span
-            >{formatDuration(
-              (3 * timing.total_duration_ms) / 4,
-            )}</span
-          >
-          <span class:now={timing.running}
-            >{timing.running
-              ? "now"
-              : formatDuration(timing.total_duration_ms)}</span
-          >
-        </div>
-        <div class="calls">
-          {#each timing.turns as turn (turn.message_id)}
-            {@const isLive =
-              turn.duration_ms == null &&
-              isLastTurn(turn) &&
-              !!timing.running}
-            {@const liveElapsed = isLive ? liveElapsedFor(turn) : undefined}
-            {#if turn.calls.length === 1}
-              {@const call = turn.calls[0]!}
-              <CallRow
-                {call}
-                barWidthPct={callBarPct(call, timing)}
-                isSlow={isSlowCall(call)}
-                {isLive}
-                liveDurationMs={liveElapsed}
-                dimmed={categoryFilter !== null &&
-                  call.category !== categoryFilter}
-                isSubagentExpanded={!!call.subagent_session_id &&
-                  expandedSubagentIds.has(call.subagent_session_id)}
-                onClick={() => ui.scrollToOrdinal(turn.ordinal)}
-                onChevronClick={() => {
-                  void toggleSubagent(call);
-                }}
-              />
-              {#if call.subagent_session_id && expandedSubagentIds.has(call.subagent_session_id)}
-                {@const subT = subagentTimings.get(
-                  call.subagent_session_id,
-                )}
-                {#if subT}
-                  <SubagentCalls
-                    timing={subT}
-                    barScalePct={(c) => callBarPct(c, subT)}
-                    {categoryFilter}
-                  />
+        </button>
+        {#if ui.vitalsCallsExpanded}
+          <div class="scale-axis">
+            <span>0</span>
+            <span>{formatDuration(timing.total_duration_ms / 4)}</span>
+            <span>{formatDuration(timing.total_duration_ms / 2)}</span>
+            <span
+              >{formatDuration(
+                (3 * timing.total_duration_ms) / 4,
+              )}</span
+            >
+            <span class:now={timing.running}
+              >{timing.running
+                ? "now"
+                : formatDuration(timing.total_duration_ms)}</span
+            >
+          </div>
+          <div class="calls">
+            {#each timing.turns as turn (turn.message_id)}
+              {@const isLive =
+                turn.duration_ms == null &&
+                isLastTurn(turn) &&
+                !!timing.running}
+              {@const liveElapsed = isLive ? liveElapsedFor(turn) : undefined}
+              {#if turn.calls.length === 1}
+                {@const call = turn.calls[0]!}
+                <CallRow
+                  {call}
+                  barWidthPct={callBarPct(call, timing)}
+                  isSlow={isSlowCall(call)}
+                  {isLive}
+                  liveDurationMs={liveElapsed}
+                  dimmed={categoryFilter !== null &&
+                    call.category !== categoryFilter}
+                  isSubagentExpanded={!!call.subagent_session_id &&
+                    expandedSubagentIds.has(call.subagent_session_id)}
+                  onClick={() => ui.scrollToOrdinal(turn.ordinal)}
+                  onChevronClick={() => {
+                    void toggleSubagent(call);
+                  }}
+                />
+                {#if call.subagent_session_id && expandedSubagentIds.has(call.subagent_session_id)}
+                  {@const subT = subagentTimings.get(
+                    call.subagent_session_id,
+                  )}
+                  {#if subT}
+                    <SubagentCalls
+                      timing={subT}
+                      barScalePct={(c) => callBarPct(c, subT)}
+                      {categoryFilter}
+                    />
+                  {/if}
                 {/if}
+              {:else}
+                <CallGroup
+                  calls={turn.calls}
+                  groupDurationMs={turn.duration_ms}
+                  barScalePct={(c) => callBarPct(c, timing)}
+                  headerBarPct={turnHeaderBarPct(turn, timing)}
+                  {isLive}
+                  liveDurationMs={liveElapsed}
+                  isSlow={isSlowCall}
+                  dimmed={categoryFilter !== null &&
+                    turn.primary_category !== categoryFilter}
+                  onCallClick={() => ui.scrollToOrdinal(turn.ordinal)}
+                  onSubagentExpand={(c) => {
+                    void toggleSubagent(c);
+                  }}
+                  {expandedSubagentIds}
+                />
+                {#each turn.calls.filter((c) => !!c.subagent_session_id && expandedSubagentIds.has(c.subagent_session_id)) as expandedCall (expandedCall.tool_use_id)}
+                  {@const subT = subagentTimings.get(
+                    expandedCall.subagent_session_id!,
+                  )}
+                  {#if subT}
+                    <SubagentCalls
+                      timing={subT}
+                      barScalePct={(c) => callBarPct(c, subT)}
+                      {categoryFilter}
+                    />
+                  {/if}
+                {/each}
               {/if}
-            {:else}
-              <CallGroup
-                calls={turn.calls}
-                groupDurationMs={turn.duration_ms}
-                barScalePct={(c) => callBarPct(c, timing)}
-                headerBarPct={turnHeaderBarPct(turn, timing)}
-                {isLive}
-                liveDurationMs={liveElapsed}
-                isSlow={isSlowCall}
-                dimmed={categoryFilter !== null &&
-                  turn.primary_category !== categoryFilter}
-                onCallClick={() => ui.scrollToOrdinal(turn.ordinal)}
-                onSubagentExpand={(c) => {
-                  void toggleSubagent(c);
-                }}
-                {expandedSubagentIds}
-              />
-              {#each turn.calls.filter((c) => !!c.subagent_session_id && expandedSubagentIds.has(c.subagent_session_id)) as expandedCall (expandedCall.tool_use_id)}
-                {@const subT = subagentTimings.get(
-                  expandedCall.subagent_session_id!,
-                )}
-                {#if subT}
-                  <SubagentCalls
-                    timing={subT}
-                    barScalePct={(c) => callBarPct(c, subT)}
-                    {categoryFilter}
-                  />
-                {/if}
-              {/each}
-            {/if}
-          {/each}
-        </div>
+            {/each}
+          </div>
+        {/if}
       </section>
     {/if}
   {:else if sessionTiming.error}
@@ -625,6 +641,48 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+  }
+
+  /* Calls disclosure: the header is a full-width button so the whole row is a
+     keyboard-reachable target, but it must still read as a section header.
+     `.v-h` and `.v-h-toggle` sit on the same element at equal specificity, so
+     this rule must not restate any typography longhand — it would win on source
+     order and silently drop `.v-h`'s 9px/500/uppercase/letter-spacing/muted
+     look. Only `font-family` is stated, because the UA button sheet overrides
+     the inherited family and `.v-h` does not set one. */
+  .v-h-toggle {
+    width: 100%;
+    background: transparent;
+    border: none;
+    padding: 2px 2px;
+    margin-left: -2px;
+    border-radius: var(--radius-sm, 4px);
+    cursor: pointer;
+    font-family: inherit;
+  }
+
+  .v-h-toggle:hover {
+    color: var(--text-secondary);
+    background: var(--bg-surface-hover);
+  }
+
+  .v-h-toggle:focus-visible {
+    outline: 1px solid var(--accent-blue);
+    outline-offset: 1px;
+  }
+
+  .v-h-label {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .v-h-label :global(.v-chevron) {
+    transition: transform 0.12s ease;
+  }
+
+  .v-h-label :global(.v-chevron.open) {
+    transform: rotate(90deg);
   }
 
   .v-meta {

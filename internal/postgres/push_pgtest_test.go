@@ -193,6 +193,67 @@ func TestPushNestedToolFingerprintRepairsDirtyPGAndThenNoOps(t *testing.T) {
 	assert.Zero(t, third.MessagesPushed)
 }
 
+func TestPushPreservesInferredSkillName(t *testing.T) {
+	pgURL := testPGURL(t)
+	const schema = "agentsview_push_inferred_skill_test"
+	pg, err := Open(pgURL, schema, true)
+	require.NoError(t, err)
+	defer pg.Close()
+
+	ctx := context.Background()
+	_, err = pg.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`)
+	require.NoError(t, err)
+	require.NoError(t, EnsureSchema(ctx, pg, schema))
+
+	localDB, err := db.Open(filepath.Join(t.TempDir(), "local.db"))
+	require.NoError(t, err)
+	defer localDB.Close()
+	syncer := &Sync{pg: pg, local: localDB, machine: "test-machine", schema: schema, schemaDone: true}
+
+	const sessionID = "pg-inferred-skill"
+	started := "2026-01-01T00:00:00Z"
+	require.NoError(t, localDB.UpsertSession(db.Session{
+		ID: sessionID, Project: "p", Machine: "test-machine", Agent: "codex",
+		CreatedAt: started, StartedAt: &started, MessageCount: 1,
+	}))
+	require.NoError(t, localDB.InsertMessages([]db.Message{{
+		SessionID: sessionID, Ordinal: 0,
+		Role: "assistant", Content: "tool", ContentLength: 4,
+		HasToolUse: true,
+		ToolCalls: []db.ToolCall{
+			{
+				ToolName: "exec_command", Category: "Bash", ToolUseID: "call_1",
+				InputJSON: `{"cmd":"cat skills/pg/SKILL.md"}`,
+				SkillName: "pg-skill",
+			},
+			{
+				ToolName: "exec_command", Category: "Bash", ToolUseID: "call_empty",
+				InputJSON: `{"cmd":"cat README.md"}`,
+			},
+		},
+	}}))
+	require.NoError(t, localDB.ReplaceSkills(ctx, []db.Skill{{
+		Name: "pg-skill", Domain: "test", Role: "canonical", PromptTokens: 13,
+	}}))
+
+	result, err := syncer.Push(ctx, false, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, result.SessionsPushed)
+
+	store := &Store{pg: pg}
+	msgs, err := store.GetAllMessages(ctx, sessionID)
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	require.Len(t, msgs[0].ToolCalls, 2)
+	assert.Equal(t, "pg-skill", msgs[0].ToolCalls[0].SkillName)
+	assert.Empty(t, msgs[0].ToolCalls[1].SkillName)
+	skill, err := store.GetSkill(ctx, "pg-skill")
+	require.NoError(t, err)
+	require.NotNil(t, skill)
+	assert.Equal(t, 1, skill.InvocationCount)
+	assert.Equal(t, 13, skill.TotalPromptTokens)
+}
+
 func TestPushExactMessageAndUsageFingerprintRepairsDirtyPGAndThenNoOps(t *testing.T) {
 	pgURL := testPGURL(t)
 	const schema = "agentsview_push_message_fingerprint_test"

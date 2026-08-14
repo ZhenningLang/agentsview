@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -109,6 +110,16 @@ type UsageStatuslineConfig struct {
 	Agent   string
 	Offline bool
 	NoSync  bool
+	Format  string
+	JSON    bool
+}
+
+type usageStatuslineOutput struct {
+	Date string `json:"date"`
+	Cost struct {
+		Microdollars int64 `json:"microdollars"`
+	} `json:"cost"`
+	Agent string `json:"agent,omitempty"`
 }
 
 func runUsageStatusline(cfg UsageStatuslineConfig) {
@@ -134,13 +145,44 @@ func runUsageStatusline(cfg UsageStatuslineConfig) {
 		os.Exit(1)
 	}
 
-	if cfg.Agent != "" {
-		fmt.Printf("%s today (%s)\n",
-			fmtCost(result.Totals.TotalCost), cfg.Agent)
-	} else {
-		fmt.Printf("%s today\n",
-			fmtCost(result.Totals.TotalCost))
+	report := usageStatuslineReport(today, result.Totals, cfg.Agent)
+	format := cfg.Format
+	if cfg.JSON {
+		format = "json"
 	}
+	if format == "json" {
+		if err := printUsageStatuslineJSON(os.Stdout, report); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if err := printUsageStatuslineHuman(os.Stdout, report); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func usageStatuslineReport(date string, totals db.UsageTotals, agent string) usageStatuslineOutput {
+	var out usageStatuslineOutput
+	out.Date = date
+	out.Cost.Microdollars = int64(math.Round(totals.TotalCost * 1_000_000))
+	out.Agent = agent
+	return out
+}
+
+func printUsageStatuslineJSON(w io.Writer, report usageStatuslineOutput) error {
+	return json.NewEncoder(w).Encode(report)
+}
+
+func printUsageStatuslineHuman(w io.Writer, report usageStatuslineOutput) error {
+	cost := float64(report.Cost.Microdollars) / 1_000_000
+	if report.Agent != "" {
+		_, err := fmt.Fprintf(w, "%s today (%s)\n", fmtCost(cost), report.Agent)
+		return err
+	}
+	_, err := fmt.Fprintf(w, "%s today\n", fmtCost(cost))
+	return err
 }
 
 func applyCustomPricing(database *db.DB, cfg config.Config) {
@@ -264,6 +306,7 @@ func printSyncSummaryStderr(stats sync.SyncStats, t time.Time) {
 	summary += fmt.Sprintf(
 		" in %s\n", time.Since(t).Round(time.Millisecond),
 	)
+	summary += formatAnomalySummary(stats.Anomalies)
 	fmt.Fprint(os.Stderr, summary)
 	for _, w := range stats.Warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)

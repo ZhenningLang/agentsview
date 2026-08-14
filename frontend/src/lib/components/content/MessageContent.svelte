@@ -19,6 +19,7 @@
   import ToolBlock from "./ToolBlock.svelte";
   import ParallelGroup from "./ParallelGroup.svelte";
   import CodeBlock from "./CodeBlock.svelte";
+  import MermaidBlock from "./MermaidBlock.svelte";
   import SkillBlock from "./SkillBlock.svelte";
   import CopyButton from "../shared/CopyButton.svelte";
   import { ui } from "../../stores/ui.svelte.js";
@@ -27,6 +28,7 @@
   import { applyHighlight } from "../../utils/highlight.js";
   import { highlightCodeFences } from "../../utils/highlight-fences.js";
   import { renderMarkdown } from "../../utils/markdown.js";
+  import { isMermaidLabel } from "../../utils/mermaid.js";
   import { displayToolName } from "../../utils/toolDisplay.js";
   import { PinIcon } from "../../icons.js";
   import type { Session } from "../../api/types.js";
@@ -360,12 +362,18 @@
              (v1 simplification: text first, then all tools). -->
       {:else if segment.type === "code"}
         {#if hasSearchQuery || ui.isBlockVisible("code")}
-          <CodeBlock
-            content={segment.content}
-            language={segment.label}
-            highlightQuery={highlightQuery}
-            isCurrentHighlight={isCurrentHighlight}
-          />
+          {#if !hasSearchQuery && isMermaidLabel(segment.label)}
+            <!-- Search keeps the CodeBlock path on purpose: rendered SVG text
+                 is not a stable oracle for search marks. -->
+            <MermaidBlock content={segment.content} />
+          {:else}
+            <CodeBlock
+              content={segment.content}
+              language={segment.label}
+              highlightQuery={highlightQuery}
+              isCurrentHighlight={isCurrentHighlight}
+            />
+          {/if}
         {/if}
       {:else if segment.type === "skill"}
         {#if showText}
@@ -384,6 +392,7 @@
               q: highlightQuery,
               content: segment.content,
               current: isCurrentHighlight,
+              theme: ui.theme,
             }}
           >
             {@html renderMarkdown(segment.content)}

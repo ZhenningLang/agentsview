@@ -145,9 +145,13 @@ import (
 // user message in the sidebar instead of the command text.
 // Re-parsing rewrites first_message with the new logic.)
 //
+// (40: Codex/Cursor/public content tool parsers now infer skill_name from
+// read-like SKILL.md tool calls. This is parser data, not schema, but historical
+// rows need a safe full resync to backfill tool_calls.skill_name.)
+//
 // (17: Codex <skill> template filtering.)
 // (16: <turn_aborted> system messages.)
-const dataVersion = 39
+const dataVersion = 40
 
 const tokenCoverageRepairStatsKey = "token_coverage_repair_v1"
 

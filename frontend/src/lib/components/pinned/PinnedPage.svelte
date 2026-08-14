@@ -142,7 +142,10 @@
               {#if isExpanded && pin.content}
                 <div
                   class="pin-content-full markdown"
-                  use:highlightCodeFences={{ content: pin.content }}
+                  use:highlightCodeFences={{
+                    content: pin.content,
+                    theme: ui.theme,
+                  }}
                 >
                   {@html renderMarkdown(pin.content)}
                 </div>

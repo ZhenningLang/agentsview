@@ -59,8 +59,9 @@ func assertSessionProject(t *testing.T, database *db.DB, sessionID string, want 
 func runSyncAndAssert(t *testing.T, engine *sync.Engine, want sync.SyncStats) sync.SyncStats {
 	t.Helper()
 	stats := engine.SyncAll(context.Background(), nil)
+	opts := []cmp.Option{cmpopts.IgnoreUnexported(sync.SyncStats{})}
 	diff := cmp.Diff(want, stats,
-		cmpopts.IgnoreUnexported(sync.SyncStats{}),
+		opts...,
 	)
 	require.Empty(t, diff, "SyncAll() mismatch (-want +got):\n%s", diff)
 	return stats
@@ -99,6 +100,77 @@ func fetchMessages(t *testing.T, database *db.DB, sessionID string) []db.Message
 	msgs, err := database.GetAllMessages(context.Background(), sessionID)
 	require.NoError(t, err, "GetAllMessages(%q)", sessionID)
 	return msgs
+}
+
+func writeSyncSkillFixture(t *testing.T, root, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(root, dir, "SKILL.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte("---\nname: "+name+"\n---\n"), 0o644))
+	return path
+}
+
+func assertStoredSkillName(t *testing.T, database *db.DB, sessionID, want string) {
+	t.Helper()
+	assertStoredToolSkillName(t, database, sessionID, "exec_command", want)
+}
+
+func assertStoredToolSkillName(t *testing.T, database *db.DB, sessionID, toolName, want string) {
+	t.Helper()
+	msgs := fetchMessages(t, database, sessionID)
+	require.NotEmpty(t, msgs)
+	for _, msg := range msgs {
+		for _, call := range msg.ToolCalls {
+			if call.ToolName == toolName {
+				assert.Equal(t, want, call.SkillName)
+				return
+			}
+		}
+	}
+	require.Fail(t, toolName+" tool call not found", "session=%s", sessionID)
+}
+
+func clearStoredSkillName(t *testing.T, database *db.DB, sessionID string) {
+	t.Helper()
+	err := database.Update(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			"UPDATE tool_calls SET skill_name = NULL WHERE session_id = ?",
+			sessionID,
+		)
+		return err
+	})
+	require.NoError(t, err, "clear skill_name")
+}
+
+func setSQLiteUserVersion(t *testing.T, dbPath string, version int) {
+	t.Helper()
+	raw, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	_, err = raw.Exec(fmt.Sprintf("PRAGMA user_version = %d", version))
+	require.NoError(t, err)
+	require.NoError(t, raw.Close())
+}
+
+func readSQLiteUserVersion(t *testing.T, dbPath string) int {
+	t.Helper()
+	raw, err := sql.Open("sqlite3", dbPath)
+	require.NoError(t, err)
+	defer raw.Close()
+	var version int
+	require.NoError(t, raw.QueryRow("PRAGMA user_version").Scan(&version))
+	return version
+}
+
+func assertSkillInvocationCount(t *testing.T, database *db.DB, skillName string, want int) {
+	t.Helper()
+	require.NoError(t, database.ReplaceSkills(context.Background(), []db.Skill{{
+		Name: skillName, Domain: "test", Role: "canonical", PromptTokens: 7,
+	}}))
+	skill, err := database.GetSkill(context.Background(), skillName)
+	require.NoError(t, err)
+	require.NotNil(t, skill)
+	assert.Equal(t, want, skill.InvocationCount)
+	assert.Equal(t, want*7, skill.TotalPromptTokens)
 }
 
 // assertMessageRoles verifies that a session's messages have

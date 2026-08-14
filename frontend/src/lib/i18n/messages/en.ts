@@ -76,6 +76,27 @@ export const en: Record<string, string> = {
   "usage.recall_rerank": "Recall rerank",
   "usage.recall_rerank.desc": "Reranks recalled memories by relevance (optional; empty = no rerank).",
 
+  // session header actions
+  "header.copySourcePath": "Copy source file path",
+
+  // session detail breadcrumb badges
+  "session.malformedLines.one": "1 malformed line",
+  "session.malformedLines.other": "{count} malformed lines",
+  "session.malformedLines.tooltip.one":
+    "1 line in the source file could not be parsed",
+  "session.malformedLines.tooltip.other":
+    "{count} lines in the source file could not be parsed",
+
+  // keyboard shortcuts
+  "shortcuts.nextUserPrompt": "Next user prompt",
+  "shortcuts.prevUserPrompt": "Previous user prompt",
+
+  // tool block copy affordances
+  "toolBlock.copyInput": "Copy tool input",
+  "toolBlock.copiedInput": "Copied tool input",
+  "toolBlock.copyOutput": "Copy tool output",
+  "toolBlock.copiedOutput": "Copied tool output",
+
   // memory quality panel
   "quality.title": "Memory Pipeline Health",
   "quality.caveat": "Non-zero metrics only prove the instrumentation is wired, not that recall quality is good.",

@@ -29,6 +29,7 @@ type testEnv struct {
 	claudeDir         string
 	codexDir          string
 	cursorDir         string
+	droidDir          string
 	geminiDir         string
 	opencodeDir       string
 	kiloDir           string
@@ -110,6 +111,7 @@ func setupTestEnv(t *testing.T, opts ...TestEnvOption) *testEnv {
 
 	env := &testEnv{
 		geminiDir:         t.TempDir(),
+		droidDir:          t.TempDir(),
 		forgeDir:          t.TempDir(),
 		piebaldDir:        t.TempDir(),
 		iflowDir:          t.TempDir(),
@@ -172,6 +174,7 @@ func setupTestEnv(t *testing.T, opts ...TestEnvOption) *testEnv {
 			parser.AgentClaude:         claudeDirs,
 			parser.AgentCodex:          codexDirs,
 			parser.AgentCursor:         cursorDirs,
+			parser.AgentDroid:          {env.droidDir},
 			parser.AgentGemini:         {env.geminiDir},
 			parser.AgentKilo:           kiloDirs,
 			parser.AgentOpenCode:       opencodeDirs,
@@ -512,6 +515,13 @@ func (e *testEnv) writeCursorSession(
 		),
 		content,
 	)
+}
+
+func (e *testEnv) writeDroidSession(
+	t *testing.T, project, filename, content string,
+) string {
+	t.Helper()
+	return e.writeSession(t, e.droidDir, filepath.Join(project, filename), content)
 }
 
 // writeNestedCursorSession creates a Cursor transcript file under
@@ -1337,7 +1347,13 @@ func TestSyncEngineSkipCache(t *testing.T) {
 	)
 
 	// First sync — file parsed (empty session stored)
-	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1, Synced: 1, Skipped: 0})
+	runSyncAndAssert(t, env.engine, sync.SyncStats{
+		TotalSessions: 1, Synced: 1, Skipped: 0,
+		Anomalies: sync.AnomalyStats{
+			MalformedLinesByAgent: map[string]int{"claude": 1},
+			MalformedLinesTotal:   1,
+		},
+	})
 
 	// Second sync — unchanged mtime, should be skipped
 	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 0 + 1, Synced: 0, Skipped: 1})
@@ -1347,7 +1363,232 @@ func TestSyncEngineSkipCache(t *testing.T) {
 	os.Chtimes(path, time.Now(), time.Now())
 
 	// Third sync — mtime changed → re-synced (harmless)
-	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1 + 0, Synced: 1, Skipped: 0})
+	runSyncAndAssert(t, env.engine, sync.SyncStats{
+		TotalSessions: 1 + 0, Synced: 1, Skipped: 0,
+		Anomalies: sync.AnomalyStats{
+			MalformedLinesByAgent: map[string]int{"claude": 1},
+			MalformedLinesTotal:   1,
+		},
+	})
+}
+
+func TestSyncEngineReportsMalformedLineAnomalies(t *testing.T) {
+	env := setupTestEnv(t)
+
+	env.writeClaudeSession(
+		t, "test-proj", "anomaly-test.jsonl",
+		"not json at all\x00\x01",
+	)
+
+	stats := env.engine.SyncAll(context.Background(), nil)
+	assert.Equal(t, 1, stats.Anomalies.MalformedLinesTotal)
+	assert.Equal(t, 1, stats.Anomalies.MalformedLinesByAgent["claude"])
+	assert.True(t, stats.Anomalies.Sanitize.IsZero())
+
+	stats = env.engine.SyncAll(context.Background(), nil)
+	assert.True(t, stats.Anomalies.IsZero())
+}
+
+func TestSyncAllPersistsInferredSkillNameToSQLite(t *testing.T) {
+	env := setupTestEnv(t)
+	root := t.TempDir()
+	writeSyncSkillFixture(t, root, filepath.Join("skills", "sqlite"), "sqlite-skill")
+	uuid := "11111111-2222-3333-4444-555555555555"
+	content := testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON(uuid, root, "user", tsEarly),
+		testjsonl.CodexMsgJSON("user", "read skill", tsEarlyS1),
+		testjsonl.CodexFunctionCallArgsJSON("exec_command", map[string]any{
+			"cmd": "cat skills/sqlite/SKILL.md",
+		}, tsEarlyS5),
+	)
+	env.writeCodexSession(
+		t, filepath.Join("2024", "01", "15"),
+		"rollout-20240115-"+uuid+".jsonl", content,
+	)
+
+	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1, Synced: 1})
+	assertStoredSkillName(t, env.db, "codex:"+uuid, "sqlite-skill")
+	assertSkillInvocationCount(t, env.db, "sqlite-skill", 1)
+}
+
+func TestSyncAllPersistsCursorInferredSkillNameToSQLite(t *testing.T) {
+	env := setupTestEnv(t)
+	root := t.TempDir()
+	path := writeSyncSkillFixture(t, root, filepath.Join("skills", "cursor"), "cursor-skill")
+	content := strings.Join([]string{
+		"user:",
+		"read skill",
+		"assistant:",
+		"[Tool call] ReadFile",
+		"  path=" + path,
+	}, "\n")
+	env.writeCursorSession(
+		t, env.cursorDir, "Users-alice-code-proj", "cursor-skill.txt", content,
+	)
+
+	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1, Synced: 1})
+	assertStoredToolSkillName(t, env.db, "cursor:cursor-skill", "ReadFile", "cursor-skill")
+	assertSkillInvocationCount(t, env.db, "cursor-skill", 1)
+}
+
+func TestResyncAllBackfillsInferredSkillName(t *testing.T) {
+	env := setupTestEnv(t)
+	root := t.TempDir()
+	writeSyncSkillFixture(t, root, filepath.Join("skills", "resync"), "resync-skill")
+	uuid := "22222222-3333-4444-5555-666666666666"
+	content := testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON(uuid, root, "user", tsEarly),
+		testjsonl.CodexMsgJSON("user", "read skill", tsEarlyS1),
+		testjsonl.CodexFunctionCallArgsJSON("exec_command", map[string]any{
+			"cmd": "cat skills/resync/SKILL.md",
+		}, tsEarlyS5),
+	)
+	env.writeCodexSession(
+		t, filepath.Join("2024", "01", "15"),
+		"rollout-20240115-"+uuid+".jsonl", content,
+	)
+	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1, Synced: 1})
+
+	sessionID := "codex:" + uuid
+	clearStoredSkillName(t, env.db, sessionID)
+	require.NoError(t, env.db.SetSessionDataVersion(sessionID, db.CurrentDataVersion()-1))
+	assertStoredSkillName(t, env.db, sessionID, "")
+
+	stats := env.engine.ResyncAll(context.Background(), nil)
+	require.False(t, stats.Aborted, "ResyncAll aborted: %+v", stats)
+	assertStoredSkillName(t, env.db, sessionID, "resync-skill")
+	assert.Equal(t, db.CurrentDataVersion(), env.db.GetSessionDataVersion(sessionID))
+	assert.Equal(t, db.CurrentDataVersion(), readSQLiteUserVersion(t, env.db.Path()))
+	assertSkillInvocationCount(t, env.db, "resync-skill", 1)
+}
+
+func TestResyncAllBackfillsStaleArchiveAndStampsUserVersion(t *testing.T) {
+	env := setupTestEnv(t)
+	root := t.TempDir()
+	writeSyncSkillFixture(t, root, filepath.Join("skills", "archive"), "archive-skill")
+	uuid := "44444444-5555-6666-7777-888888888888"
+	content := testjsonl.JoinJSONL(
+		testjsonl.CodexSessionMetaJSON(uuid, root, "user", tsEarly),
+		testjsonl.CodexMsgJSON("user", "read skill", tsEarlyS1),
+		testjsonl.CodexFunctionCallArgsJSON("exec_command", map[string]any{
+			"cmd": "cat skills/archive/SKILL.md",
+		}, tsEarlyS5),
+	)
+	env.writeCodexSession(t, filepath.Join("2024", "01", "15"),
+		"rollout-20240115-"+uuid+".jsonl", content)
+	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 1, Synced: 1})
+
+	sessionID := "codex:" + uuid
+	clearStoredSkillName(t, env.db, sessionID)
+	require.NoError(t, env.db.Close())
+	setSQLiteUserVersion(t, env.db.Path(), db.CurrentDataVersion()-1)
+
+	reopened, err := db.Open(env.db.Path())
+	require.NoError(t, err)
+	// setupTestEnv registered a cleanup bound to the *db.DB it created, not to
+	// whatever env.db points at later. This is the only test that swaps the
+	// handle, so the replacement needs its own close or it keeps the archive
+	// file open and the temp-dir cleanup fails on Windows.
+	t.Cleanup(func() { _ = reopened.Close() })
+	env.db = reopened
+	env.engine = sync.NewEngine(env.db, sync.EngineConfig{
+		AgentDirs: map[parser.AgentType][]string{
+			parser.AgentClaude: {env.claudeDir},
+			parser.AgentCodex:  {env.codexDir},
+			parser.AgentCursor: {env.cursorDir},
+		},
+		Machine: "local",
+	})
+	require.True(t, env.db.NeedsResync())
+	assert.Equal(t, db.CurrentDataVersion()-1, readSQLiteUserVersion(t, env.db.Path()))
+
+	var progress []sync.Progress
+	stats := env.engine.ResyncAll(context.Background(), func(p sync.Progress) {
+		progress = append(progress, p)
+	})
+	require.False(t, stats.Aborted, "ResyncAll aborted: %+v", stats)
+	require.NotEmpty(t, progress)
+	for i := 1; i < len(progress); i++ {
+		assert.GreaterOrEqual(t, progress[i].SessionsDone, progress[i-1].SessionsDone)
+	}
+	assertStoredSkillName(t, env.db, sessionID, "archive-skill")
+	assert.Equal(t, db.CurrentDataVersion(), readSQLiteUserVersion(t, env.db.Path()))
+
+	reopenedAgain, err := db.Open(env.db.Path())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = reopenedAgain.Close() })
+	assert.False(t, reopenedAgain.NeedsResync())
+}
+
+func TestResyncAllSkillInferenceRetryResetsAnomaliesOnEarlyFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod read-only directory does not reliably block SQLite creation on Windows")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root can create temp DB in read-only directory")
+	}
+	env := setupTestEnv(t)
+	env.writeClaudeSession(t, "proj", "dirty.jsonl", "not json at all\x00\x01")
+	stats := env.engine.SyncAll(context.Background(), nil)
+	require.Equal(t, 1, stats.Anomalies.MalformedLinesTotal)
+	env.engine.PhaseStats().ValidationSessions.Store(1)
+
+	// Force db.Open(tempPath) to fail before ResyncAll reaches syncAllLocked.
+	dbDir := filepath.Dir(env.db.Path())
+	require.NoError(t, os.Chmod(dbDir, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(dbDir, 0o755) })
+
+	stats = env.engine.ResyncAll(context.Background(), nil)
+	require.True(t, stats.Aborted)
+	assert.True(t, stats.Anomalies.IsZero())
+	assert.Zero(t, env.engine.PhaseStats().ValidationSessions.Load())
+	assert.True(t, env.engine.LastSyncStats().Anomalies.IsZero())
+
+	require.NoError(t, os.Chmod(dbDir, 0o755))
+	stats = env.engine.ResyncAll(context.Background(), nil)
+	require.False(t, stats.Aborted, "retry ResyncAll aborted: %+v", stats)
+	assert.Equal(t, 1, stats.Anomalies.MalformedLinesTotal)
+}
+
+func TestSyncAnomaliesMalformedLinesAcrossAgentsAndReset(t *testing.T) {
+	env := setupTestEnv(t)
+	claudePath := env.writeClaudeSession(t, "proj", "bad.jsonl", "not json at all\x00\x01")
+	droidPath := env.writeDroidSession(
+		t, "-Users-alice-Projects-my-app", "bad-droid.jsonl",
+		"not json at all\x00\x01\n"+
+			`{"type":"session_start","id":"bad-droid","cwd":"/Users/alice/Projects/my-app"}`+"\n"+
+			`{"type":"message","id":"msg_user","timestamp":"2026-04-08T07:25:24.897Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}`+"\n",
+	)
+
+	stats := env.engine.SyncAll(context.Background(), nil)
+	assert.Equal(t, 2, stats.Anomalies.MalformedLinesTotal)
+	assert.Equal(t, 1, stats.Anomalies.MalformedLinesByAgent["claude"])
+	assert.Equal(t, 1, stats.Anomalies.MalformedLinesByAgent["droid"])
+
+	stats = env.engine.ResyncAll(context.Background(), nil)
+	assert.Equal(t, 2, stats.Anomalies.MalformedLinesTotal)
+	assert.Equal(t, 1, stats.Anomalies.MalformedLinesByAgent["claude"])
+	assert.Equal(t, 1, stats.Anomalies.MalformedLinesByAgent["droid"])
+
+	os.Remove(claudePath)
+	os.Remove(droidPath)
+	env.engine.SyncPaths([]string{filepath.Join(t.TempDir(), "ignored.txt")})
+	assert.True(t, env.engine.LastSyncStats().Anomalies.IsZero())
+}
+
+func TestSyncAnomaliesDedupesMalformedForkedSessionsBySource(t *testing.T) {
+	env := setupTestEnv(t)
+	env.writeClaudeSession(t, "proj", "fork-malformed.jsonl", "not json at all\n"+claudeForkFixture())
+
+	stats := env.engine.SyncAll(context.Background(), nil)
+	require.Equal(t, 2, stats.Synced, "fork fixture should produce two sessions")
+	assert.Equal(t, 1, stats.Anomalies.MalformedLinesTotal)
+	assert.Equal(t, 1, stats.Anomalies.MalformedLinesByAgent["claude"])
+
+	stats = env.engine.ResyncAll(context.Background(), nil)
+	require.Equal(t, 2, stats.Synced, "fork fixture should produce two sessions on resync")
+	assert.Equal(t, 1, stats.Anomalies.MalformedLinesTotal)
+	assert.Equal(t, 1, stats.Anomalies.MalformedLinesByAgent["claude"])
 }
 
 func TestSyncEngineFileAppend(t *testing.T) {
@@ -6158,6 +6399,14 @@ func TestIncrementalSync_ClaudeAppendSanitizesParserOutput(t *testing.T) {
 	log.SetOutput(&logs)
 	log.SetFlags(0)
 	env.engine.SyncPaths([]string{path})
+	pathStats := env.engine.LastSyncStats()
+	assert.Equal(t, sync.SanitizeStats{
+		ControlCharsStripped: 1,
+		ModelClamped:         1,
+		TokensClamped:        2,
+		TimestampsBlanked:    1,
+	}, pathStats.Anomalies.Sanitize)
+	assert.Equal(t, 5, pathStats.Anomalies.Sanitize.Total())
 	log.SetOutput(previousOutput)
 	log.SetFlags(previousFlags)
 

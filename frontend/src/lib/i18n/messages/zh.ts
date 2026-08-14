@@ -76,6 +76,25 @@ export const zh: Record<string, string> = {
   "usage.recall_rerank": "召回重排",
   "usage.recall_rerank.desc": "对召回的记忆做相关性重排(可选,留空则不重排)。",
 
+  // 会话头部操作
+  "header.copySourcePath": "复制源文件路径",
+
+  // 会话详情面包屑徽标
+  "session.malformedLines.one": "{count} 行无法解析",
+  "session.malformedLines.other": "{count} 行无法解析",
+  "session.malformedLines.tooltip.one": "源文件中有 {count} 行无法解析",
+  "session.malformedLines.tooltip.other": "源文件中有 {count} 行无法解析",
+
+  // 键盘快捷键
+  "shortcuts.nextUserPrompt": "下一条用户提问",
+  "shortcuts.prevUserPrompt": "上一条用户提问",
+
+  // 工具块复制
+  "toolBlock.copyInput": "复制工具输入",
+  "toolBlock.copiedInput": "已复制工具输入",
+  "toolBlock.copyOutput": "复制工具输出",
+  "toolBlock.copiedOutput": "已复制工具输出",
+
   // 记忆质量面板
   "quality.title": "Memory 机制运行",
   "quality.caveat": "非零指标只证明埋点接通,不代表召回质量达标。",

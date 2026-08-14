@@ -94,3 +94,60 @@ func TestListSessions_HasSecret(t *testing.T) {
 			"stale secret session included in versioned HasSecret results")
 	}
 }
+
+func TestListSessionsActiveSinceUsesSessionActivity(t *testing.T) {
+	pgURL := testPGURL(t)
+	ensureStoreSchema(t, pgURL)
+
+	store, err := NewStore(pgURL, testSchema, true)
+	require.NoError(t, err, "NewStore")
+	defer store.Close()
+
+	_, err = store.DB().Exec(`
+		INSERT INTO sessions
+			(id, machine, project, agent, first_message,
+			 created_at, started_at, ended_at, message_count,
+			 user_message_count)
+		VALUES
+			('active-ended', 'test-machine', 'active-parity',
+			 'claude-code', 'ended later',
+			 '2024-01-01T00:00:00Z'::timestamptz,
+			 '2024-01-01T00:00:00Z'::timestamptz,
+			 '2024-06-01T00:01:00Z'::timestamptz,
+			 2, 2),
+			('active-started', 'test-machine', 'active-parity',
+			 'claude-code', 'started later',
+			 '2024-01-01T00:00:00Z'::timestamptz,
+			 '2024-06-01T00:02:00Z'::timestamptz,
+			 NULL,
+			 2, 2),
+			('active-created', 'test-machine', 'active-parity',
+			 'claude-code', 'created later',
+			 '2024-06-01T00:03:00Z'::timestamptz,
+			 NULL,
+			 NULL,
+			 2, 2),
+			('active-stale', 'test-machine', 'active-parity',
+			 'claude-code', 'stale',
+			 '2024-01-01T00:00:00Z'::timestamptz,
+			 '2024-01-01T00:00:00Z'::timestamptz,
+			 '2024-05-31T23:59:59Z'::timestamptz,
+			 2, 2)
+	`)
+	require.NoError(t, err, "inserting active_since sessions")
+
+	page, err := store.ListSessions(context.Background(), db.SessionFilter{
+		Project:     "active-parity",
+		ActiveSince: "2024-06-01T00:00:00Z",
+		Limit:       50,
+	})
+	require.NoError(t, err, "ListSessions ActiveSince")
+
+	ids := make([]string, 0, len(page.Sessions))
+	for _, sess := range page.Sessions {
+		ids = append(ids, sess.ID)
+	}
+	assert.ElementsMatch(t,
+		[]string{"active-ended", "active-started", "active-created"}, ids)
+	assert.NotContains(t, ids, "active-stale")
+}

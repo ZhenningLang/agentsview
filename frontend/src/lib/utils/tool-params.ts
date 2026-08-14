@@ -14,6 +14,9 @@ type Params = Record<string, unknown>;
 /** Max diff lines rendered in fallback content to avoid DOM bloat. */
 const MAX_DIFF_LINES = 200;
 
+/** Max characters rendered per Pi `edits[]` entry, for the same reason. */
+const MAX_EDIT_TEXT_CHARS = 400;
+
 /** Extract metadata tags for common tool types.
  *  Dispatches on normalized category so all agents (Claude,
  *  Gemini, Codex, etc.) render consistently.
@@ -141,12 +144,35 @@ function visibleParamLines(
   return lines;
 }
 
+export interface FallbackContentOptions {
+  /** Max lines to emit before appending a truncation marker.
+   *  `null` disables the cap — used by the copy path, which must hand over the
+   *  full input rather than the preview the DOM renders. */
+  maxLines?: number | null;
+}
+
+/** Applies the display line cap. `max == null` returns the text untouched. */
+function capLines(lines: string[], max: number | null): string {
+  if (max == null || lines.length <= max) return lines.join("\n");
+  return (
+    lines.slice(0, max).join("\n") + `\n... (${lines.length} lines total)`
+  );
+}
+
 /** Generate displayable content from input params when
- *  the regex-captured content is empty. */
+ *  the regex-captured content is empty.
+ *
+ *  Output is capped at `MAX_DIFF_LINES` by default to keep the DOM small.
+ *  Callers that need the exact input (clipboard) pass `{ maxLines: null }`;
+ *  everything else about the formatting is shared, so what gets copied is the
+ *  uncapped version of what gets shown. */
 export function generateFallbackContent(
   toolName: string,
   params: Params,
+  options?: FallbackContentOptions,
 ): string | null {
+  const maxLines =
+    options?.maxLines === undefined ? MAX_DIFF_LINES : options.maxLines;
   if (toolName === "Task" || toolName === "Agent") return null;
   if (toolName === "Bash" || toolName === "run_command") {
     const cmd = params.command ?? params.cmd;
@@ -162,12 +188,7 @@ export function generateFallbackContent(
           new Set(["description", "command", "cmd"]),
         ),
       );
-      const allLines = lines.join("\n").split("\n");
-      if (allLines.length > MAX_DIFF_LINES) {
-        return allLines.slice(0, MAX_DIFF_LINES).join("\n")
-          + `\n... (${allLines.length} lines total)`;
-      }
-      return lines.join("\n");
+      return capLines(lines.join("\n").split("\n"), maxLines);
     }
   }
   const isEdit =
@@ -183,12 +204,12 @@ export function generateFallbackContent(
     // Kiro IDE: pre-computed unified diff from Go parser
     const diffText = params.diff;
     if (!lines.length && typeof diffText === "string" && diffText) {
-      const diffLines = diffText.split("\n");
-      if (diffLines.length > MAX_DIFF_LINES) {
-        return diffLines.slice(0, MAX_DIFF_LINES).join("\n")
-          + `\n... (${diffLines.length} lines total)`;
-      }
-      return diffText;
+      return capLines(diffText.split("\n"), maxLines);
+    }
+    // Codex apply_patch and friends ship a ready-made patch body.
+    const patchText = params.patch ?? params.patch_text ?? params.patchText;
+    if (!lines.length && typeof patchText === "string" && patchText) {
+      return capLines(patchText.split("\n"), maxLines);
     }
     if (oldStr != null || newStr != null) {
       const oldText = String(oldStr ?? "");
@@ -198,13 +219,18 @@ export function generateFallbackContent(
       lines.push(`@@ -1,${oldLines.length} +1,${newLines.length} @@`);
       for (const l of oldLines) lines.push(`-${l}`);
       for (const l of newLines) lines.push(`+${l}`);
-      if (lines.length > MAX_DIFF_LINES) {
-        lines.length = MAX_DIFF_LINES;
+      if (maxLines != null && lines.length > maxLines) {
+        lines.length = maxLines;
         lines.push(`... (${oldLines.length + newLines.length} lines total)`);
       }
     }
     // Pi: edits[] array with set_line, replace_lines, insert_after, or op-based operations
     if (!lines.length && Array.isArray(params.edits)) {
+      // Per-edit character truncation is a display concern like the line cap,
+      // so the uncapped (clipboard) mode must skip it too — otherwise a long
+      // Pi edit is silently cut at 400 chars with no marker in the copy.
+      const capText = (s: string) =>
+        maxLines == null ? s : truncate(s, MAX_EDIT_TEXT_CHARS);
       for (const edit of params.edits as Record<string, unknown>[]) {
         const setLine = edit.set_line as
           | Record<string, unknown>
@@ -220,7 +246,7 @@ export function generateFallbackContent(
           if (setLine.anchor) lines.push(`@ ${setLine.anchor}`);
           if (setLine.new_text != null) {
             const text = String(setLine.new_text);
-            lines.push(text ? truncate(text, 400) : "(delete)");
+            lines.push(text ? capText(text) : "(delete)");
           }
         } else if (replaceLines) {
           // {replace_lines: {start_anchor, end_anchor, new_text}} format
@@ -229,24 +255,33 @@ export function generateFallbackContent(
           if (start && end) lines.push(`@ ${start}..${end}`);
           else if (start) lines.push(`@ ${start}`);
           const text = String(replaceLines.new_text ?? "");
-          lines.push(text ? truncate(text, 400) : "(delete)");
+          lines.push(text ? capText(text) : "(delete)");
         } else if (insertAfter) {
           // {insert_after: {anchor, text}} format
           if (insertAfter.anchor) lines.push(`insert after ${insertAfter.anchor}`);
           const text = String(insertAfter.text ?? "");
-          lines.push(text ? truncate(text, 400) : "(empty)");
+          lines.push(text ? capText(text) : "(empty)");
         } else if (Array.isArray(edit.lines)) {
           // {op, pos, end, lines} format — real Pi agent format
           if (edit.op) lines.push(`${edit.op}${edit.pos ? ` @ ${edit.pos}` : ""}`);
-          lines.push(truncate((edit.lines as string[]).join("\n"), 400));
+          lines.push(capText((edit.lines as string[]).join("\n")));
         } else {
           // {op, tag, content} format — legacy/alternative Pi format
           if (edit.tag) lines.push(`tag: ${edit.tag}`);
           const content = edit.content;
           if (Array.isArray(content))
-            lines.push(truncate(content.join("\n"), 400));
+            lines.push(capText(content.join("\n")));
         }
       }
+      // The old/new path above caps itself (and keeps its own source-line
+      // marker), so only the Pi path needs the shared line cap here.
+      // Cap the SERIALIZED text, not the array: a single `edits[]` entry
+      // contributes one array element that may itself hold hundreds of lines,
+      // so counting elements is not a cap on what the DOM renders. Same idiom
+      // as the Bash and generic branches.
+      return lines.length
+        ? capLines(lines.join("\n").split("\n"), maxLines)
+        : null;
     }
     return lines.length ? lines.join("\n") : null;
   }
@@ -258,8 +293,8 @@ export function generateFallbackContent(
       const text = String(params.content);
       if (!text) return "(empty file)";
       const allLines = text.split("\n");
-      const capped = allLines.length > MAX_DIFF_LINES;
-      const show = capped ? allLines.slice(0, MAX_DIFF_LINES) : allLines;
+      const capped = maxLines != null && allLines.length > maxLines;
+      const show = capped ? allLines.slice(0, maxLines) : allLines;
       const header = `@@ -0,0 +1,${allLines.length} @@\n`;
       const body = show.map(l => `+${l}`).join("\n");
       const suffix = capped ? `\n... (${allLines.length} lines total)` : "";
@@ -268,10 +303,5 @@ export function generateFallbackContent(
   }
   const lines = visibleParamLines(params);
   if (!lines.length) return null;
-  const allLines = lines.join("\n").split("\n");
-  if (allLines.length > MAX_DIFF_LINES) {
-    return allLines.slice(0, MAX_DIFF_LINES).join("\n")
-      + `\n... (${allLines.length} lines total)`;
-  }
-  return lines.join("\n");
+  return capLines(lines.join("\n").split("\n"), maxLines);
 }

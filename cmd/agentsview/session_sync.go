@@ -30,7 +30,11 @@ func newSessionSyncCommand() *cobra.Command {
 			}
 			defer cleanup()
 
-			detail, err := svc.Sync(cmd.Context(), classifySyncArg(args[0]))
+			in := classifySyncArg(args[0])
+			if remote, _ := cmd.Flags().GetString("server"); remote != "" && looksLikePath(args[0]) {
+				in = service.SyncInput{Path: args[0]}
+			}
+			detail, err := svc.Sync(cmd.Context(), in)
 			if err != nil {
 				return err
 			}

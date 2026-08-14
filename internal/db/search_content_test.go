@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -49,6 +50,27 @@ func TestSearchContentSubstringMessages(t *testing.T) {
 	assert.Equal(t, 0, m.Ordinal, "Ordinal")
 	assert.Equal(t, "user", m.Role, "Role")
 	assert.Contains(t, m.Snippet, "DATABASE_URL", "snippet")
+}
+
+func TestSearchContentMatchTimestampIsRFC3339(t *testing.T) {
+	d := testDB(t)
+	want := time.Date(2026, 3, 22, 10, 15, 30, 123456789, time.UTC)
+	insertSession(t, d, "ts", "proj", func(s *Session) {
+		s.Agent = "claude"
+		s.UserMessageCount = 2
+	})
+	require.NoError(t, d.ReplaceSessionMessages("ts", []Message{{
+		SessionID: "ts", Ordinal: 1, Role: "user", Content: "needle",
+		Timestamp: want.Format(time.RFC3339Nano),
+	}}))
+	got, err := d.SearchContent(context.Background(), ContentSearchFilter{
+		Pattern: "needle", Sources: []string{"messages"}, Limit: 10,
+	})
+	require.NoError(t, err)
+	require.Len(t, got.Matches, 1)
+	parsed, err := time.Parse(time.RFC3339Nano, got.Matches[0].Timestamp)
+	require.NoError(t, err)
+	assert.True(t, parsed.Equal(want), "timestamp = %s want %s", parsed, want)
 }
 
 // TestSearchContentRedactsStraddlingSecret pins the default (non-reveal)
@@ -265,14 +287,21 @@ func TestSearchContentPaginationStableAcrossTies(t *testing.T) {
 	}
 }
 
+// The fixture token is deliberately not shaped like a real credential. What
+// this test needs from it is a literal prefix followed by a counted,
+// uppercase-only character class embedded in surrounding words; an
+// AWS-key-shaped string satisfies that too, but it also trips secret scanners
+// on every push that touches this file. Keep it obviously synthetic. The PG
+// mirror in internal/postgres/search_content_pgtest_test.go uses the same
+// fixture.
 func TestSearchContentRegex(t *testing.T) {
 	d := testDB(t)
 	seedSearchSession(t, d, "r1", "proj", [][2]string{
-		{"user", "key AKIA7QHWN2DKR4FYPLJM here"},
+		{"user", "key EXAMPLEKEY0A1B2C3D4E here"},
 		{"assistant", "no secrets in this line"},
 	})
 	got, err := d.SearchContent(context.Background(), ContentSearchFilter{
-		Pattern: `AKIA[0-9A-Z]{16}`, Mode: "regex",
+		Pattern: `EXAMPLEKEY[0-9A-Z]{10}`, Mode: "regex",
 		Sources: []string{"messages"}, Limit: 50,
 	})
 	require.NoError(t, err, "SearchContent regex")

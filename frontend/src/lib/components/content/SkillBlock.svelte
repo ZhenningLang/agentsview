@@ -1,6 +1,7 @@
 <script lang="ts">
   import { renderMarkdown } from "../../utils/markdown.js";
   import { highlightCodeFences } from "../../utils/highlight-fences.js";
+  import { ui } from "../../stores/ui.svelte.js";
 
   interface Props {
     content: string;
@@ -35,7 +36,7 @@
   {#if !collapsed}
     <div
       class="skill-content markdown"
-      use:highlightCodeFences={{ content }}
+      use:highlightCodeFences={{ content, theme: ui.theme }}
     >
       {@html renderMarkdown(content)}
     </div>

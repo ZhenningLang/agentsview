@@ -85,12 +85,16 @@ func (s *Store) GetSkill(
 	if err != nil {
 		return nil, fmt.Errorf("getting skill: %w", err)
 	}
-	defer rows.Close()
 	if !rows.Next() {
+		defer rows.Close()
 		return nil, rows.Err()
 	}
 	sk, err := scanPGSkill(rows)
 	if err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
 		return nil, err
 	}
 	var n int

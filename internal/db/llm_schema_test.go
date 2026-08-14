@@ -20,8 +20,8 @@ type sqliteLLMColumnInfo struct {
 
 func TestLLMSessionColumnsFreshSchemaDefaults(t *testing.T) {
 	d := testDB(t)
-	assert.Equal(t, 39, CurrentDataVersion(),
-		"LLM schema columns are additive and must not bump dataVersion")
+	assert.Equal(t, 40, CurrentDataVersion(),
+		"LLM schema columns are additive; parser skill inference bumped dataVersion")
 
 	columns := sqliteLLMTableColumns(t, d, "sessions")
 	want := map[string]sqliteLLMColumnInfo{

@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +26,53 @@ func TestSyncStats_RecordSkip(t *testing.T) {
 			assert.Equal(t, 0, s.Synced)
 		})
 	}
+}
+
+func TestAnomalyStats(t *testing.T) {
+	var a AnomalyStats
+	assert.True(t, a.IsZero())
+	a.RecordMalformedLines("codex", 2)
+	a.RecordMalformedLines("claude", 1)
+	a.addSanitize(SanitizeStats{TokensClamped: 3, RoleCoerced: 1})
+
+	assert.False(t, a.IsZero())
+	assert.Equal(t, 3, a.MalformedLinesTotal)
+	assert.Equal(t, 2, a.MalformedLinesByAgent["codex"])
+	assert.Equal(t, 4, a.Sanitize.Total())
+}
+
+func TestSyncStatsAnomaliesJSON(t *testing.T) {
+	clean, err := json.Marshal(SyncStats{TotalSessions: 1})
+	assert.NoError(t, err)
+	assert.NotContains(t, string(clean), "anomalies")
+
+	nonzero, err := json.Marshal(SyncStats{Anomalies: AnomalyStats{
+		MalformedLinesByAgent: map[string]int{"codex": 2},
+		MalformedLinesTotal:   2,
+		Sanitize:              SanitizeStats{TokensClamped: 1},
+	}})
+	assert.NoError(t, err)
+	assert.Contains(t, string(nonzero), "anomalies")
+	assert.Contains(t, string(nonzero), "malformed_lines_total")
+	assert.Contains(t, string(nonzero), "tokens_clamped")
+}
+
+func TestAnomalyAccumulatorDedupesMalformedBySource(t *testing.T) {
+	var acc anomalyAccumulator
+	acc.reset()
+	acc.recordMalformedLines("claude", "/tmp/a.jsonl", 3)
+	acc.recordMalformedLines("claude", "/tmp/a.jsonl", 3)
+	acc.recordMalformedLines("claude", "/tmp/b.jsonl", 2)
+	var stats SyncStats
+	acc.applyTo(&stats)
+
+	assert.Equal(t, 5, stats.Anomalies.MalformedLinesTotal)
+	assert.Equal(t, 5, stats.Anomalies.MalformedLinesByAgent["claude"])
+
+	acc.reset()
+	stats = SyncStats{}
+	acc.applyTo(&stats)
+	assert.True(t, stats.Anomalies.IsZero())
 }
 
 func TestSyncStats_RecordSynced(t *testing.T) {
