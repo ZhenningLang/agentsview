@@ -453,7 +453,13 @@ test.describe("Mermaid diagrams", () => {
     await expectSessionLoaded(page, sid);
 
     const firstBlock = page.locator(".mermaid-block").first();
-    await expect(firstBlock.locator("svg")).toBeVisible({ timeout: 15_000 });
+    // Scope to the diagram container: `.mermaid-block svg` also matches the
+    // copy button's icon, so it resolves to two elements once the diagram
+    // lands and trips Playwright strict mode — intermittently, depending on
+    // which of the two rendered first.
+    await expect(firstBlock.locator(".mermaid-diagram svg")).toBeVisible({
+      timeout: 15_000,
+    });
     await firstBlock
       .locator('button[aria-label="Copy diagram source"]')
       .click();
