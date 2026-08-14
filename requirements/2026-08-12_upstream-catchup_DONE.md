@@ -32,6 +32,12 @@ The upstream fix/perf audit ledger is `docs/UPSTREAM_AUDIT.md`. It is produced l
 - Phase 12's Calls disclosure defaults to expanded, and missing, unparseable, or unavailable LocalStorage also falls back to expanded, so existing users keep today's behavior until they collapse it.
 - Phase 12's new labels are the first localized strings in the AppHeader export menus and the shortcuts modal, which are otherwise hard-coded English. Under the default `zh` locale those specific rows render Chinese next to English neighbours; localizing the surrounding surfaces was deliberately left out of scope.
 
+- Phase 13 adds the first runtime dependency of this initiative: exact `mermaid@11.16.1` from `registry.npmjs.org`. `11.16.1` is the patched version for GHSA-c4c3-pg64-4m4v (affected `>=11.0.0-alpha.1, <11.16.1`), so upstream's own `11.15.0` was not copied. Upstream's `a18b57d8` Mermaid security bump was recorded as not-applicable in `docs/UPSTREAM_AUDIT.md` because the fork had no Mermaid dependency at the time; that snapshot is left as-is and this entry carries the current state.
+- Phase 13 treats diagram source from archived transcripts as untrusted input. Mermaid is initialized with a static trusted config (`securityLevel: "strict"`, `startOnLoad: false`, `suppressErrorRendering: true`, `maxTextSize: 50000`, `maxEdges: 500`, explicit `secure` keys), diagram source never reaches the config API, `bindFunctions` is never called, and the returned SVG goes through a second app-owned `DOMPurify.sanitize` with no `ADD_TAGS`/`ADD_ATTR`/hook/`IN_PLACE`/`CUSTOM_ELEMENT_HANDLING` relaxation before it enters the DOM.
+- Phase 13 pins Mermaid's `htmlLabels: false` and locks the theming keys, which has two accepted user-visible costs. A diagram's own `theme` / `themeCSS` / `themeVariables` / `darkMode` / font directives are now silently ignored, so a transcript that wrote `%%{init: {'theme':'forest'}}%%` renders in the app theme with no indication the directive was dropped. And markdown inside a node label (`A["**Bold**"]`) renders literally instead of being formatted, because native SVG `<text>` has no inline markup. Both are accepted: the alternative is letting untrusted transcript content restyle the page, or allowing `foreignObject` through the sanitizer.
+- Phase 13 keeps the plain source code block whenever an in-session search query is active, on both the message code-segment path and the shared Markdown fence action, because rendered SVG text is not a stable oracle for search marks.
+- Phase 13 loads Mermaid through a single dynamic `import("mermaid")`. The Vite manifest shows the runtime is reachable only as a dynamic import of the entry, and the entry chunk grows by roughly 4 KB raw / 2 KB gzip — app glue only, no runtime. Exact byte counts are deliberately not recorded here: they change with every build and the phase verifier already cross-checks them against a freshly built manifest, so a copy in this entry can only go stale.
+
 ## Acceptance Criteria
 
 - Phase 01 preserves legacy SQLite archive rows during schema repair and creates this initiative entry.
@@ -44,5 +50,11 @@ The upstream fix/perf audit ledger is `docs/UPSTREAM_AUDIT.md`. It is produced l
 - Phase 10 ports the A-tier CLI group (`0386ca3a`, `055aa770`, `9691d0fc`, `24300078`, `646a50c3`, `e588acf2`).
 - Phase 11 ports the A-tier backend group (`87d00f8e`, `c8a326f2`, `7bcfa4b9`).
 - Phase 12 ports the A-tier frontend group (`2d709437`, `e0e81238`, `64f4bf4f`, `b6594a76`, `9f8ee085`) without adopting `@kenn-io/kit-ui`.
-- Phase 13 evaluates upstream Mermaid rendering (`5e702c8a`), whose upstream implementation depends on `@kenn-io/kit-ui`; this entry stays `WIP` until it lands or is explicitly dropped.
+- Phase 13 lands upstream Mermaid rendering (`5e702c8a`) on the official npm
+  `mermaid@11.16.1` package instead of `@kenn-io/kit-ui`. Acceptance covers a
+  valid diagram rendering to SVG, a malformed diagram keeping its full source
+  plus a visible failure status, search falling back to the source code block,
+  exact-source copy, light/dark re-render, lazy loading proven by the Vite
+  manifest and by browser resource logs, and the embedded SPA serving the new
+  async chunks.
 - Relevant Go tests, `go vet`, Go formatting, frontend unit tests, `svelte-check`, the Vite build, Playwright end-to-end specs, and phase-specific verification commands pass before delivery.

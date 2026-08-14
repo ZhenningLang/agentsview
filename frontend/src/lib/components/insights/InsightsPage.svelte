@@ -5,6 +5,7 @@
   import { sync } from "../../stores/sync.svelte.js";
   import { renderMarkdown } from "../../utils/markdown.js";
   import { highlightCodeFences } from "../../utils/highlight-fences.js";
+  import { ui } from "../../stores/ui.svelte.js";
   import type { InsightType, AgentName } from "../../api/types.js";
   import ProjectTypeahead from "../layout/ProjectTypeahead.svelte";
   import {
@@ -527,7 +528,10 @@
         </header>
         <article
           class="markdown-body"
-          use:highlightCodeFences={{ content: insights.selectedItem.content }}
+          use:highlightCodeFences={{
+            content: insights.selectedItem.content,
+            theme: ui.theme,
+          }}
         >
           {@html renderMarkdown(insights.selectedItem.content)}
         </article>
