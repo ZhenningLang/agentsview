@@ -60,3 +60,14 @@ Source ledger: `docs/UPSTREAM_AUDIT.md`. This file contains only records whose l
 - **Priority:** `P0`
 - **Proposed acceptance:** before the next upstream increment, perform full semantic re-review of all 187 primary records, record per-SHA conclusions, recompute `spot_check_error_rate`, and fix any failed cohort before using the ledger as a scheduling source.
 - **Review after:** `2026-09-12`
+
+## Feature ledger v1 per-record audit
+
+### Feature ledger v1 per-record audit
+- **Source:** `docs/UPSTREAM_FEATURE_LEDGER.md` spot check metadata.
+- **Observed accuracy:** reviewer A sampled 18 of 145 records and found 1 error (5.6%); reviewer B sampled 20 and found 4 (20%). Both sets of reported errors were fixed in place.
+- **Reliability limitation:** the mechanical layer is complete and reproducible — candidate set, value/excluded split, and every SHA come from the recorded `candidate_command`. The judgment columns (`What the diff does`, `Recommendation`, `Reason`) were audited only on the sampled subset, so the unsampled remainder carries the sampled error rate as its expected accuracy. The initiative's acceptance asked for a per-record reliable audit of all 86 value records; that standard is not met.
+- **Reason:** the ledger was produced to decide what to schedule next, and the A tier it fed was verified by reading each of the 15 upstream diffs during the port. The remaining records have not had that treatment. A bulk re-run is deliberately not being done as part of this delivery: an unsampled re-review would carry the same unmeasured uncertainty it is meant to remove.
+- **Priority:** `P1`
+- **Proposed acceptance:** before B tier is scheduled, re-read the upstream diff for every record that B tier draws from and correct its `Recommendation` / `Reason` in place; re-sample at least 20 untouched records afterwards and record the new error rate in the ledger metadata. A record may not enter a batch on the strength of its ledger row alone.
+- **Review after:** `2026-09-13`

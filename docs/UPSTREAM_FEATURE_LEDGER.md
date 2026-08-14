@@ -23,6 +23,60 @@
 - **reviewer_b_spot_check_errors:** 4 blockers (1 value reason + 3 exclusion judgments)
 - **reviewer_b_spot_check_error_rate:** 20%
 
+## Audit Coverage and Known Limitations
+
+Read this before using the ledger as a scheduling source.
+
+- **The mechanical set is complete; the judgments are spot-checked, not
+  per-record audited.** The candidate set (145), the value/excluded split
+  (86/59), and every SHA in it come from the recorded `candidate_command` and
+  are reproducible. The `What the diff does` / `Recommendation` / `Reason`
+  columns are natural-language judgments, and only the sampled subset recorded
+  in the Metadata block above was independently rechecked against the upstream
+  diff: reviewer A sampled 18 records (1 error, 5.6%), reviewer B sampled 20
+  (4 errors, 20%). The reported errors were fixed; the unsampled remainder
+  carries the sampled error rate as its expected accuracy.
+- **What that means in practice.** A `neutral` or `skip` recommendation on an
+  unsampled record is a hint, not a verdict. Before scheduling or dropping any
+  record, re-read the upstream diff for that SHA. Treat the columns as an index
+  into the upstream history, not as a substitute for reading it.
+- **Port cost is a snapshot, not a live measurement.** `Port cost` was computed
+  with `git apply --check` against `local_worktree_head` as recorded in the
+  Metadata block. Re-running it against a later HEAD gives different answers by
+  design; a `clean` record can become `conflict` purely because local code moved.
+  It is a cost hint and was never a candidate filter.
+- **Follow-up.** Raising this ledger to a per-record audited standard is a
+  scheduled item, not an accepted permanent state; it is tracked in
+  `docs/UPSTREAM_BACKLOG.md` under "Feature ledger v1 per-record audit".
+
+## Adoption Status
+
+Adopted so far — A tier, phases 10-13 of the long run, landed on
+`lr/atier-features`. Every other record in this file is still a candidate.
+
+| tier | phase | upstream sha | landed as |
+|---|---|---|---|
+| A | 10 CLI | `0386ca3aed` | `--resume` / `--active` session table |
+| A | 10 CLI | `055aa7706a` | aligned session search table |
+| A | 10 CLI | `9691d0fc10` | `version --json` v1 contract |
+| A | 10 CLI | `24300078d1` | `--server` remote target + token file |
+| A | 10 CLI | `646a50c396` | CJK-aware column widths, AGE column |
+| A | 10 CLI | `e588acf29b` | statusline JSON `cost.microdollars` |
+| A | 11 backend | `87d00f8e87` | `--write-timeout` on all serve modes |
+| A | 11 backend | `c8a326f282` | skill-name inference (data version 40) |
+| A | 11 backend | `7bcfa4b92a` | parser anomaly reporting in sync status |
+| A | 12 frontend | `2d70943758` | copy active session source path |
+| A | 12 frontend | `e0e8123856` | malformed-lines breadcrumb badge |
+| A | 12 frontend | `64f4bf4fd6` | persisted Calls disclosure state |
+| A | 12 frontend | `b6594a76e4` | `Shift+J/K` user-prompt navigation |
+| A | 12 frontend | `9f8ee08549` | ToolBlock copy on the fork's own button |
+| A | 13 mermaid | `5e702c8a4d` | Mermaid fences on `mermaid@11.16.1` |
+
+Tier assignment and batch order are scheduling decisions of the long run and are
+owned by `requirements/2026-08-13_upstream-feature-adoption_WIP.md`, not by this
+ledger. This table exists so the remaining candidate set can be computed from the
+ledger alone.
+
 ## Reading Notes
 
 - `want` means there is a user-relevant behavior in the diff and the recommendation is to consider it for adoption.
