@@ -314,7 +314,7 @@ func cursorToolInputJSON(toolName string, body []string) string {
 		return trimmed
 	}
 	m := make(map[string]string)
-	for _, line := range strings.Split(trimmed, "\n") {
+	for line := range strings.SplitSeq(trimmed, "\n") {
 		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if !ok {
 			continue

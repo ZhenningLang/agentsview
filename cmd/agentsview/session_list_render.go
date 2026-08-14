@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -152,17 +151,25 @@ func sessionDisplayName(s db.Session) string {
 	return "-"
 }
 
+// collapseHome renders path with the home prefix replaced by "~".
+//
+// Comparison and output both run on forward slashes rather than the host's
+// os.PathSeparator. A session cwd comes out of the archive, which may have been
+// recorded on a different machine and OS than the one printing this table — pg
+// serve makes that the normal case, not an edge case. Cleaning with the host
+// separator rewrote a POSIX cwd into "~\proj" when the table was printed on
+// Windows, which is a path that never existed anywhere.
 func collapseHome(path, home string) string {
 	if path == "" || home == "" {
 		return path
 	}
-	cleanPath := filepath.Clean(path)
-	cleanHome := filepath.Clean(home)
+	cleanPath := filepath.ToSlash(filepath.Clean(path))
+	cleanHome := filepath.ToSlash(filepath.Clean(home))
 	if cleanPath == cleanHome {
 		return "~"
 	}
-	if strings.HasPrefix(cleanPath, cleanHome+string(os.PathSeparator)) {
-		return "~" + strings.TrimPrefix(cleanPath, cleanHome)
+	if rest, ok := strings.CutPrefix(cleanPath, cleanHome+"/"); ok {
+		return "~/" + rest
 	}
 	return path
 }

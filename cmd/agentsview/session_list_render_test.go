@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,12 @@ func TestSessionDisplayName(t *testing.T) {
 func TestCollapseHome(t *testing.T) {
 	assert.Equal(t, "~/proj", collapseHome("/Users/me/proj", "/Users/me"))
 	assert.Equal(t, "/opt/proj", collapseHome("/opt/proj", "/Users/me"))
+	assert.Equal(t, "~", collapseHome("/Users/me", "/Users/me"))
+	// A cwd recorded on this host collapses too, and the rendered form uses
+	// forward slashes whatever the host separator is.
+	home := filepath.Join(string(filepath.Separator), "Users", "me")
+	assert.Equal(t, "~/proj", collapseHome(filepath.Join(home, "proj"), home))
+	assert.Equal(t, "~", collapseHome(home, home))
 }
 
 func TestTruncName(t *testing.T) {

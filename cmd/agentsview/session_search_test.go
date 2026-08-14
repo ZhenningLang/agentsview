@@ -148,7 +148,7 @@ func TestPrintContentMatchesTableLongIDCJKStaysWithinWidth(t *testing.T) {
 	}}}
 	var out strings.Builder
 	require.NoError(t, printContentMatchesHumanAt(&out, res, 80, time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)))
-	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(out.String()), "\n") {
 		assert.LessOrEqual(t, runewidth.StringWidth(line), 80, "line=%q", line)
 	}
 	assert.Contains(t, out.String(), "…")
@@ -215,9 +215,9 @@ func TestPrintContentMatchesTableAgeColumn(t *testing.T) {
 }
 
 func displayColumn(line, needle string) int {
-	i := strings.Index(line, needle)
-	if i < 0 {
+	before, _, ok := strings.Cut(line, needle)
+	if !ok {
 		return -1
 	}
-	return runewidth.StringWidth(line[:i])
+	return runewidth.StringWidth(before)
 }

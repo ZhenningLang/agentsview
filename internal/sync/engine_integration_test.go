@@ -1485,6 +1485,11 @@ func TestResyncAllBackfillsStaleArchiveAndStampsUserVersion(t *testing.T) {
 
 	reopened, err := db.Open(env.db.Path())
 	require.NoError(t, err)
+	// setupTestEnv registered a cleanup bound to the *db.DB it created, not to
+	// whatever env.db points at later. This is the only test that swaps the
+	// handle, so the replacement needs its own close or it keeps the archive
+	// file open and the temp-dir cleanup fails on Windows.
+	t.Cleanup(func() { _ = reopened.Close() })
 	env.db = reopened
 	env.engine = sync.NewEngine(env.db, sync.EngineConfig{
 		AgentDirs: map[parser.AgentType][]string{

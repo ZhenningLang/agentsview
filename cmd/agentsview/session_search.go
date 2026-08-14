@@ -127,11 +127,8 @@ func newSessionSearchCommand() *cobra.Command {
 	return cmd
 }
 
-// printContentMatchesHuman writes one line per match, terminal-sanitized.
-func printContentMatchesHuman(w io.Writer, res *service.ContentSearchResult) error {
-	return printContentMatchesHumanAt(w, res, 0, time.Now())
-}
-
+// printContentMatchesHumanAt writes one line per match, terminal-sanitized,
+// laid out for termWidth columns (0 means no width budget).
 func printContentMatchesHumanAt(w io.Writer, res *service.ContentSearchResult, termWidth int, now time.Time) error {
 	if len(res.Matches) == 0 {
 		fmt.Fprintln(w, "(no matches)")

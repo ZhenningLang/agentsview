@@ -90,7 +90,11 @@ func TestSkillNameFromPathFrontmatterAndSafety(t *testing.T) {
 	assert.Equal(t, "fallback", skillNameFromPath(missingPath, ""))
 	assert.Empty(t, skillNameFromPath(barePath, ""))
 	assert.Empty(t, skillNameFromPath(filepath.Join(root, "skills", "*", "SKILL.md"), ""))
+	// expandSkillHome goes through os.UserHomeDir, which reads USERPROFILE on
+	// Windows and HOME everywhere else. Set both so the "~" case exercises the
+	// fixture rather than the CI runner's real profile directory.
 	t.Setenv("HOME", filepath.Dir(homeSkillPath))
+	t.Setenv("USERPROFILE", filepath.Dir(homeSkillPath))
 	assert.Equal(t, "home-skill", skillNameFromPath("~/SKILL.md", ""))
 	assert.Equal(t, "win-skill", skillNameFromPath(`C:\Users\me\skills\win-skill\SKILL.md`, ""),
 		"Windows-style path separators should be understood as skill paths")
@@ -198,7 +202,12 @@ func TestCursorPlainTextToolInputJSONAndSkillName(t *testing.T) {
 	}
 	_, _, calls := extractAssistantContent(lines)
 	require.Len(t, calls, 1)
-	assert.JSONEq(t, `{"path":"`+path+`"}`, calls[0].InputJSON)
+	// Build the expected document with the encoder rather than by
+	// concatenation: a Windows temp path carries backslashes, which are not
+	// legal raw inside a JSON string.
+	wantInput, err := json.Marshal(map[string]string{"path": path})
+	require.NoError(t, err)
+	assert.JSONEq(t, string(wantInput), calls[0].InputJSON)
 	assert.Equal(t, "cursor", calls[0].SkillName)
 }
 
