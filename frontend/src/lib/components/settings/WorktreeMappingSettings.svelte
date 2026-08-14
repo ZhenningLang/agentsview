@@ -13,6 +13,9 @@
     mappings: DbWorktreeProjectMapping[];
   }
 
+  const explicitLayout = "explicit";
+  const repoDotWorktreesLayout = "repo_dot_worktrees";
+
   let machine = $state("");
   let mappings: DbWorktreeProjectMapping[] = $state([]);
   let loading = $state(true);
@@ -22,6 +25,7 @@
   let applyMessage = $state("");
   let editingId: number | null = $state(null);
   let pathPrefix = $state("");
+  let layout = $state(explicitLayout);
   let project = $state("");
   let enabled = $state(true);
 
@@ -49,6 +53,7 @@
   function resetForm() {
     editingId = null;
     pathPrefix = "";
+    layout = explicitLayout;
     project = "";
     enabled = true;
   }
@@ -56,6 +61,7 @@
   function editMapping(mapping: DbWorktreeProjectMapping) {
     editingId = mapping.id;
     pathPrefix = mapping.path_prefix;
+    layout = mapping.layout || explicitLayout;
     project = mapping.project;
     enabled = mapping.enabled;
     applyMessage = "";
@@ -65,10 +71,13 @@
   async function saveMapping() {
     const input = {
       path_prefix: pathPrefix.trim(),
+      layout,
       project: project.trim(),
       enabled,
     } satisfies WorktreeMappingRequest;
-    if (!input.path_prefix || !input.project) return;
+    if (!input.path_prefix) return;
+    if (layout === explicitLayout && !input.project) return;
+    if (layout === repoDotWorktreesLayout) input.project = "";
 
     saving = true;
     error = "";
@@ -133,7 +142,11 @@
     }
   }
 
-  let canSave = $derived(pathPrefix.trim() !== "" && project.trim() !== "");
+  let isRepoDotWorktrees = $derived(layout === repoDotWorktreesLayout);
+  let canSave = $derived(
+    pathPrefix.trim() !== "" &&
+      (layout === repoDotWorktreesLayout || project.trim() !== ""),
+  );
 </script>
 
 <SettingsSection
@@ -157,7 +170,12 @@
         {#each mappings as mapping (mapping.id)}
           <div class="mapping-row" class:disabled={!mapping.enabled}>
             <div class="mapping-main">
-              <div class="mapping-project">{mapping.project}</div>
+              <div class="mapping-project">
+                {mapping.project ||
+                  (mapping.layout === repoDotWorktreesLayout
+                    ? "{repo}.worktrees/{branch}"
+                    : "Explicit")}
+              </div>
               <div class="mapping-path">{mapping.path_prefix}</div>
             </div>
             <div class="mapping-actions">
@@ -176,16 +194,40 @@
 
     <div class="form-grid">
       <label class="field">
-        <span>Path prefix</span>
+        <span>Layout</span>
+        <select bind:value={layout} aria-label="Layout">
+          <option value={explicitLayout}>Explicit project</option>
+          <option value={repoDotWorktreesLayout}>{"{repo}.worktrees/{branch}"}</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>{isRepoDotWorktrees ? "Parent directory" : "Path prefix"}</span>
         <input
           type="text"
           bind:value={pathPrefix}
-          placeholder="/Users/me/project.worktrees"
+          aria-label={isRepoDotWorktrees ? "Parent directory" : "Path prefix"}
+          placeholder={isRepoDotWorktrees
+            ? "/Users/me/projects"
+            : "/Users/me/project.worktrees"}
         />
+        {#if isRepoDotWorktrees}
+          <div class="hint">Matches child paths like service.worktrees/main.</div>
+        {/if}
       </label>
       <label class="field">
         <span>Project</span>
-        <input type="text" bind:value={project} placeholder="project-name" />
+        <input
+          type="text"
+          bind:value={project}
+          aria-label="Project"
+          placeholder="project-name"
+          disabled={isRepoDotWorktrees}
+        />
+        <div class="hint">
+          {isRepoDotWorktrees
+            ? "Derived from the repo.worktrees directory name."
+            : "Required for explicit mappings."}
+        </div>
       </label>
       <label class="enabled-toggle">
         <input type="checkbox" bind:checked={enabled} />
@@ -297,7 +339,7 @@
 
   .form-grid {
     display: grid;
-    grid-template-columns: 1fr 160px;
+    grid-template-columns: 1fr 2fr 1fr;
     gap: 10px;
   }
 
@@ -308,7 +350,8 @@
     min-width: 0;
   }
 
-  .field input {
+  .field input,
+  .field select {
     height: 30px;
     min-width: 0;
     padding: 0 10px;
@@ -322,6 +365,17 @@
   .field input:focus {
     outline: none;
     border-color: var(--accent-blue);
+  }
+
+  .field select:focus {
+    outline: none;
+    border-color: var(--accent-blue);
+  }
+
+  .hint {
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.3;
   }
 
   .enabled-toggle {

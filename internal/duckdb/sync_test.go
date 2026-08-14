@@ -46,6 +46,42 @@ func TestSyncFullPushCreatesExpectedRows(t *testing.T) {
 	assert.Equal(t, "alpha first", firstMessage)
 }
 
+func TestSyncFullPushMirrorsResolvedWorktreeProject(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+	root := t.TempDir()
+	worktreeCWD := filepath.Join(root, "service.worktrees", "feature")
+	const sessionID = "duck-worktree-layout"
+
+	_, err := local.CreateWorktreeProjectMapping(ctx, db.WorktreeProjectMapping{
+		Machine:    "local",
+		PathPrefix: root,
+		Layout:     db.WorktreeMappingLayoutRepoDotWorktrees,
+		Enabled:    true,
+	})
+	require.NoError(t, err)
+	require.NoError(t, local.UpsertSession(db.Session{
+		ID: sessionID, Project: "leaf", Machine: "local", Agent: "claude", Cwd: worktreeCWD,
+		MessageCount: 1, CreatedAt: "2026-01-12T00:00:00.000Z",
+	}))
+	require.NoError(t, local.InsertMessages([]db.Message{syncMessage(
+		sessionID, 0, "user", "duck worktree", "2026-01-12T00:00:00.000Z",
+	)}))
+	result, err := local.ApplyWorktreeProjectMappings(ctx, "local")
+	require.NoError(t, err)
+	assert.Equal(t, 1, result.UpdatedSessions)
+
+	syncer := newTestSync(t, filepath.Join(t.TempDir(), "mirror.duckdb"), local, SyncOptions{})
+	_, err = syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+
+	store := NewStoreFromDB(syncer.DB())
+	sess, err := store.GetSession(ctx, sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, sess)
+	assert.Equal(t, "service", sess.Project)
+}
+
 func TestPushPreservesInferredSkillName(t *testing.T) {
 	ctx := context.Background()
 	local := newLocalDB(t)

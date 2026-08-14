@@ -51,7 +51,8 @@ Ledger totals as measured: 145 candidates, 86 value records
   features that depend on it are re-implemented on their underlying library
   directly — Mermaid rendering (`5e702c8a`) landed on the official
   `mermaid@11.16.1` npm package instead.
-- Work proceeds on `lr/atier-features`, not `main`.
+- Work proceeds on long-run feature branches, not `main`; Phase 14 runs on
+  `lr/btier-features`.
 - The persistent SQLite archive is never deleted, truncated, or recreated; the
   constraints from the prior initiative continue to apply.
 
@@ -66,9 +67,12 @@ Ledger totals as measured: 145 candidates, 86 value records
   - Phase 12 frontend: `2d709437`, `e0e81238`, `64f4bf4f`, `b6594a76`,
     `9f8ee085`
   - Phase 13 Mermaid: `5e702c8a`
-- **B tier — 31 candidates queued, not yet scheduled.** Tier assignment is a
-  scheduling decision of this run and is not recorded in the ledger; the ledger
-  records value and cost, not batch order.
+- **B tier — in progress.** Tier assignment is a scheduling decision of this run
+  and is not recorded in the ledger; the ledger records value and cost, not
+  batch order.
+  - Phase 14 schema group A: `c46dc029` landed as an additive worktree mapping
+    layout feature. `7ee9e4e1` was removed from Phase 14 and moved to backlog
+    because it depends on upstream parse-diff foundation absent from this fork.
 
 ## Open Decisions
 
@@ -167,6 +171,23 @@ Ledger totals as measured: 145 candidates, 86 value records
   runtime. Exact byte counts are deliberately not recorded here: they change with
   every build and the phase verifier already cross-checks them against a freshly
   built manifest, so a copy in this entry can only go stale.
+- Phase 14 adds `worktree_project_mappings.layout` as an additive SQLite-only
+  column with default `explicit`. It does not bump `dataVersion`, does not add a
+  legacy schema-repair probe, and must not trigger full resync for archives that
+  only lack this column.
+- Phase 14 introduces two mapping layouts: `explicit`, preserving existing fixed
+  project behavior, and `repo_dot_worktrees`, where one parent-directory mapping
+  derives project names from child paths shaped
+  `{repo}.worktrees/{branch}/...`. Unknown layouts fail closed with HTTP 400;
+  repo-layout rows persist an empty project so stale UI form values cannot
+  influence resolution.
+- Phase 14 keeps worktree mapping configuration SQLite-local. PostgreSQL and
+  DuckDB receive only the resolved `sessions.project` through existing push/sync
+  paths; no remote mapping schema is added and remote settings API behavior stays
+  `501 Not Implemented`.
+- Phase 14 records a feature-ledger correction for `7ee9e4e1`: it is not a
+  standalone 14-file schema change, but a parse-diff follow-up depending on
+  upstream `4592129b`, `b96075cf`, and `e359fbc0`.
 
 ## Acceptance Criteria
 

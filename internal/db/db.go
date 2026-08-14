@@ -867,6 +867,11 @@ func (db *DB) migrateColumns() error {
 			"ALTER TABLE sessions ADD COLUMN enrich_error TEXT NOT NULL DEFAULT ''",
 		},
 		{
+			"worktree_project_mappings", "layout",
+			"ALTER TABLE worktree_project_mappings ADD COLUMN layout TEXT NOT NULL " +
+				"DEFAULT 'explicit'",
+		},
+		{
 			"memory", "source",
 			"ALTER TABLE memory ADD COLUMN source TEXT NOT NULL " +
 				"DEFAULT 'cross-agent'",
@@ -996,6 +1001,7 @@ func (db *DB) migrateColumns() error {
 			id          INTEGER PRIMARY KEY,
 			machine     TEXT NOT NULL,
 			path_prefix TEXT NOT NULL,
+			layout      TEXT NOT NULL DEFAULT 'explicit',
 			project     TEXT NOT NULL,
 			enabled     INTEGER NOT NULL DEFAULT 1,
 			created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
