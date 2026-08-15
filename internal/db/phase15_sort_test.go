@@ -163,7 +163,7 @@ func phase15WalkSessionIDs(t *testing.T, d *DB, f SessionFilter) []string {
 	cursor := f.Cursor
 	seen := map[string]bool{}
 	ids := []string{}
-	for pageNum := 0; pageNum < 20; pageNum++ {
+	for range 20 {
 		f.Cursor = cursor
 		page, err := d.ListSessions(ctx, f)
 		require.NoError(t, err)

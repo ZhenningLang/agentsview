@@ -111,7 +111,7 @@ func duckWalkSessionIDs(t *testing.T, store *Store, f db.SessionFilter) []string
 	cursor := f.Cursor
 	seen := map[string]bool{}
 	ids := []string{}
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		f.Cursor = cursor
 		page, err := store.ListSessions(ctx, f)
 		require.NoError(t, err)
