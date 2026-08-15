@@ -1664,9 +1664,10 @@ func TestAutomatedPrefixesRoundTrip(t *testing.T) {
 
 func TestPhase16AutomatedMatcherConfig(t *testing.T) {
 	dir := setupTestEnv(t)
+	allowedRoot := filepath.Join(dir, "phase16-allowed")
 	writeConfig(t, dir, map[string]any{
 		"sync_include_cwd_prefixes": []string{
-			"/tmp/phase16-allowed",
+			allowedRoot,
 		},
 		"automated": map[string]any{
 			"prefixes":      []string{"Phase16 prefix rule"},
@@ -1680,7 +1681,7 @@ func TestPhase16AutomatedMatcherConfig(t *testing.T) {
 	assert.Equal(t, []string{"Phase16 prefix rule"}, cfg.Automated.Prefixes)
 	assert.Equal(t, []string{"phase16 embedded marker"}, cfg.Automated.Substrings)
 	assert.Equal(t, []string{"Phase16 exact rule"}, cfg.Automated.ExactMatches)
-	assert.Equal(t, []string{"/tmp/phase16-allowed"}, cfg.SyncIncludeCWDPrefixes)
+	assert.Equal(t, []string{allowedRoot}, cfg.SyncIncludeCWDPrefixes)
 
 	writeConfig(t, dir, map[string]any{"public_url": "http://example.com"})
 	cfg, err = loadConfigFromPFlags(t)
@@ -1696,6 +1697,7 @@ func TestPhase16SyncIncludeCWDPrefixesNormalizeAndWarn(t *testing.T) {
 	projectRoot := filepath.Join(home, "Projects", "allowed")
 	envRoot := filepath.Join(dir, "env", "allowed")
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("PHASE16_ALLOWED_ROOT", envRoot)
 	writeConfig(t, dir, map[string]any{
 		"sync_include_cwd_prefixes": []string{
