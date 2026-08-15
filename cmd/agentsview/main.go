@@ -160,6 +160,7 @@ func runServe(cfg config.Config) {
 			AgentDirs:               cfg.AgentDirs,
 			Machine:                 "local",
 			BlockedResultCategories: cfg.ResultContentBlockedCategories,
+			SyncIncludeCWDPrefixes:  cfg.SyncIncludeCWDPrefixes,
 			Emitter:                 broadcaster,
 		})
 

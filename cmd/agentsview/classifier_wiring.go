@@ -17,5 +17,9 @@ import (
 // rationale. The static guardrail test in
 // classifier_wiring_test.go (Task 7) enforces this rule.
 func applyClassifierConfig(cfg config.Config) {
-	db.SetUserAutomationPrefixes(cfg.Automated.Prefixes)
+	db.SetUserAutomationMatchers(
+		cfg.Automated.Prefixes,
+		cfg.Automated.Substrings,
+		cfg.Automated.ExactMatches,
+	)
 }

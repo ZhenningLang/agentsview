@@ -35,6 +35,8 @@ func ClassifierHash() string {
 	writeSorted(h, "S", automatedSubstrings)
 	writeSorted(h, "E", automatedExactMatches)
 	writeSorted(h, "U", UserAutomationPrefixes())
+	writeSorted(h, "US", UserAutomationSubstrings())
+	writeSorted(h, "UE", UserAutomationExactMatches())
 	return hex.EncodeToString(h.Sum(nil))
 }
 

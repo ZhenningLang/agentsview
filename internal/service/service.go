@@ -135,6 +135,8 @@ type ListFilter struct {
 	HasSecret        bool   `json:"has_secret,omitempty"`
 	Cursor           string `json:"cursor,omitempty"`
 	Limit            int    `json:"limit,omitempty"`
+	OrderBy          string `json:"order_by,omitempty"`
+	Descending       *bool  `json:"descending,omitempty"`
 }
 
 // MessageFilter mirrors GET /api/v1/sessions/{id}/messages query params.

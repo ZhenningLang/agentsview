@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -13,7 +14,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/pflag"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/agentsview/internal/config"
+	"go.kenn.io/agentsview/internal/db"
 )
 
 // triggerCalls names the qualified function calls that read
@@ -67,6 +72,63 @@ func TestEveryStoreOpenPathIsWired(t *testing.T) {
 			strings.Join(violations, "\n  "),
 		)
 	}
+}
+
+func TestPhase16AutomatedMatcherConfig(t *testing.T) {
+	t.Cleanup(func() { db.SetUserAutomationPrefixes(nil) })
+
+	dir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", dir)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.toml"), []byte(`
+[automated]
+prefixes = ["Phase16 prefix rule"]
+substrings = ["phase16 embedded marker"]
+exact_matches = ["Phase16 exact rule"]
+`), 0o600,
+	), "write config")
+
+	cfg, err := loadPhase16Config(t)
+	require.NoError(t, err, "load config with matcher kinds")
+	applyClassifierConfig(cfg)
+
+	assert.True(t, db.IsAutomatedSession("Phase16 prefix rule handles this"),
+		"configured prefix should classify")
+	assert.True(t, db.IsAutomatedSession("before phase16 embedded marker after"),
+		"configured substring should classify")
+	assert.True(t, db.IsAutomatedSession("  Phase16 exact rule\n"),
+		"configured exact match should trim and classify")
+	assert.False(t, db.IsAutomatedSession("Phase16 exact rule with suffix"),
+		"configured exact match must not behave like a prefix")
+	assert.True(t, db.IsAutomatedSession("Warmup"),
+		"built-in exact matcher should remain available")
+
+	var empty bytes.Buffer
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.toml"), empty.Bytes(), 0o600,
+	), "write empty config")
+	cfg, err = loadPhase16Config(t)
+	require.NoError(t, err, "load empty config")
+	applyClassifierConfig(cfg)
+	assert.False(t, db.IsAutomatedSession("before phase16 embedded marker after"),
+		"empty config should clear user substring matchers")
+
+	badDir := t.TempDir()
+	t.Setenv("AGENTSVIEW_DATA_DIR", badDir)
+	require.NoError(t, os.WriteFile(filepath.Join(badDir, "config.toml"), []byte(`
+[automated]
+substrings = "phase16-not-a-list"
+`), 0o600), "write invalid config")
+	_, err = loadPhase16Config(t)
+	assert.Error(t, err, "malformed matcher list should use config load error path")
+}
+
+func loadPhase16Config(t *testing.T) (config.Config, error) {
+	t.Helper()
+	fs := pflag.NewFlagSet("phase16", pflag.ContinueOnError)
+	config.RegisterServePFlags(fs)
+	require.NoError(t, fs.Parse(nil), "parse flags")
+	return config.LoadPFlags(fs)
 }
 
 // scanFile walks every function declaration and function

@@ -56,27 +56,29 @@ type messageDirection string
 type markdownDepth string
 
 type sessionFilterInput struct {
-	Project          string           `query:"project" doc:"Filter by project"`
-	ExcludeProject   string           `query:"exclude_project" doc:"Exclude a project"`
-	Machine          string           `query:"machine" doc:"Filter by machine"`
-	Agent            string           `query:"agent" doc:"Filter by agent"`
-	Date             string           `query:"date" format:"date" doc:"Filter to a single YYYY-MM-DD date"`
-	DateFrom         string           `query:"date_from" format:"date" doc:"Filter start date"`
-	DateTo           string           `query:"date_to" format:"date" doc:"Filter end date"`
-	ActiveSince      string           `query:"active_since" format:"date-time" doc:"Filter sessions active since this RFC3339 timestamp"`
-	MinMessages      int              `query:"min_messages" minimum:"0" doc:"Minimum total message count"`
-	MaxMessages      int              `query:"max_messages" minimum:"0" doc:"Maximum total message count"`
-	MinUserMessages  int              `query:"min_user_messages" minimum:"0" doc:"Minimum user message count"`
-	IncludeOneShot   bool             `query:"include_one_shot" doc:"Include one-shot sessions"`
-	IncludeAutomated bool             `query:"include_automated" doc:"Include automated sessions"`
-	IncludeChildren  bool             `query:"include_children" doc:"Include child sessions"`
-	Outcome          string           `query:"outcome" doc:"Filter by detected outcome"`
-	HealthGrade      string           `query:"health_grade" doc:"Filter by health grade"`
-	Cursor           string           `query:"cursor" doc:"Opaque pagination cursor"`
-	Limit            int              `query:"limit" minimum:"0" doc:"Maximum number of results"`
-	Termination      string           `query:"termination" doc:"Filter by termination reason"`
-	MinToolFailures  optionalIntParam `query:"min_tool_failures" minimum:"0" doc:"Minimum tool failure count"`
-	HasSecret        bool             `query:"has_secret" doc:"Filter sessions with secret findings"`
+	Project          string            `query:"project" doc:"Filter by project"`
+	ExcludeProject   string            `query:"exclude_project" doc:"Exclude a project"`
+	Machine          string            `query:"machine" doc:"Filter by machine"`
+	Agent            string            `query:"agent" doc:"Filter by agent"`
+	Date             string            `query:"date" format:"date" doc:"Filter to a single YYYY-MM-DD date"`
+	DateFrom         string            `query:"date_from" format:"date" doc:"Filter start date"`
+	DateTo           string            `query:"date_to" format:"date" doc:"Filter end date"`
+	ActiveSince      string            `query:"active_since" format:"date-time" doc:"Filter sessions active since this RFC3339 timestamp"`
+	MinMessages      int               `query:"min_messages" minimum:"0" doc:"Minimum total message count"`
+	MaxMessages      int               `query:"max_messages" minimum:"0" doc:"Maximum total message count"`
+	MinUserMessages  int               `query:"min_user_messages" minimum:"0" doc:"Minimum user message count"`
+	IncludeOneShot   bool              `query:"include_one_shot" doc:"Include one-shot sessions"`
+	IncludeAutomated bool              `query:"include_automated" doc:"Include automated sessions"`
+	IncludeChildren  bool              `query:"include_children" doc:"Include child sessions"`
+	Outcome          string            `query:"outcome" doc:"Filter by detected outcome"`
+	HealthGrade      string            `query:"health_grade" doc:"Filter by health grade"`
+	Cursor           string            `query:"cursor" doc:"Opaque pagination cursor"`
+	Limit            int               `query:"limit" minimum:"0" doc:"Maximum number of results"`
+	Termination      string            `query:"termination" doc:"Filter by termination reason"`
+	MinToolFailures  optionalIntParam  `query:"min_tool_failures" minimum:"0" doc:"Minimum tool failure count"`
+	HasSecret        bool              `query:"has_secret" doc:"Filter sessions with secret findings"`
+	OrderBy          string            `query:"order_by" default:"recent" doc:"Sort order: comma-separated keys, each optionally key:asc or key:desc. Valid keys: recent, started, messages, user-messages, output-tokens, peak-context, failures, retries, edit-churn, compactions, context-pressure, health, secrets, id."`
+	Descending       optionalBoolParam `query:"descending" doc:"Default sort direction for keys without explicit :asc/:desc"`
 }
 
 type messageListInput struct {
@@ -94,6 +96,9 @@ type searchSessionInput struct {
 func (in *sessionFilterInput) listFilter() (service.ListFilter, error) {
 	if err := validateDateFilterValues(in.Date, in.DateFrom, in.DateTo, in.ActiveSince); err != nil {
 		return service.ListFilter{}, err
+	}
+	if _, err := db.ParseSortSpec(in.OrderBy); err != nil {
+		return service.ListFilter{}, apiError(http.StatusBadRequest, "invalid order_by: "+err.Error())
 	}
 	limit := clampLimit(in.Limit, db.DefaultSessionLimit, db.MaxSessionLimit)
 	filter := service.ListFilter{
@@ -117,6 +122,8 @@ func (in *sessionFilterInput) listFilter() (service.ListFilter, error) {
 		Limit:            limit,
 		Termination:      in.Termination,
 		HasSecret:        in.HasSecret,
+		OrderBy:          in.OrderBy,
+		Descending:       optionalBoolValue(in.Descending),
 	}
 	if in.MinToolFailures.IsSet {
 		filter.MinToolFailures = &in.MinToolFailures.Value
@@ -127,6 +134,9 @@ func (in *sessionFilterInput) listFilter() (service.ListFilter, error) {
 func (in *sessionFilterInput) dbFilter(includeChildren bool) (db.SessionFilter, error) {
 	if err := validateDateFilterValues(in.Date, in.DateFrom, in.DateTo, in.ActiveSince); err != nil {
 		return db.SessionFilter{}, err
+	}
+	if _, err := db.ParseSortSpec(in.OrderBy); err != nil {
+		return db.SessionFilter{}, apiError(http.StatusBadRequest, "invalid order_by: "+err.Error())
 	}
 	return db.SessionFilter{
 		Project:          in.Project,

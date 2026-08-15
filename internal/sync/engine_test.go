@@ -945,7 +945,7 @@ func TestWriteBatchRemoteIDPrefixUsageEvents(t *testing.T) {
 		}},
 	}
 
-	written, _, failed := e.writeBatch(
+	written, _, failed, _, _ := e.writeBatch(
 		[]pendingWrite{pw}, syncWriteDefault, false,
 	)
 	require.Equal(t, 0, failed, "no session writes may fail")
@@ -1015,7 +1015,7 @@ func TestWriteBatchSanitizesParserOutputBeforePersistence(t *testing.T) {
 		log.SetFlags(previousFlags)
 	}()
 
-	written, _, failed := e.writeBatch(
+	written, _, failed, _, _ := e.writeBatch(
 		[]pendingWrite{pw}, syncWriteDefault, false,
 	)
 	require.Equal(t, 0, failed)
@@ -1112,7 +1112,7 @@ func TestWriteBatchPreservesSessionSummaryAboveRowLimit(t *testing.T) {
 		}},
 	}
 
-	written, _, failed := e.writeBatch(
+	written, _, failed, _, _ := e.writeBatch(
 		[]pendingWrite{pw}, syncWriteDefault, false,
 	)
 	require.Equal(t, 0, failed)
@@ -1164,7 +1164,7 @@ func TestWriteBatchPreservesMultiMessageAggregateAboveRowLimit(t *testing.T) {
 		},
 	}
 
-	written, _, failed := e.writeBatch(
+	written, _, failed, _, _ := e.writeBatch(
 		[]pendingWrite{pw}, syncWriteDefault, false,
 	)
 	require.Equal(t, 0, failed)
@@ -1215,13 +1215,13 @@ func TestWriteBatchAntigravityReplacesMessages(t *testing.T) {
 		}
 	}
 
-	written, _, failed := e.writeBatch(
+	written, _, failed, _, _ := e.writeBatch(
 		[]pendingWrite{mkWrite(false)}, syncWriteDefault, false,
 	)
 	require.Equal(t, 0, failed)
 	require.Equal(t, 1, written)
 
-	written, _, failed = e.writeBatch(
+	written, _, failed, _, _ = e.writeBatch(
 		[]pendingWrite{mkWrite(true)}, syncWriteDefault, false,
 	)
 	require.Equal(t, 0, failed)
@@ -1276,7 +1276,7 @@ func TestProcessAntigravityWALOnlyUpdateNotSkipped(t *testing.T) {
 		msgs:        res.results[0].Messages,
 		usageEvents: res.results[0].UsageEvents,
 	}
-	written, _, failed := e.writeBatch(
+	written, _, failed, _, _ := e.writeBatch(
 		[]pendingWrite{pw}, syncWriteDefault, false,
 	)
 	require.Equal(t, 0, failed)
@@ -1332,7 +1332,7 @@ func TestProcessAntigravityBrainOnlyUpdateNotSkipped(t *testing.T) {
 		msgs:        res.results[0].Messages,
 		usageEvents: res.results[0].UsageEvents,
 	}
-	written, _, failed := e.writeBatch(
+	written, _, failed, _, _ := e.writeBatch(
 		[]pendingWrite{pw}, syncWriteDefault, false,
 	)
 	require.Equal(t, 0, failed)

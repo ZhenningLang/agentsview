@@ -54,6 +54,8 @@ type SyncStats struct {
 	messagesIndexed     int // unexported: progress message counter
 	parserExcludedFiles int // file-level intentional parser exclusions
 	parserExcludedIDs   []string
+	cwdExcludedFiles    int // file-level CWD allow-list exclusions
+	cwdExcludedSessions int // session-level CWD allow-list exclusions
 }
 
 type AnomalyStats struct {

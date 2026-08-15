@@ -24,6 +24,48 @@ func TestClassifierHashChangesWithUserPrefixes(t *testing.T) {
 		"hash did not change when user prefixes changed")
 }
 
+func TestPhase16ClassifierHashIncludesMatcherKinds(t *testing.T) {
+	t.Cleanup(func() { setPhase16AutomationConfigForTest(nil, nil, nil) })
+	setPhase16AutomationConfigForTest(nil, nil, nil)
+	base := ClassifierHash()
+
+	setPhase16AutomationConfigForTest(nil, []string{"phase16 hash marker"}, nil)
+	withSubstring := ClassifierHash()
+	assert.NotEqual(t, base, withSubstring,
+		"hash did not change when user substrings changed")
+
+	setPhase16AutomationConfigForTest(nil, nil, []string{"phase16 exact marker"})
+	withExact := ClassifierHash()
+	assert.NotEqual(t, base, withExact,
+		"hash did not change when user exact matches changed")
+
+	setPhase16AutomationConfigForTest([]string{"phase16 same text"}, nil, nil)
+	prefixHash := ClassifierHash()
+	setPhase16AutomationConfigForTest(nil, []string{"phase16 same text"}, nil)
+	substringHash := ClassifierHash()
+	setPhase16AutomationConfigForTest(nil, nil, []string{"phase16 same text"})
+	exactHash := ClassifierHash()
+	assert.NotEqual(t, prefixHash, substringHash,
+		"same text as prefix and substring should hash differently")
+	assert.NotEqual(t, substringHash, exactHash,
+		"same text as substring and exact match should hash differently")
+
+	setPhase16AutomationConfigForTest(nil,
+		[]string{"beta marker", "alpha marker", "alpha marker"},
+		[]string{"omega marker"})
+	a := ClassifierHash()
+	setPhase16AutomationConfigForTest(nil,
+		[]string{"alpha marker", "beta marker"},
+		[]string{"omega marker", "omega marker"})
+	b := ClassifierHash()
+	assert.Equal(t, a, b,
+		"hash should be deterministic for duplicate/order-equivalent config")
+}
+
+func setPhase16AutomationConfigForTest(prefixes, substrings, exact []string) {
+	SetUserAutomationMatchers(prefixes, substrings, exact)
+}
+
 func TestClassifierHashOrderIndependent(t *testing.T) {
 	t.Cleanup(func() { SetUserAutomationPrefixes(nil) })
 	SetUserAutomationPrefixes([]string{"alpha", "beta", "gamma"})

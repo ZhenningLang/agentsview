@@ -165,7 +165,10 @@ func (s *Store) EncodeCursor(endedAt, id string, total ...int) string {
 	if len(total) > 0 {
 		t = total[0]
 	}
-	c := db.SessionCursor{EndedAt: endedAt, ID: id, Total: t}
+	return s.EncodeSessionCursor(db.SessionCursor{EndedAt: endedAt, ID: id, Total: t})
+}
+
+func (s *Store) EncodeSessionCursor(c db.SessionCursor) string {
 	data, _ := json.Marshal(c)
 	s.cursorMu.RLock()
 	secret := append([]byte(nil), s.cursorSecret...)
@@ -184,12 +187,7 @@ func (s *Store) DecodeCursor(raw string) (db.SessionCursor, error) {
 		if err != nil {
 			return db.SessionCursor{}, fmt.Errorf("%w: %v", db.ErrInvalidCursor, err)
 		}
-		var c db.SessionCursor
-		if err := json.Unmarshal(data, &c); err != nil {
-			return db.SessionCursor{}, fmt.Errorf("%w: %v", db.ErrInvalidCursor, err)
-		}
-		c.Total = 0
-		return c, nil
+		return db.DecodeUnsignedLegacySessionCursor(data)
 	}
 	if len(parts) != 2 {
 		return db.SessionCursor{}, fmt.Errorf("%w: invalid format", db.ErrInvalidCursor)
@@ -222,6 +220,7 @@ func (s *Store) ListSessions(ctx context.Context, f db.SessionFilter) (db.Sessio
 		f.Limit = db.DefaultSessionLimit
 	}
 	where, args := db.BuildSessionFilterSQL(f, db.DuckDBQueryDialect())
+	rs := db.ResolveSort(f)
 	total := 0
 	var cur db.SessionCursor
 	if f.Cursor != "" {
@@ -244,12 +243,15 @@ func (s *Store) ListSessions(ctx context.Context, f db.SessionFilter) (db.Sessio
 	pageBuilder := db.NewQueryBuilder(db.DuckDBQueryDialect(), len(args))
 	cursorWhere := where
 	if f.Cursor != "" {
-		cursorWhere += " AND " + pageBuilder.CursorBeforePredicate(cur)
+		vals, err := db.CursorPredicateValues(cur, rs)
+		if err != nil {
+			return db.SessionPage{}, err
+		}
+		cursorWhere += " AND " + pageBuilder.CursorPredicate(rs, f, vals, cur.ID)
 	}
 	query := "SELECT " + duckSessionCols +
-		" FROM sessions WHERE " + cursorWhere + `
-		ORDER BY COALESCE(ended_at, started_at, created_at) DESC, id DESC
-		` + pageBuilder.Limit(f.Limit+1)
+		" FROM sessions WHERE " + cursorWhere + " " +
+		pageBuilder.OrderByClause(rs, f) + " " + pageBuilder.Limit(f.Limit+1)
 	cursorArgs = append(cursorArgs, pageBuilder.Args()...)
 	rows, err := s.duck.QueryContext(ctx, query, cursorArgs...)
 	if err != nil {
@@ -264,14 +266,7 @@ func (s *Store) ListSessions(ctx context.Context, f db.SessionFilter) (db.Sessio
 	if len(sessions) > f.Limit {
 		page.Sessions = sessions[:f.Limit]
 		last := page.Sessions[f.Limit-1]
-		ea := last.CreatedAt
-		if last.StartedAt != nil && *last.StartedAt != "" {
-			ea = *last.StartedAt
-		}
-		if last.EndedAt != nil && *last.EndedAt != "" {
-			ea = *last.EndedAt
-		}
-		page.NextCursor = s.EncodeCursor(ea, last.ID, total)
+		page.NextCursor = s.EncodeSessionCursor(db.NextSessionCursor(&last, rs, total, f))
 	}
 	return page, nil
 }

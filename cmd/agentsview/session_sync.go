@@ -66,8 +66,9 @@ func syncService(
 		return nil, nil, fmt.Errorf("opening db: %w", err)
 	}
 	engine := sync.NewEngine(d, sync.EngineConfig{
-		AgentDirs: cfg.AgentDirs,
-		Machine:   "local",
+		AgentDirs:              cfg.AgentDirs,
+		Machine:                "local",
+		SyncIncludeCWDPrefixes: cfg.SyncIncludeCWDPrefixes,
 	})
 	cleanup := func() { d.Close() }
 	return service.NewDirectBackend(d, engine), cleanup, nil

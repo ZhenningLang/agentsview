@@ -38,6 +38,8 @@ type QueryDialect struct {
 	activityParam          func(string) string
 	cursorActivityExpr     string
 	cursorParam            func(string) string
+	castCursor             func(string, valueKind) string
+	emptyStringIsNull      bool
 	terminationExpr        string
 	terminationKind        timestampKind
 	caseInsensitiveLike    string
@@ -60,6 +62,8 @@ func SQLiteQueryDialect() QueryDialect {
 		activityParam:          func(ph string) string { return ph },
 		cursorActivityExpr:     "COALESCE(NULLIF(ended_at, ''), NULLIF(started_at, ''), created_at)",
 		cursorParam:            func(ph string) string { return ph },
+		castCursor:             func(ph string, _ valueKind) string { return ph },
+		emptyStringIsNull:      true,
 		terminationExpr:        activityExprSQLite,
 		terminationKind:        timestampUnixSeconds,
 		caseInsensitiveLike:    "LIKE",
@@ -89,6 +93,7 @@ func PostgresQueryDialect() QueryDialect {
 		cursorParam: func(ph string) string {
 			return ph + "::timestamptz"
 		},
+		castCursor:             pgCastCursor,
 		terminationExpr:        "COALESCE(ended_at, started_at, created_at)",
 		terminationKind:        timestampTimestamptz,
 		caseInsensitiveLike:    "ILIKE",
@@ -118,6 +123,7 @@ func DuckDBQueryDialect() QueryDialect {
 		cursorParam: func(ph string) string {
 			return "CAST(" + ph + " AS TIMESTAMP)"
 		},
+		castCursor:             duckCastCursor,
 		terminationExpr:        "COALESCE(ended_at, started_at, created_at)",
 		terminationKind:        timestampCast,
 		caseInsensitiveLike:    "ILIKE",
@@ -197,6 +203,83 @@ func (b *QueryBuilder) CursorBeforePredicate(cur SessionCursor) string {
 	ea := b.dialect.cursorParam(b.Add(cur.EndedAt))
 	id := b.Add(cur.ID)
 	return "(" + b.dialect.cursorActivityExpr + ", id) < (" + ea + ", " + id + ")"
+}
+
+func pgCastCursor(ph string, kind valueKind) string {
+	switch kind {
+	case kindTimestamp:
+		return ph + "::timestamptz"
+	case kindInt:
+		return ph + "::bigint"
+	case kindReal:
+		return ph + "::double precision"
+	default:
+		return ph
+	}
+}
+
+func duckCastCursor(ph string, kind valueKind) string {
+	switch kind {
+	case kindTimestamp:
+		return "CAST(" + ph + " AS TIMESTAMP)"
+	case kindInt:
+		return "CAST(" + ph + " AS BIGINT)"
+	case kindReal:
+		return "CAST(" + ph + " AS DOUBLE)"
+	default:
+		return ph
+	}
+}
+
+func (d QueryDialect) timestampExpr(col string) string {
+	if d.emptyStringIsNull {
+		return "NULLIF(" + col + ", '')"
+	}
+	return col
+}
+
+func (b *QueryBuilder) OrderByClause(rs []ResolvedSort, f SessionFilter) string {
+	cols := appendIDTiebreaker(rs)
+	parts := make([]string, len(cols))
+	for i, c := range cols {
+		parts[i] = c.Sort.orderExpr(b, c.Desc, f) + " " + orderDirSQL(c.Desc)
+	}
+	return "ORDER BY " + strings.Join(parts, ", ")
+}
+
+func (b *QueryBuilder) CursorPredicate(
+	rs []ResolvedSort, f SessionFilter, values []any, id string,
+) string {
+	cols := appendIDTiebreaker(rs)
+	vals := values
+	if len(cols) > len(rs) {
+		vals = append(append(make([]any, 0, len(cols)), values...), id)
+	}
+	clauses := make([]string, 0, len(cols))
+	for j := range cols {
+		parts := make([]string, 0, j+1)
+		for i := range j {
+			e := cols[i].Sort.orderExpr(b, cols[i].Desc, f)
+			vp := b.dialect.castCursor(b.Add(vals[i]), cols[i].Sort.kind)
+			parts = append(parts, e+" = "+vp)
+		}
+		op := ">"
+		if cols[j].Desc {
+			op = "<"
+		}
+		e := cols[j].Sort.orderExpr(b, cols[j].Desc, f)
+		vp := b.dialect.castCursor(b.Add(vals[j]), cols[j].Sort.kind)
+		parts = append(parts, e+" "+op+" "+vp)
+		clauses = append(clauses, "("+strings.Join(parts, " AND ")+")")
+	}
+	return "(" + strings.Join(clauses, " OR ") + ")"
+}
+
+func orderDirSQL(desc bool) string {
+	if desc {
+		return "DESC"
+	}
+	return "ASC"
 }
 
 // LimitOffset renders a parameterized LIMIT/OFFSET clause.

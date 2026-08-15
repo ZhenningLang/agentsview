@@ -312,6 +312,7 @@ func sessionUsageData(sessionID string) (*sessionUsageOutput, int, error) {
 			AgentDirs:               appCfg.AgentDirs,
 			Machine:                 "local",
 			BlockedResultCategories: appCfg.ResultContentBlockedCategories,
+			SyncIncludeCWDPrefixes:  appCfg.SyncIncludeCWDPrefixes,
 		})
 		if syncErr := engine.SyncSingleSessionContext(
 			ctx, resolvedID,
