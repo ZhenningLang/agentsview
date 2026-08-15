@@ -1436,7 +1436,7 @@ func TestCollectAndBatchPrefixesParserExcludedIDs(t *testing.T) {
 
 	e := &Engine{db: database, idPrefix: "host~"}
 	stats := e.collectAndBatch(
-		ctx, results, 1, 1, nil, syncWriteDefault,
+		ctx, results, 1, 1, nil, nil, syncWriteDefault,
 	)
 
 	assert.Equal(t, []string{"host~probe"}, stats.parserExcludedIDs)

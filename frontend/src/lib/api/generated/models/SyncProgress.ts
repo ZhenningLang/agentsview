@@ -3,14 +3,14 @@
 /* tslint:disable */
 /* eslint-disable */
 export type SyncProgress = {
-  phase: string;
+  current_project?: string;
   detail?: string;
   hint?: string;
-  resync?: boolean;
-  current_project?: string;
-  projects_total: number;
-  projects_done: number;
-  sessions_total: number;
-  sessions_done: number;
   messages_indexed: number;
+  phase: string;
+  projects_done: number;
+  projects_total: number;
+  resync?: boolean;
+  sessions_done: number;
+  sessions_total: number;
 };

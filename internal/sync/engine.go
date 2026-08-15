@@ -337,7 +337,7 @@ func (e *Engine) SyncPaths(paths []string) {
 	results := e.startWorkers(context.Background(), files, true)
 	stats = e.collectAndBatch(
 		context.Background(), results, len(files), len(files), nil,
-		syncWriteDefault,
+		nil, syncWriteDefault,
 	)
 	e.anomalies.applyTo(&stats)
 	e.persistSkipCache()
@@ -1617,11 +1617,15 @@ func (e *Engine) ResyncAll(
 	defer e.syncMu.Unlock()
 	defer e.clearCurrentProgress()
 
-	reportResyncProgress := func(p Progress) {
+	markResyncProgress := func(p Progress) Progress {
 		p.Resync = true
 		if p.Phase == PhaseSyncing && p.Detail == "" {
 			p.Detail = "Syncing sessions into rebuilt database"
 		}
+		return p
+	}
+	reportResyncProgress := func(p Progress) {
+		p = markResyncProgress(p)
 		e.reportProgress(onProgress, p)
 	}
 	reportResyncPhase := func(phase Phase, detail, hint string) {
@@ -1768,8 +1772,8 @@ func (e *Engine) ResyncAll(
 	// 3. Point engine at newDB and sync into it.
 	e.resyncArchiveStore = origDB
 	e.db = newDB
-	stats = e.syncAllLocked(
-		ctx, reportResyncProgress, time.Time{}, syncWriteBulk, true,
+	stats = e.syncAllLockedWithProgress(
+		ctx, onProgress, markResyncProgress, time.Time{}, syncWriteBulk, true,
 	)
 	e.db = origDB // restore immediately
 	e.resyncArchiveStore = nil
@@ -2200,6 +2204,23 @@ func (e *Engine) syncAllLocked(
 	ctx context.Context, onProgress ProgressFunc, since time.Time,
 	writeMode syncWriteMode, auditSameStat bool,
 ) (stats SyncStats) {
+	return e.syncAllLockedWithProgress(
+		ctx, onProgress, nil, since, writeMode, auditSameStat,
+	)
+}
+
+func (e *Engine) syncAllLockedWithProgress(
+	ctx context.Context, onProgress ProgressFunc,
+	wrapProgress func(Progress) Progress, since time.Time,
+	writeMode syncWriteMode, auditSameStat bool,
+) (stats SyncStats) {
+	reportProgress := func(p Progress) {
+		if wrapProgress != nil {
+			p = wrapProgress(p)
+		}
+		e.reportProgress(onProgress, p)
+	}
+
 	if ctx.Err() != nil {
 		return SyncStats{Aborted: true}
 	}
@@ -2255,7 +2276,7 @@ func (e *Engine) syncAllLocked(
 	}
 
 	progressTotal := len(all) + e.countDBBackedSessions(ctx)
-	e.reportProgress(onProgress, Progress{
+	reportProgress(Progress{
 		Phase:         PhaseSyncing,
 		SessionsTotal: progressTotal,
 	})
@@ -2263,7 +2284,8 @@ func (e *Engine) syncAllLocked(
 	tWorkers := time.Now()
 	results := e.startWorkers(ctx, all, auditSameStat)
 	stats = e.collectAndBatch(
-		ctx, results, len(all), progressTotal, onProgress, writeMode,
+		ctx, results, len(all), progressTotal, onProgress,
+		wrapProgress, writeMode,
 	)
 	if verbose {
 		log.Printf(
@@ -2300,7 +2322,7 @@ func (e *Engine) syncAllLocked(
 			dbProgress.MessagesIndexed += len(pw.msgs)
 		}
 		stats.messagesIndexed = dbProgress.MessagesIndexed
-		e.reportProgress(onProgress, dbProgress)
+		reportProgress(dbProgress)
 	}
 
 	// Sync current Kiro CLI sessions (SQLite-backed).
@@ -2684,7 +2706,7 @@ func (e *Engine) syncAllLocked(
 		)
 	}
 
-	e.reportProgress(onProgress, Progress{
+	reportProgress(Progress{
 		Phase:           PhaseDone,
 		SessionsTotal:   progressTotal,
 		SessionsDone:    progressTotal,
@@ -3296,8 +3318,16 @@ func (e *Engine) collectAndBatch(
 	ctx context.Context,
 	results <-chan syncJob, total int, progressTotal int,
 	onProgress ProgressFunc,
+	wrapProgress func(Progress) Progress,
 	writeMode syncWriteMode,
 ) SyncStats {
+	reportProgress := func(p Progress) {
+		if wrapProgress != nil {
+			p = wrapProgress(p)
+		}
+		e.reportProgress(onProgress, p)
+	}
+
 	var stats SyncStats
 	stats.TotalSessions = total
 	stats.filesDiscovered = total
@@ -3345,7 +3375,7 @@ func (e *Engine) collectAndBatch(
 				stats.cwdExcludedSessions += r.cwdExcluded
 			}
 			progress.SessionsDone++
-			e.reportProgress(onProgress, progress)
+			reportProgress(progress)
 			continue
 		}
 		excludedSessionIDs := e.applyIDPrefixToSessionIDs(
@@ -3380,7 +3410,7 @@ func (e *Engine) collectAndBatch(
 				e.cacheSkip(r.path, r.mtime)
 			}
 			progress.SessionsDone++
-			e.reportProgress(onProgress, progress)
+			reportProgress(progress)
 			continue
 		}
 		if r.cacheSkip {
@@ -3477,7 +3507,7 @@ func (e *Engine) collectAndBatch(
 		}
 
 		progress.SessionsDone++
-		e.reportProgress(onProgress, progress)
+		reportProgress(progress)
 	}
 
 flush:
@@ -4232,10 +4262,10 @@ func (e *Engine) tryIncrementalJSONL(
 	for _, m := range newMsgs {
 		msgHasCtx, msgHasOut := m.TokenPresence()
 		if msgHasOut {
-			totalOut += clampedTokens(m.OutputTokens)
+			totalOut += db.ClampPlausibleTokens(m.OutputTokens)
 			hasTotalOut = true
 		}
-		if contextTokens := clampedTokens(m.ContextTokens); msgHasCtx && (!hasPeakCtx || contextTokens > peakCtx) {
+		if contextTokens := db.ClampPlausibleTokens(m.ContextTokens); msgHasCtx && (!hasPeakCtx || contextTokens > peakCtx) {
 			peakCtx = contextTokens
 			hasPeakCtx = true
 		}
@@ -5818,7 +5848,7 @@ func (e *Engine) prepareSessionWrite(
 		}
 	}
 
-	stats := validateAndSanitize(&s, msgs, usageEvents)
+	stats := db.ValidateAndSanitize(&s, msgs, usageEvents)
 	switch pw.sess.AggregateTokenSource {
 	case parser.TokenAggregateMessages:
 		s.TotalOutputTokens, s.HasTotalOutputTokens, _, _ =
@@ -5896,16 +5926,18 @@ func usageEventTokenTotals(
 ) (totalOutput int, hasOutput bool, peakContext int, hasContext bool) {
 	rolled := make([]parser.ParsedUsageEvent, 0, len(events))
 	for _, event := range events {
-		if usageSourceIsSessionSummary(event.Source) {
+		if db.UsageSourceIsSessionSummary(
+			db.SanitizeUTF8(event.Source),
+		) {
 			continue
 		}
 		if clamp {
-			event.InputTokens = clampedTokens(event.InputTokens)
-			event.OutputTokens = clampedTokens(event.OutputTokens)
-			event.CacheCreationInputTokens = clampedTokens(
+			event.InputTokens = db.ClampPlausibleTokens(event.InputTokens)
+			event.OutputTokens = db.ClampPlausibleTokens(event.OutputTokens)
+			event.CacheCreationInputTokens = db.ClampPlausibleTokens(
 				event.CacheCreationInputTokens,
 			)
-			event.CacheReadInputTokens = clampedTokens(
+			event.CacheReadInputTokens = db.ClampPlausibleTokens(
 				event.CacheReadInputTokens,
 			)
 		}
@@ -6007,7 +6039,7 @@ func (e *Engine) writeIncremental(
 		},
 		e.blockedResultCategories,
 	)
-	stats := validateAndSanitize(nil, dbMsgs, nil)
+	stats := db.ValidateAndSanitize(nil, dbMsgs, nil)
 	// Incremental parsing has message deltas, not parser session summaries, so
 	// malformed-line anomaly counts remain full-parse only. This path still
 	// reports sanitize anomalies for appended messages.
@@ -6025,7 +6057,7 @@ func (e *Engine) writeIncremental(
 		s := inc.endedAt.Format(time.RFC3339Nano)
 		endedAt = &s
 	}
-	endedAt, _ = blankImplausibleTimestampPtr(endedAt)
+	endedAt, _ = db.BlankImplausibleTimestampPtr(endedAt)
 
 	// Write messages first — only advance file_size when
 	// the insert succeeds so a failure is retried.
@@ -6501,7 +6533,7 @@ func toDBUsageEvents(
 	sessionID string, events []parser.ParsedUsageEvent,
 ) []db.UsageEvent {
 	out := toDBUsageEventsRaw(sessionID, events)
-	_ = validateAndSanitize(nil, nil, out)
+	_ = db.ValidateAndSanitize(nil, nil, out)
 	return out
 }
 

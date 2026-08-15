@@ -46,7 +46,9 @@ export function commitsDisagree(
 
 class SyncStore {
   syncing: boolean = $state(false);
-  progress: SyncProgress | null = $state(null);
+  backendSyncing: boolean = $state(false);
+  private localProgress: SyncProgress | null = $state(null);
+  private backendProgress: SyncProgress | null = $state(null);
   lastSync: string | null = $state(null);
   lastSyncStats: SyncStats | null = $state(null);
   stats: Stats | null = $state(null);
@@ -71,6 +73,10 @@ class SyncStore {
 
   get readOnly(): boolean {
     return this.serverVersion?.read_only === true;
+  }
+
+  get progress(): SyncProgress | null {
+    return this.localProgress ?? this.backendProgress;
   }
 
   private watchEventSource: EventSource | null = null;
@@ -148,10 +154,11 @@ class SyncStore {
       this.lastSyncStats = status.stats as unknown as SyncStats | null;
       const statusProgress = status.progress as unknown as SyncProgress | null | undefined;
       if (statusProgress) {
-        this.syncing = true;
-        this.progress = statusProgress;
+        this.backendSyncing = true;
+        this.backendProgress = statusProgress;
       } else {
-        this.progress = null;
+        this.backendSyncing = false;
+        this.backendProgress = null;
       }
       const shouldRetryStats = this.backendDegraded;
       // Suppress notifications on initial hydration and
@@ -277,7 +284,7 @@ class SyncStore {
   ): Promise<boolean> {
     if (this.syncing) return false;
     this.syncing = true;
-    this.progress = null;
+    this.localProgress = null;
     try {
       this.pendingHydration = true;
       await Promise.all([this.loadStatus(), this.loadStats()]);
@@ -286,7 +293,7 @@ class SyncStore {
       return true;
     } finally {
       this.syncing = false;
-      this.progress = null;
+      this.localProgress = null;
     }
   }
 
@@ -299,15 +306,15 @@ class SyncStore {
   ): boolean {
     if (this.syncing) return false;
     this.syncing = true;
-    this.progress = null;
+    this.localProgress = null;
 
     const finalizeSync = () => {
       this.syncing = false;
-      this.progress = null;
+      this.localProgress = null;
     };
 
     const handle = syncFn((p: SyncProgress) => {
-      this.progress = p;
+      this.localProgress = p;
     });
 
     handle.done
@@ -328,6 +335,7 @@ class SyncStore {
           err instanceof DOMException &&
           err.name === "AbortError"
         ) {
+          finalizeSync();
           return;
         }
         finalizeSync();

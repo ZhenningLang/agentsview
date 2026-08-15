@@ -15,7 +15,7 @@
   let relativeTimeTick = $state(0);
 
   let progressText = $derived.by(() => {
-    if (!sync.syncing || !sync.progress) return null;
+    if (!(sync.syncing || sync.backendSyncing) || !sync.progress) return null;
     const p = sync.progress;
     if (p.detail) return p.detail;
     if (p.phase === "scan") {

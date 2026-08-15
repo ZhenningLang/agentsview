@@ -16,8 +16,11 @@ describe("StatusBar", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-08T05:00:00Z"));
+    const s = sync as unknown as Record<string, unknown>;
     sync.syncing = false;
-    sync.progress = null;
+    sync.backendSyncing = false;
+    s.localProgress = null;
+    s.backendProgress = null;
     sync.lastSync = "2026-04-08T05:00:00Z";
     sync.stats = null;
     sync.serverVersion = null;
@@ -37,7 +40,10 @@ describe("StatusBar", () => {
     sync.remoteUnreachable = false;
     sync.backendDegraded = false;
     sync.backendDegradedMessage = null;
-    sync.progress = null;
+    const s = sync as unknown as Record<string, unknown>;
+    sync.backendSyncing = false;
+    s.localProgress = null;
+    s.backendProgress = null;
     sync.syncing = false;
   });
 
@@ -115,8 +121,9 @@ describe("StatusBar", () => {
   });
 
   it("shows Phase 22 progress detail with hint", async () => {
-    sync.syncing = true;
-    sync.progress = {
+    const s = sync as unknown as Record<string, unknown>;
+    sync.backendSyncing = true;
+    s.backendProgress = {
       phase: "rebuilding_search",
       detail: "Rebuilding search index",
       hint: "Rebuilding the search index may take a while on large archives.",
@@ -136,6 +143,29 @@ describe("StatusBar", () => {
     expect(
       document.querySelector(".sync-progress")?.getAttribute("title"),
     ).toBe("Rebuilding the search index may take a while on large archives.");
+
+    unmount(component);
+  });
+
+  it("shows backend polling progress without local sync", async () => {
+    const s = sync as unknown as Record<string, unknown>;
+    sync.syncing = false;
+    sync.backendSyncing = true;
+    s.backendProgress = {
+      phase: "parse",
+      projects_total: 0,
+      projects_done: 0,
+      sessions_total: 10,
+      sessions_done: 4,
+      messages_indexed: 20,
+    };
+
+    const component = mount(StatusBar, {
+      target: document.body,
+    });
+    await tick();
+
+    expect(document.body.textContent).toContain("Syncing 40% (4/10)");
 
     unmount(component);
   });

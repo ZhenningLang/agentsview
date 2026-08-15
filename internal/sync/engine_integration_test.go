@@ -1647,47 +1647,110 @@ func TestSyncEngineProgressDoneCatchesResyncDBBackedWork(t *testing.T) {
 }
 
 func TestPhase22DetailedResyncProgressLifecycle(t *testing.T) {
-	env := setupTestEnv(t)
+	t.Run("success emits detail and clears progress", func(t *testing.T) {
+		env := setupTestEnv(t)
 
-	msg := testjsonl.NewSessionBuilder().
-		AddClaudeUser(tsZero, "msg").
-		String()
-	env.writeClaudeSession(t, "test-proj", "phase22-progress.jsonl", msg)
+		msg := testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsZero, "msg").
+			String()
+		env.writeClaudeSession(t, "test-proj", "phase22-progress.jsonl", msg)
 
-	var events []map[string]any
-	stats := env.engine.ResyncAll(context.Background(), func(p sync.Progress) {
-		data, err := json.Marshal(p)
-		require.NoError(t, err)
-		var event map[string]any
-		require.NoError(t, json.Unmarshal(data, &event))
-		events = append(events, event)
+		var events []map[string]any
+		stats := env.engine.ResyncAll(context.Background(), func(p sync.Progress) {
+			current, ok := env.engine.CurrentProgress()
+			require.True(t, ok, "callback should see current progress")
+			assert.True(t, current.Resync, "current progress must be labelled before callback: %+v", current)
+			data, err := json.Marshal(p)
+			require.NoError(t, err)
+			var event map[string]any
+			require.NoError(t, json.Unmarshal(data, &event))
+			events = append(events, event)
+		})
+
+		require.False(t, stats.Aborted, "resync should complete: %+v", stats)
+		require.NotEmpty(t, events, "expected resync progress callbacks")
+
+		var sawPrepare, sawSearchHint, sawSwap, sawSyncingWithCounters bool
+		for _, event := range events {
+			assert.Equal(t, true, event["resync"], "resync progress must be labelled: %+v", event)
+			if event["detail"] != nil {
+				assert.NotEmpty(t, event["detail"], "detail must be non-empty when present")
+			}
+			switch event["phase"] {
+			case "preparing_resync":
+				sawPrepare = true
+			case "syncing":
+				if fmt.Sprint(event["detail"]) == "Syncing sessions into rebuilt database" &&
+					fmt.Sprint(event["sessions_total"]) != "0" {
+					sawSyncingWithCounters = true
+				}
+			case "rebuilding_search":
+				sawSearchHint = true
+				assert.Contains(t, fmt.Sprint(event["hint"]), "search index")
+			case "swapping_database":
+				sawSwap = true
+			}
+		}
+		assert.True(t, sawPrepare, "expected preparing_resync milestone in %+v", events)
+		assert.True(t, sawSyncingWithCounters, "expected syncing progress with default detail and counters in %+v", events)
+		assert.True(t, sawSearchHint, "expected rebuilding_search milestone with hint in %+v", events)
+		assert.True(t, sawSwap, "expected swapping_database milestone in %+v", events)
+
+		current, ok := env.engine.CurrentProgress()
+		assert.False(t, ok, "current progress should clear after resync, got %+v", current)
 	})
 
-	require.False(t, stats.Aborted, "resync should complete: %+v", stats)
-	require.NotEmpty(t, events, "expected resync progress callbacks")
+	t.Run("cancel clears progress", func(t *testing.T) {
+		env := setupTestEnv(t)
+		msg := testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsZero, "msg").
+			String()
+		env.writeClaudeSession(t, "test-proj", "phase22-cancel.jsonl", msg)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
 
-	var sawPrepare, sawSearchHint, sawSwap bool
-	for _, event := range events {
-		assert.Equal(t, true, event["resync"], "resync progress must be labelled: %+v", event)
-		if event["detail"] != nil {
-			assert.NotEmpty(t, event["detail"], "detail must be non-empty when present")
-		}
-		switch event["phase"] {
-		case "preparing_resync":
-			sawPrepare = true
-		case "rebuilding_search":
-			sawSearchHint = true
-			assert.Contains(t, fmt.Sprint(event["hint"]), "search index")
-		case "swapping_database":
-			sawSwap = true
-		}
-	}
-	assert.True(t, sawPrepare, "expected preparing_resync milestone in %+v", events)
-	assert.True(t, sawSearchHint, "expected rebuilding_search milestone with hint in %+v", events)
-	assert.True(t, sawSwap, "expected swapping_database milestone in %+v", events)
+		stats := env.engine.ResyncAll(ctx, nil)
 
-	current, ok := env.engine.CurrentProgress()
-	assert.False(t, ok, "current progress should clear after resync, got %+v", current)
+		require.True(t, stats.Aborted, "expected cancelled resync to abort")
+		current, ok := env.engine.CurrentProgress()
+		assert.False(t, ok, "current progress should clear after cancelled resync, got %+v", current)
+	})
+
+	t.Run("abort clears progress", func(t *testing.T) {
+		env := setupTestEnv(t)
+		content := testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsEarly, "trash must survive").
+			AddClaudeAssistant(tsEarlyS1, "reply").
+			String()
+		env.writeClaudeSession(
+			t, "test-proj", "phase22-abort-trash-copy.jsonl", content,
+		)
+		env.engine.SyncAll(context.Background(), nil)
+		require.NoError(t, env.db.SoftDeleteSession("phase22-abort-trash-copy"))
+		require.NoError(t, env.db.CloseConnections())
+
+		raw, err := sql.Open("sqlite3", env.db.Path())
+		require.NoError(t, err)
+		_, err = raw.Exec(`
+			DROP TABLE tool_calls;
+			CREATE TABLE tool_calls (
+				id INTEGER PRIMARY KEY,
+				message_id INTEGER NOT NULL,
+				session_id TEXT NOT NULL,
+				tool_name TEXT NOT NULL,
+				category TEXT NOT NULL
+			);
+		`)
+		require.NoError(t, err)
+		require.NoError(t, raw.Close())
+		require.NoError(t, env.db.Reopen())
+
+		stats := env.engine.ResyncAll(context.Background(), nil)
+
+		require.True(t, stats.Aborted, "expected trash copy failure to abort")
+		current, ok := env.engine.CurrentProgress()
+		assert.False(t, ok, "current progress should clear after aborted resync, got %+v", current)
+	})
 }
 
 func TestSyncEngineHashSkip(t *testing.T) {

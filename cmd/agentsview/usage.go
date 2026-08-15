@@ -280,13 +280,11 @@ func ensureFreshData(
 // to stderr so it does not pollute stdout-bound JSON or
 // statusline output from the usage commands.
 func printSyncProgressStderr(p sync.Progress) {
-	if p.SessionsTotal > 0 {
-		fmt.Fprintf(os.Stderr,
-			"\r  %d/%d sessions (%.0f%%) · %d messages",
-			p.SessionsDone, p.SessionsTotal,
-			p.Percent(), p.MessagesIndexed,
-		)
+	text := syncProgressLine(p)
+	if text == "" {
+		return
 	}
+	fmt.Fprint(os.Stderr, "\r  "+text)
 }
 
 // printSyncSummaryStderr mirrors printSyncSummary but writes to

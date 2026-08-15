@@ -82,6 +82,21 @@ Source ledger: `docs/UPSTREAM_AUDIT.md`. This file contains only records whose l
 
 ## Phase 22 移出项（依赖本地不存在的子系统）
 
+### `800c19b6` — fix(sync): centralize parser-output validation before persistence
+
+**状态**：already-satisfied，不是 backlog implementation item。
+
+**依据**：本 fork 在 Phase 22 之前已具备该意图的本地实现。`internal/db/validate.go`
+集中定义 parser-output validation/sanitize policy；Phase 22 前的 `internal/sync/engine.go`
+已经在 full session、incremental messages、usage event conversion 这些持久化前 seam 调用
+`db.ValidateAndSanitize`。
+
+**为什么不移植**：上游新增的 `internal/sync/validate.go` 在本 fork 里只会把既有
+`db.ValidateAndSanitize` 调用包一层同构别名，没有行为变化，且会制造重复策略入口。
+
+**重新评估的条件**：不需要重新评估。后续只有在新增 parser-output persistence seam 且绕过
+`internal/db/validate.go` 时，才按普通 correctness bug 处理。
+
 ### `6c3317ad` — feat(remotesync): prune forbidden roots nested inside allowed archive roots
 
 **依赖缺口**：本地无 `internal/remotesync` 包（缺 `archive.go` / `manifest.go` /
