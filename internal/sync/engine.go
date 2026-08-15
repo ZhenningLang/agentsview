@@ -34,7 +34,10 @@ const (
 	syncWriteBulk
 )
 
-var errSessionPreserved = errors.New("session preserved")
+var (
+	errSessionPreserved   = errors.New("session preserved")
+	errSessionCWDExcluded = errors.New("session cwd excluded")
+)
 
 func isIntentionalSessionSkip(err error) bool {
 	return errors.Is(err, db.ErrSessionExcluded) ||
@@ -59,6 +62,7 @@ type EngineConfig struct {
 	AgentDirs               map[parser.AgentType][]string
 	Machine                 string
 	BlockedResultCategories []string
+	SyncIncludeCWDPrefixes  []string
 	// IDPrefix is prepended to all session IDs. Used by
 	// remote sync to namespace IDs by host (e.g. "host~").
 	IDPrefix string
@@ -84,6 +88,7 @@ type Engine struct {
 	agentDirs               map[parser.AgentType][]string
 	machine                 string
 	blockedResultCategories map[string]bool
+	syncIncludeCWDPrefixes  []string
 	syncMu                  gosync.Mutex // serializes all sync operations
 	mu                      gosync.RWMutex
 	lastSync                time.Time
@@ -148,6 +153,7 @@ func NewEngine(
 		agentDirs:               dirs,
 		machine:                 cfg.Machine,
 		blockedResultCategories: blockedCategorySet(cfg.BlockedResultCategories),
+		syncIncludeCWDPrefixes:  normalizeCWDPrefixes(cfg.SyncIncludeCWDPrefixes),
 		skipCache:               skipCache,
 		ephemeral:               cfg.Ephemeral,
 		idPrefix:                cfg.IDPrefix,
@@ -437,6 +443,43 @@ func isUnder(dir, path string) (string, bool) {
 		return "", false
 	}
 	return rel, true
+}
+
+func normalizeCWDPrefixes(prefixes []string) []string {
+	seen := make(map[string]struct{}, len(prefixes))
+	out := make([]string, 0, len(prefixes))
+	for _, raw := range prefixes {
+		p := strings.TrimSpace(raw)
+		if p == "" {
+			continue
+		}
+		p = filepath.Clean(p)
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (e *Engine) includeCWD(cwd string) bool {
+	if len(e.syncIncludeCWDPrefixes) == 0 || strings.TrimSpace(cwd) == "" {
+		return true
+	}
+	cleaned := filepath.Clean(strings.TrimSpace(cwd))
+	for _, prefix := range e.syncIncludeCWDPrefixes {
+		if cleaned == prefix {
+			return true
+		}
+		if _, ok := isUnder(prefix, cleaned); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // findContainingDir returns the first dir from dirs that is a
@@ -1690,11 +1733,12 @@ func (e *Engine) ResyncAll(
 		stats.TotalSessions > 0 &&
 		stats.Failed == 0 &&
 		(oldFileSessions == 0 || trashedCopied > 0)
+	intentionallyFilteredFiles := stats.parserExcludedFiles + stats.cwdExcludedFiles
 	excludedOnly := stats.Synced == 0 &&
 		stats.TotalSessions > 0 &&
 		stats.Failed == 0 &&
-		stats.parserExcludedFiles > 0 &&
-		stats.filesOK == stats.parserExcludedFiles
+		intentionallyFilteredFiles > 0 &&
+		stats.filesOK == intentionallyFilteredFiles
 	abortSwap := stats.Aborted ||
 		emptyDiscovery ||
 		(stats.Synced == 0 &&
@@ -2177,12 +2221,15 @@ func (e *Engine) syncAllLocked(
 		tWrite := time.Now()
 		var kiroWritten int
 		if writeMode == syncWriteBulk {
-			var failedWrites int
-			kiroWritten, _, failedWrites = e.writeBatch(
+			var failedWrites, skippedWrites int
+			kiroWritten, _, failedWrites, skippedWrites, _ = e.writeBatch(
 				kiroPending, writeMode, true,
 			)
 			for range failedWrites {
 				stats.RecordFailed()
+			}
+			for range skippedWrites {
+				stats.RecordSkip()
 			}
 		} else {
 			resolveWorktreeProject := e.loadWorktreeProjectResolver()
@@ -2195,6 +2242,8 @@ func (e *Engine) syncAllLocked(
 				); {
 				case err == nil:
 					kiroWritten++
+				case errors.Is(err, errSessionCWDExcluded):
+					stats.RecordSkip()
 				case isIntentionalSessionSkip(err),
 					errors.Is(err, errSessionPreserved):
 				default:
@@ -2232,12 +2281,15 @@ func (e *Engine) syncAllLocked(
 		tWrite := time.Now()
 		var kiloWritten int
 		if writeMode == syncWriteBulk {
-			var failedWrites int
-			kiloWritten, _, failedWrites = e.writeBatch(
+			var failedWrites, skippedWrites int
+			kiloWritten, _, failedWrites, skippedWrites, _ = e.writeBatch(
 				kiloPending, writeMode, true,
 			)
 			for range failedWrites {
 				stats.RecordFailed()
+			}
+			for range skippedWrites {
+				stats.RecordSkip()
 			}
 		} else {
 			resolveWorktreeProject := e.loadWorktreeProjectResolver()
@@ -2250,6 +2302,8 @@ func (e *Engine) syncAllLocked(
 				); {
 				case err == nil:
 					kiloWritten++
+				case errors.Is(err, errSessionCWDExcluded):
+					stats.RecordSkip()
 				case isIntentionalSessionSkip(err),
 					errors.Is(err, errSessionPreserved):
 				default:
@@ -2289,12 +2343,15 @@ func (e *Engine) syncAllLocked(
 		tWrite := time.Now()
 		var ocWritten int
 		if writeMode == syncWriteBulk {
-			var failedWrites int
-			ocWritten, _, failedWrites = e.writeBatch(
+			var failedWrites, skippedWrites int
+			ocWritten, _, failedWrites, skippedWrites, _ = e.writeBatch(
 				ocPending, writeMode, true,
 			)
 			for range failedWrites {
 				stats.RecordFailed()
+			}
+			for range skippedWrites {
+				stats.RecordSkip()
 			}
 		} else {
 			resolveWorktreeProject := e.loadWorktreeProjectResolver()
@@ -2307,6 +2364,8 @@ func (e *Engine) syncAllLocked(
 				); {
 				case err == nil:
 					ocWritten++
+				case errors.Is(err, errSessionCWDExcluded):
+					stats.RecordSkip()
 				case isIntentionalSessionSkip(err),
 					errors.Is(err, errSessionPreserved):
 					// Intentional skip, not a failure.
@@ -2345,12 +2404,15 @@ func (e *Engine) syncAllLocked(
 		tWrite := time.Now()
 		var warpWritten int
 		if writeMode == syncWriteBulk {
-			var failedWrites int
-			warpWritten, _, failedWrites = e.writeBatch(
+			var failedWrites, skippedWrites int
+			warpWritten, _, failedWrites, skippedWrites, _ = e.writeBatch(
 				warpPending, writeMode, true,
 			)
 			for range failedWrites {
 				stats.RecordFailed()
+			}
+			for range skippedWrites {
+				stats.RecordSkip()
 			}
 		} else {
 			resolveWorktreeProject := e.loadWorktreeProjectResolver()
@@ -2363,6 +2425,8 @@ func (e *Engine) syncAllLocked(
 				); {
 				case err == nil:
 					warpWritten++
+				case errors.Is(err, errSessionCWDExcluded):
+					stats.RecordSkip()
 				case isIntentionalSessionSkip(err),
 					errors.Is(err, errSessionPreserved):
 					// Intentional skip, not a failure.
@@ -2401,12 +2465,15 @@ func (e *Engine) syncAllLocked(
 		tWrite := time.Now()
 		var forgeWritten int
 		if writeMode == syncWriteBulk {
-			var failedWrites int
-			forgeWritten, _, failedWrites = e.writeBatch(
+			var failedWrites, skippedWrites int
+			forgeWritten, _, failedWrites, skippedWrites, _ = e.writeBatch(
 				forgePending, writeMode, true,
 			)
 			for range failedWrites {
 				stats.RecordFailed()
+			}
+			for range skippedWrites {
+				stats.RecordSkip()
 			}
 		} else {
 			resolveWorktreeProject := e.loadWorktreeProjectResolver()
@@ -2419,6 +2486,8 @@ func (e *Engine) syncAllLocked(
 				); {
 				case err == nil:
 					forgeWritten++
+				case errors.Is(err, errSessionCWDExcluded):
+					stats.RecordSkip()
 				case errors.Is(err, db.ErrSessionExcluded),
 					errors.Is(err, errSessionPreserved):
 					// Intentional skip, not a failure.
@@ -2457,12 +2526,15 @@ func (e *Engine) syncAllLocked(
 		tWrite := time.Now()
 		var piebaldWritten int
 		if writeMode == syncWriteBulk {
-			var failedWrites int
-			piebaldWritten, _, failedWrites = e.writeBatch(
+			var failedWrites, skippedWrites int
+			piebaldWritten, _, failedWrites, skippedWrites, _ = e.writeBatch(
 				piebaldPending, writeMode, true,
 			)
 			for range failedWrites {
 				stats.RecordFailed()
+			}
+			for range skippedWrites {
+				stats.RecordSkip()
 			}
 		} else {
 			for _, pw := range piebaldPending {
@@ -2472,6 +2544,8 @@ func (e *Engine) syncAllLocked(
 				switch err := e.writeSessionFull(pw); {
 				case err == nil:
 					piebaldWritten++
+				case errors.Is(err, errSessionCWDExcluded):
+					stats.RecordSkip()
 				case errors.Is(err, db.ErrSessionExcluded),
 					errors.Is(err, errSessionPreserved):
 					// Intentional skip, not a failure.
@@ -3178,6 +3252,10 @@ func (e *Engine) collectAndBatch(
 		}
 		if r.skip {
 			stats.RecordSkip()
+			if r.cwdExcluded > 0 {
+				stats.cwdExcludedFiles++
+				stats.cwdExcludedSessions += r.cwdExcluded
+			}
 			progress.SessionsDone++
 			if onProgress != nil {
 				onProgress(progress)
@@ -3187,7 +3265,7 @@ func (e *Engine) collectAndBatch(
 		excludedSessionIDs := e.applyIDPrefixToSessionIDs(
 			r.excludedSessionIDs,
 		)
-		if len(excludedSessionIDs) > 0 && !r.sourceSnapshot {
+		if len(excludedSessionIDs) > 0 && !r.sourceSnapshot && r.cwdExcluded == 0 {
 			if _, err := e.db.DeleteParserExcludedSessions(
 				excludedSessionIDs,
 			); err != nil {
@@ -3201,9 +3279,16 @@ func (e *Engine) collectAndBatch(
 			)
 		}
 		if len(r.results) == 0 && r.incremental == nil && !r.sourceSnapshot {
-			if len(r.excludedSessionIDs) > 0 {
+			if r.cwdExcluded > 0 {
+				stats.RecordSkip()
+				stats.cwdExcludedFiles++
+				stats.cwdExcludedSessions += r.cwdExcluded
+			}
+			if len(r.excludedSessionIDs) > 0 || r.cwdExcluded > 0 {
 				stats.filesOK++
-				stats.parserExcludedFiles++
+				if r.cwdExcluded == 0 {
+					stats.parserExcludedFiles++
+				}
 			}
 			if r.cacheSkip {
 				e.cacheSkip(r.path, r.mtime)
@@ -3221,18 +3306,20 @@ func (e *Engine) collectAndBatch(
 
 		if r.sourceSnapshot {
 			if len(pending) > 0 {
-				writtenSessions, writtenMessages, failedWrites :=
+				writtenSessions, writtenMessages, failedWrites, skippedWrites, cwdExcludedWrites :=
 					e.writeBatch(pending, writeMode, false)
 				stats.RecordSynced(writtenSessions)
 				for range failedWrites {
 					stats.RecordFailed()
 				}
+				stats.recordSkippedWrites(skippedWrites, cwdExcludedWrites)
+				stats.cwdExcludedFiles += cwdExcludedWrites
 				progress.MessagesIndexed += writtenMessages
 				stats.messagesIndexed = progress.MessagesIndexed
 				pending = pending[:0]
 			}
 
-			writtenSessions, writtenMessages, failedWrites :=
+			writtenSessions, writtenMessages, failedWrites, skippedWrites, cwdExcludedWrites :=
 				e.writeSourceSnapshot(
 					r.results, r.staleSessionIDs,
 					excludedSessionIDs, r.needsRetry,
@@ -3241,16 +3328,24 @@ func (e *Engine) collectAndBatch(
 			for range failedWrites {
 				stats.RecordFailed()
 			}
+			stats.recordSkippedWrites(skippedWrites, cwdExcludedWrites)
 			if failedWrites == 0 {
-				if len(r.results) == 0 && len(excludedSessionIDs) > 0 {
+				cleanupSuppressed := cwdExcludedWrites > 0 ||
+					(len(r.results) == 0 && len(excludedSessionIDs) > 0)
+				if cwdExcludedWrites > 0 {
+					stats.cwdExcludedFiles++
+				}
+				if len(r.results) == 0 && len(excludedSessionIDs) > 0 && cwdExcludedWrites == 0 {
 					stats.parserExcludedFiles++
 				}
-				stats.parserExcludedIDs = append(
-					stats.parserExcludedIDs,
-					mergeUniqueStrings(
-						r.staleSessionIDs, excludedSessionIDs,
-					)...,
-				)
+				if !cleanupSuppressed {
+					stats.parserExcludedIDs = append(
+						stats.parserExcludedIDs,
+						mergeUniqueStrings(
+							r.staleSessionIDs, excludedSessionIDs,
+						)...,
+					)
+				}
 			}
 			progress.MessagesIndexed += writtenMessages
 			stats.messagesIndexed = progress.MessagesIndexed
@@ -3278,12 +3373,14 @@ func (e *Engine) collectAndBatch(
 		}
 
 		if len(pending) >= batchSize {
-			writtenSessions, writtenMessages, failedWrites :=
+			writtenSessions, writtenMessages, failedWrites, skippedWrites, cwdExcludedWrites :=
 				e.writeBatch(pending, writeMode, false)
 			stats.RecordSynced(writtenSessions)
 			for range failedWrites {
 				stats.RecordFailed()
 			}
+			stats.recordSkippedWrites(skippedWrites, cwdExcludedWrites)
+			stats.cwdExcludedFiles += cwdExcludedWrites
 			progress.MessagesIndexed += writtenMessages
 			stats.messagesIndexed = progress.MessagesIndexed
 			pending = pending[:0]
@@ -3297,12 +3394,14 @@ func (e *Engine) collectAndBatch(
 
 flush:
 	if len(pending) > 0 {
-		writtenSessions, writtenMessages, failedWrites :=
+		writtenSessions, writtenMessages, failedWrites, skippedWrites, cwdExcludedWrites :=
 			e.writeBatch(pending, writeMode, false)
 		stats.RecordSynced(writtenSessions)
 		for range failedWrites {
 			stats.RecordFailed()
 		}
+		stats.recordSkippedWrites(skippedWrites, cwdExcludedWrites)
+		stats.cwdExcludedFiles += cwdExcludedWrites
 		progress.MessagesIndexed += writtenMessages
 		stats.messagesIndexed = progress.MessagesIndexed
 	}
@@ -3333,6 +3432,7 @@ func drainResults(results <-chan syncJob, remaining int) {
 type incrementalUpdate struct {
 	sessionID            string
 	agent                parser.AgentType
+	cwd                  string
 	msgs                 []parser.ParsedMessage
 	endedAt              time.Time
 	msgCount             int // total (old + new)
@@ -3349,6 +3449,7 @@ type incrementalUpdate struct {
 type processResult struct {
 	results            []parser.ParseResult
 	excludedSessionIDs []string
+	cwdExcluded        int
 	skip               bool
 	mtime              int64
 	err                error
@@ -3364,6 +3465,15 @@ type processResult struct {
 	// reuse the existing ordinals, so the default append-only
 	// writeMessages would silently drop the rewrite.
 	forceReplace bool
+}
+
+func (s *SyncStats) recordSkippedWrites(skipped, cwdExcluded int) {
+	for range skipped {
+		s.RecordSkip()
+	}
+	if cwdExcluded > 0 {
+		s.cwdExcludedSessions += cwdExcluded
+	}
 }
 
 func (e *Engine) processFile(
@@ -3757,6 +3867,16 @@ func (e *Engine) processClaude(
 	}
 
 	parser.InferRelationshipTypes(results)
+	cwdExcluded := 0
+	for _, result := range results {
+		if !e.includeCWD(result.Session.Cwd) {
+			cwdExcluded++
+		}
+	}
+	if cwdExcluded == 0 && len(results) == 0 && len(excludedIDs) > 0 &&
+		cwd != "" && !e.includeCWD(cwd) {
+		cwdExcluded = len(excludedIDs)
+	}
 
 	staleIDs, err := e.staleClaudeSourceSessionIDs(file.Path, results)
 	if err != nil {
@@ -3766,10 +3886,11 @@ func (e *Engine) processClaude(
 	return processResult{
 		results:            results,
 		excludedSessionIDs: excludedIDs,
+		cwdExcluded:        cwdExcluded,
 		forceReplace:       true,
 		staleSessionIDs:    staleIDs,
 		sourceSnapshot: len(results) > 1 || len(staleIDs) > 0 ||
-			(len(results) > 0 && len(excludedIDs) > 0),
+			len(excludedIDs) > 0,
 	}
 }
 
@@ -3854,7 +3975,6 @@ func (e *Engine) tryIncrementalJSONL(
 	if !ok || inc.FileSize <= 0 {
 		return processResult{}, false
 	}
-
 	// Existing rows from an older parser lack new metadata
 	// columns. Force a full parse so the rewrite picks them
 	// up rather than appending new rows on top of stale ones.
@@ -3966,6 +4086,7 @@ func (e *Engine) tryIncrementalJSONL(
 				incremental: &incrementalUpdate{
 					sessionID:            inc.ID,
 					agent:                agent,
+					cwd:                  inc.Cwd,
 					endedAt:              endedAt,
 					msgCount:             inc.MsgCount,
 					userMsgCount:         inc.UserMsgCount,
@@ -4036,6 +4157,7 @@ func (e *Engine) tryIncrementalJSONL(
 		incremental: &incrementalUpdate{
 			sessionID:            inc.ID,
 			agent:                agent,
+			cwd:                  inc.Cwd,
 			msgs:                 newMsgs,
 			endedAt:              endedAt,
 			msgCount:             inc.MsgCount + len(newMsgs),
@@ -5353,6 +5475,14 @@ type pendingWrite struct {
 	forceReplace bool
 }
 
+type sessionWriteSkipReason int
+
+const (
+	sessionWriteOK sessionWriteSkipReason = iota
+	sessionWritePreserved
+	sessionWriteCWDExcluded
+)
+
 func dataVersionForWrite(pw pendingWrite) int {
 	if !pw.needsRetry {
 		return db.CurrentDataVersion()
@@ -5409,17 +5539,21 @@ func (e *Engine) writeBatch(
 	batch []pendingWrite,
 	writeMode syncWriteMode,
 	forceReplace bool,
-) (writtenSessions, writtenMessages, failedSessions int) {
+) (writtenSessions, writtenMessages, failedSessions, skippedSessions, cwdExcludedSessions int) {
 	if writeMode == syncWriteBulk {
 		return e.writeBatchBulk(batch, forceReplace)
 	}
 
 	resolveWorktreeProject := e.loadWorktreeProjectResolver()
 	for _, pw := range batch {
-		s, msgs, usageEvents, ok := e.prepareSessionWrite(
+		s, msgs, usageEvents, skipReason := e.prepareSessionWrite(
 			pw, resolveWorktreeProject,
 		)
-		if !ok {
+		if skipReason != sessionWriteOK {
+			if skipReason == sessionWriteCWDExcluded {
+				skippedSessions++
+				cwdExcludedSessions++
+			}
 			continue
 		}
 
@@ -5515,7 +5649,7 @@ func (e *Engine) writeBatch(
 		writtenSessions++
 		writtenMessages += len(msgs)
 	}
-	return writtenSessions, writtenMessages, failedSessions
+	return writtenSessions, writtenMessages, failedSessions, skippedSessions, cwdExcludedSessions
 }
 
 func (e *Engine) writeSourceSnapshot(
@@ -5523,7 +5657,7 @@ func (e *Engine) writeSourceSnapshot(
 	staleIDs []string,
 	parserExcludedIDs []string,
 	needsRetry bool,
-) (writtenSessions, writtenMessages, failedSessions int) {
+) (writtenSessions, writtenMessages, failedSessions, skippedSessions, cwdExcludedSessions int) {
 	resolveWorktreeProject := e.loadWorktreeProjectResolver()
 	writes := make([]db.SessionBatchWrite, 0, len(results))
 	for _, result := range results {
@@ -5534,10 +5668,14 @@ func (e *Engine) writeSourceSnapshot(
 			needsRetry:   needsRetry,
 			forceReplace: true,
 		}
-		s, msgs, usageEvents, ok := e.prepareSessionWrite(
+		s, msgs, usageEvents, skipReason := e.prepareSessionWrite(
 			pw, resolveWorktreeProject,
 		)
-		if !ok {
+		if skipReason != sessionWriteOK {
+			if skipReason == sessionWriteCWDExcluded {
+				skippedSessions++
+				cwdExcludedSessions++
+			}
 			continue
 		}
 		update, findings := computeSignalsAndSecrets(s, msgs)
@@ -5553,8 +5691,14 @@ func (e *Engine) writeSourceSnapshot(
 		})
 	}
 
+	cleanupStaleIDs := staleIDs
+	cleanupParserExcludedIDs := parserExcludedIDs
+	if cwdExcludedSessions > 0 || (len(results) == 0 && len(parserExcludedIDs) > 0) {
+		cleanupStaleIDs = nil
+		cleanupParserExcludedIDs = nil
+	}
 	result, err := e.db.WriteSessionSnapshot(
-		writes, staleIDs, parserExcludedIDs,
+		writes, cleanupStaleIDs, cleanupParserExcludedIDs,
 	)
 	if err != nil {
 		log.Printf("write Claude source snapshot: %v", err)
@@ -5562,15 +5706,15 @@ func (e *Engine) writeSourceSnapshot(
 		if failed == 0 {
 			failed = max(len(writes), 1)
 		}
-		return 0, 0, failed
+		return 0, 0, failed, skippedSessions, cwdExcludedSessions
 	}
-	return result.WrittenSessions, result.WrittenMessages, 0
+	return result.WrittenSessions, result.WrittenMessages, 0, skippedSessions, cwdExcludedSessions
 }
 
 func (e *Engine) prepareSessionWrite(
 	pw pendingWrite,
 	resolveWorktreeProject worktreeProjectResolver,
-) (db.Session, []db.Message, []db.UsageEvent, bool) {
+) (db.Session, []db.Message, []db.UsageEvent, sessionWriteSkipReason) {
 	msgs := toDBMessages(pw, e.blockedResultCategories)
 	s := toDBSession(pw)
 	s.MessageCount, s.UserMessageCount =
@@ -5598,6 +5742,9 @@ func (e *Engine) prepareSessionWrite(
 		_, _, s.PeakContextTokens, s.HasPeakContextTokens =
 			usageEventTokenTotals(pw.usageEvents, true)
 	}
+	if !e.includeCWD(s.Cwd) {
+		return db.Session{}, nil, nil, sessionWriteCWDExcluded
+	}
 	s.IsAutomated = isAutomatedFromSession(s)
 	e.recordValidation(s.ID, string(pw.sess.Agent), stats)
 	e.anomalies.recordMalformedLines(
@@ -5608,9 +5755,9 @@ func (e *Engine) prepareSessionWrite(
 		pw.sess.Agent, pw.sess.File.Path, s.ID,
 		pw.sess.File.Mtime, derefString(s.FileHash), msgs,
 	) {
-		return db.Session{}, nil, nil, false
+		return db.Session{}, nil, nil, sessionWritePreserved
 	}
-	return s, msgs, usageEvents, true
+	return s, msgs, usageEvents, sessionWriteOK
 }
 
 func (e *Engine) recordValidation(
@@ -5687,18 +5834,22 @@ type batchSourceFile struct {
 
 func (e *Engine) writeBatchBulk(
 	batch []pendingWrite, forceReplace bool,
-) (writtenSessions, writtenMessages, failedSessions int) {
+) (writtenSessions, writtenMessages, failedSessions, skippedSessions, cwdExcludedSessions int) {
 	writes := make([]db.SessionBatchWrite, 0, len(batch))
 	sources := make(map[string]batchSourceFile, len(batch))
 	resolveWorktreeProject := e.loadWorktreeProjectResolver()
 
 	for _, pw := range batch {
 		tPrep := time.Now()
-		s, msgs, usageEvents, ok := e.prepareSessionWrite(
+		s, msgs, usageEvents, skipReason := e.prepareSessionWrite(
 			pw, resolveWorktreeProject,
 		)
 		e.phaseStats.PrepNanos.Add(int64(time.Since(tPrep)))
-		if !ok {
+		if skipReason != sessionWriteOK {
+			if skipReason == sessionWriteCWDExcluded {
+				skippedSessions++
+				cwdExcludedSessions++
+			}
 			continue
 		}
 		replaceMessages := forceReplace || pw.forceReplace || pw.needsRetry ||
@@ -5727,7 +5878,7 @@ func (e *Engine) writeBatchBulk(
 		}
 	}
 	if len(writes) == 0 {
-		return 0, 0, 0
+		return 0, 0, 0, skippedSessions, cwdExcludedSessions
 	}
 
 	tWrite := time.Now()
@@ -5738,7 +5889,7 @@ func (e *Engine) writeBatchBulk(
 	e.phaseStats.BatchedWrites.Add(int64(result.WrittenSessions))
 	if err != nil {
 		log.Printf("write session batch: %v", err)
-		return 0, 0, len(writes)
+		return 0, 0, len(writes), skippedSessions, cwdExcludedSessions
 	}
 	for _, id := range result.ExcludedIDs {
 		if source, ok := sources[id]; ok && source.path != "" {
@@ -5750,7 +5901,9 @@ func (e *Engine) writeBatchBulk(
 	}
 	return result.WrittenSessions,
 		result.WrittenMessages,
-		result.FailedSessions
+		result.FailedSessions,
+		skippedSessions,
+		cwdExcludedSessions
 }
 
 // writeIncremental appends new messages and partially updates
@@ -5888,10 +6041,13 @@ func (e *Engine) writeSessionFullWithResolver(
 	pw pendingWrite,
 	resolveWorktreeProject worktreeProjectResolver,
 ) error {
-	s, msgs, usageEvents, ok := e.prepareSessionWrite(
+	s, msgs, usageEvents, skipReason := e.prepareSessionWrite(
 		pw, resolveWorktreeProject,
 	)
-	if !ok {
+	if skipReason != sessionWriteOK {
+		if skipReason == sessionWriteCWDExcluded {
+			return errSessionCWDExcluded
+		}
 		return errSessionPreserved
 	}
 	if err := e.db.UpsertSession(s); err != nil {
@@ -6605,7 +6761,7 @@ func (e *Engine) SyncSingleSessionContext(
 			return e.syncSinglePiebald(sessionID)
 		default:
 			err = e.syncSingleOpenCode(sessionID)
-			if errors.Is(err, errSessionPreserved) {
+			if errors.Is(err, errSessionPreserved) || errors.Is(err, errSessionCWDExcluded) {
 				preserved = true
 				return nil
 			}
@@ -6615,7 +6771,7 @@ func (e *Engine) SyncSingleSessionContext(
 
 	if def.Type == parser.AgentZed {
 		err = e.syncSingleZed(sessionID)
-		if errors.Is(err, errSessionPreserved) {
+		if errors.Is(err, errSessionPreserved) || errors.Is(err, errSessionCWDExcluded) {
 			preserved = true
 			return nil
 		}
@@ -6631,7 +6787,7 @@ func (e *Engine) SyncSingleSessionContext(
 	if def.Type == parser.AgentOpenCode &&
 		isOpenCodeSQLiteVirtualPath(path) {
 		err = e.syncSingleOpenCode(sessionID)
-		if errors.Is(err, errSessionPreserved) {
+		if errors.Is(err, errSessionPreserved) || errors.Is(err, errSessionCWDExcluded) {
 			preserved = true
 			return nil
 		}
@@ -6640,7 +6796,7 @@ func (e *Engine) SyncSingleSessionContext(
 	if def.Type == parser.AgentKilo &&
 		isKiloSQLiteVirtualPath(path) {
 		err = e.syncSingleKilo(sessionID)
-		if errors.Is(err, errSessionPreserved) {
+		if errors.Is(err, errSessionPreserved) || errors.Is(err, errSessionCWDExcluded) {
 			preserved = true
 			return nil
 		}
@@ -6649,7 +6805,7 @@ func (e *Engine) SyncSingleSessionContext(
 	if def.Type == parser.AgentKiro &&
 		isKiroSQLiteVirtualPath(path) {
 		err = e.syncSingleKiroSQLite(sessionID)
-		if errors.Is(err, errSessionPreserved) {
+		if errors.Is(err, errSessionPreserved) || errors.Is(err, errSessionCWDExcluded) {
 			preserved = true
 			return nil
 		}
@@ -6788,10 +6944,11 @@ func (e *Engine) SyncSingleSessionContext(
 			},
 		); err != nil &&
 			!isIntentionalSessionSkip(err) &&
+			!errors.Is(err, errSessionCWDExcluded) &&
 			!errors.Is(err, errSessionPreserved) {
 			return fmt.Errorf("write session %s: %w",
 				pr.Session.ID, err)
-		} else if errors.Is(err, errSessionPreserved) {
+		} else if errors.Is(err, errSessionPreserved) || errors.Is(err, errSessionCWDExcluded) {
 			preserved = true
 		}
 	}
@@ -6839,6 +6996,7 @@ func (e *Engine) syncSingleHermesArchive(
 			msgs:        pr.Messages,
 			usageEvents: pr.UsageEvents,
 		}); err != nil && !isIntentionalSessionSkip(err) &&
+			!errors.Is(err, errSessionCWDExcluded) &&
 			!errors.Is(err, errSessionPreserved) {
 			return true, fmt.Errorf(
 				"write session %s: %w", pr.Session.ID, err,
@@ -6907,10 +7065,11 @@ func (e *Engine) syncSingleOpenCode(
 			pendingWrite{sess: *sess, msgs: msgs},
 		); err != nil &&
 			!isIntentionalSessionSkip(err) &&
+			!errors.Is(err, errSessionCWDExcluded) &&
 			!errors.Is(err, errSessionPreserved) {
 			return fmt.Errorf("write session %s: %w",
 				sess.ID, err)
-		} else if errors.Is(err, errSessionPreserved) {
+		} else if errors.Is(err, errSessionPreserved) || errors.Is(err, errSessionCWDExcluded) {
 			return err
 		}
 		return nil
@@ -6955,10 +7114,11 @@ func (e *Engine) syncSingleKilo(
 			pendingWrite{sess: *sess, msgs: msgs},
 		); err != nil &&
 			!isIntentionalSessionSkip(err) &&
+			!errors.Is(err, errSessionCWDExcluded) &&
 			!errors.Is(err, errSessionPreserved) {
 			return fmt.Errorf("write session %s: %w",
 				sess.ID, err)
-		} else if errors.Is(err, errSessionPreserved) {
+		} else if errors.Is(err, errSessionPreserved) || errors.Is(err, errSessionCWDExcluded) {
 			return err
 		}
 		return nil
@@ -7009,10 +7169,11 @@ func (e *Engine) syncSingleKiroSQLite(
 			pendingWrite{sess: *sess, msgs: msgs},
 		); err != nil &&
 			!isIntentionalSessionSkip(err) &&
+			!errors.Is(err, errSessionCWDExcluded) &&
 			!errors.Is(err, errSessionPreserved) {
 			return fmt.Errorf("write session %s: %w",
 				sess.ID, err)
-		} else if errors.Is(err, errSessionPreserved) {
+		} else if errors.Is(err, errSessionPreserved) || errors.Is(err, errSessionCWDExcluded) {
 			return err
 		}
 		return nil
@@ -7062,9 +7223,10 @@ func (e *Engine) syncSingleZed(sessionID string) error {
 		}
 		if err := e.writeSessionFull(pw); err != nil &&
 			!isIntentionalSessionSkip(err) &&
+			!errors.Is(err, errSessionCWDExcluded) &&
 			!errors.Is(err, errSessionPreserved) {
 			return fmt.Errorf("write session %s: %w", result.Session.ID, err)
-		} else if errors.Is(err, errSessionPreserved) {
+		} else if errors.Is(err, errSessionPreserved) || errors.Is(err, errSessionCWDExcluded) {
 			return err
 		}
 		return nil

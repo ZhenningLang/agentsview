@@ -45,13 +45,14 @@ type testEnv struct {
 }
 
 type testEnvOpts struct {
-	claudeDirs   []string
-	codexDirs    []string
-	cursorDirs   []string
-	opencodeDirs []string
-	kiloDirs     []string
-	kiroDirs     []string
-	emitter      sync.Emitter
+	claudeDirs             []string
+	codexDirs              []string
+	cursorDirs             []string
+	opencodeDirs           []string
+	kiloDirs               []string
+	kiroDirs               []string
+	syncIncludeCWDPrefixes []string
+	emitter                sync.Emitter
 }
 
 type TestEnvOption func(*testEnvOpts)
@@ -89,6 +90,12 @@ func WithKiloDirs(dirs []string) TestEnvOption {
 func WithKiroDirs(dirs []string) TestEnvOption {
 	return func(o *testEnvOpts) {
 		o.kiroDirs = dirs
+	}
+}
+
+func WithSyncIncludeCWDPrefixes(prefixes []string) TestEnvOption {
+	return func(o *testEnvOpts) {
+		o.syncIncludeCWDPrefixes = prefixes
 	}
 }
 
@@ -186,10 +193,321 @@ func setupTestEnv(t *testing.T, opts ...TestEnvOption) *testEnv {
 			parser.AgentKiro:           kiroDirs,
 			parser.AgentAntigravityCLI: {env.antigravityCLIDir},
 		},
-		Machine: "local",
-		Emitter: options.emitter,
+		Machine:                "local",
+		SyncIncludeCWDPrefixes: options.syncIncludeCWDPrefixes,
+		Emitter:                options.emitter,
 	})
 	return env
+}
+
+func TestPhase16SyncCWDPrefixPolicy(t *testing.T) {
+	baseline := setupTestEnv(t)
+	outside := filepath.Join(t.TempDir(), "outside", "project")
+	baseline.writeClaudeSessionForProject(t, outside, "baseline-outside.jsonl",
+		testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsEarly, "baseline outside cwd", outside).
+			AddClaudeAssistant(tsEarlyS5, "ok").
+			String())
+	baselineStats := baseline.engine.SyncAll(context.Background(), nil)
+	require.Equal(t, 0, baselineStats.Failed, "baseline failed = %d", baselineStats.Failed)
+	assertSessionState(t, baseline.db, "baseline-outside", nil)
+	retainingEngine := sync.NewEngine(baseline.db, sync.EngineConfig{
+		AgentDirs:              baseline.engineAgentDirs(),
+		Machine:                "local",
+		SyncIncludeCWDPrefixes: []string{filepath.Join(t.TempDir(), "now-excluded")},
+	})
+	retainedStats := retainingEngine.SyncAll(context.Background(), nil)
+	require.Equal(t, 0, retainedStats.Failed, "retained failed = %d", retainedStats.Failed)
+	assertSessionState(t, baseline.db, "baseline-outside", nil)
+
+	root := t.TempDir()
+	allowedPrefix := filepath.Join(root, "allowed")
+	allowedCWD := filepath.Join(allowedPrefix, "service")
+	siblingCWD := allowedPrefix + "-sibling"
+	otherCWD := filepath.Join(root, "other", "service")
+	escapedCWD := allowedPrefix + string(filepath.Separator) +
+		"nested" + string(filepath.Separator) + ".." +
+		string(filepath.Separator) + ".." +
+		string(filepath.Separator) + filepath.Base(siblingCWD)
+
+	env := setupTestEnv(t, WithSyncIncludeCWDPrefixes([]string{allowedPrefix}))
+	writePhase16CWDSession(t, env, "allowed.jsonl", "allowed cwd", allowedCWD)
+	writePhase16CWDSession(t, env, "sibling.jsonl", "sibling cwd", siblingCWD)
+	writePhase16CWDSession(t, env, "other.jsonl", "other cwd", otherCWD)
+	writePhase16CWDSession(t, env, "escaped.jsonl", "escaped cwd", escapedCWD)
+	emptyPath := env.writeClaudeSession(t, "phase16", "empty-cwd.jsonl",
+		testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsEarly, "empty cwd included").
+			AddClaudeAssistant(tsEarlyS5, "ok").
+			String())
+
+	stats := env.engine.SyncAll(context.Background(), nil)
+	require.Equal(t, 0, stats.Failed, "stats.Failed = %d", stats.Failed)
+	assert.Equal(t, 2, stats.Synced, "stats = %+v", stats)
+	assert.Equal(t, 3, stats.Skipped, "stats = %+v", stats)
+	assertPhase16CWDResults(t, env)
+
+	stats = env.engine.SyncAll(context.Background(), nil)
+	require.Equal(t, 0, stats.Failed, "repeat stats.Failed = %d", stats.Failed)
+	assertPhase16CWDResults(t, env)
+
+	appended := testjsonl.NewSessionBuilder().
+		AddClaudeAssistant("2024-01-01T10:00:06Z", "still allowed").
+		String()
+	require.NoError(t, appendPhase16File(t, emptyPath, appended), "append empty cwd session")
+	env.engine.SyncPaths([]string{emptyPath})
+	assertSessionMessageCount(t, env.db, "empty-cwd", 3)
+}
+
+func TestPhase16CWDPrefixPolicyPreservesCleanupAndResync(t *testing.T) {
+	root := t.TempDir()
+	allowedPrefix := filepath.Join(root, "allowed")
+	outsideCWD := filepath.Join(root, "outside")
+
+	env := setupTestEnv(t, WithSyncIncludeCWDPrefixes([]string{allowedPrefix}))
+	forkPath := env.writeClaudeSessionForProject(
+		t, outsideCWD, "cleanup-fork.jsonl", claudeForkFixtureWithCWD(outsideCWD),
+	)
+	stats := env.engine.SyncAll(context.Background(), nil)
+	require.Equal(t, 0, stats.Failed, "initial failed = %d", stats.Failed)
+	assert.Equal(t, 2, stats.Skipped, "initial stats = %+v", stats)
+	assertPhase16SessionMissing(t, env.db, "cleanup-fork")
+	assertPhase16SessionMissing(t, env.db, "cleanup-fork-i")
+
+	seedPhase16ArchivedClaudeSession(t, env, "cleanup-fork", forkPath, outsideCWD,
+		"archived main")
+	seedPhase16ArchivedClaudeSession(t, env, "cleanup-fork-i", forkPath, outsideCWD,
+		"archived fork")
+
+	replacement := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "replacement outside", outsideCWD).
+		AddClaudeAssistant(tsEarlyS5, "replacement reply").
+		String()
+	require.NoError(t, os.WriteFile(forkPath, []byte(replacement), 0o644), "rewrite source")
+	require.NoError(t, os.Chtimes(forkPath, time.Now(), time.Now()), "touch source")
+
+	stats = env.engine.SyncAll(context.Background(), nil)
+	require.Equal(t, 0, stats.Failed, "rewrite failed = %d", stats.Failed)
+	assert.Equal(t, 1, stats.Skipped, "rewrite stats = %+v", stats)
+	assertMessageContent(t, env.db, "cleanup-fork", "archived main")
+	assertMessageContent(t, env.db, "cleanup-fork-i", "archived fork")
+
+	usagePath := env.writeClaudeSessionForProject(
+		t, outsideCWD, "cleanup-usage.jsonl",
+		testjsonl.ClaudeUserJSON(phase16UsageCommand(), tsEarly, outsideCWD),
+	)
+	usageCWD, _ := parser.ExtractClaudeProjectHints(usagePath)
+	require.Equal(t, outsideCWD, usageCWD, "usage fixture cwd hint")
+	seedPhase16ArchivedClaudeSession(t, env, "cleanup-usage", usagePath, outsideCWD,
+		"archived usage probe")
+	stats = env.engine.SyncAll(context.Background(), nil)
+	require.Equal(t, 0, stats.Failed, "usage failed = %d", stats.Failed)
+	assertMessageContent(t, env.db, "cleanup-usage", "archived usage probe")
+
+	unknownCWDPath := env.writeClaudeSession(t, "phase16", "zero-result-unknown-cwd.jsonl",
+		testjsonl.ClaudeUserJSON(phase16UsageCommand(), tsEarly),
+	)
+	seedPhase16ArchivedClaudeSession(t, env, "zero-result-unknown-cwd", unknownCWDPath, "",
+		"archived usage probe without cwd")
+	stats = env.engine.SyncAll(context.Background(), nil)
+	require.Equal(t, 0, stats.Failed, "unknown cwd usage failed = %d", stats.Failed)
+	assertMessageContent(t, env.db, "zero-result-unknown-cwd", "archived usage probe without cwd")
+
+	resync := env.engine.ResyncAll(context.Background(), nil)
+	require.False(t, resync.Aborted, "ResyncAll aborted: %+v", resync)
+	assert.Equal(t, 0, resync.Synced, "resync stats = %+v", resync)
+	assert.GreaterOrEqual(t, resync.Skipped, 1, "resync stats = %+v", resync)
+	assertMessageContent(t, env.db, "cleanup-fork", "archived main")
+	assertMessageContent(t, env.db, "cleanup-fork-i", "archived fork")
+	assertMessageContent(t, env.db, "cleanup-usage", "archived usage probe")
+	assertMessageContent(t, env.db, "zero-result-unknown-cwd", "archived usage probe without cwd")
+	reopened, err := db.Open(env.db.Path())
+	require.NoError(t, err, "reopen after resync")
+	t.Cleanup(func() { _ = reopened.Close() })
+	assert.False(t, reopened.NeedsResync(), "resync should clear user_version")
+}
+
+func TestPhase16CWDPrefixPolicyResyncAllSingleSessionFiltered(t *testing.T) {
+	root := t.TempDir()
+	allowedPrefix := filepath.Join(root, "allowed")
+	outsideCWD := filepath.Join(root, "outside")
+
+	env := setupTestEnv(t, WithSyncIncludeCWDPrefixes([]string{allowedPrefix}))
+	path := env.writeClaudeSessionForProject(t, outsideCWD, "single-outside.jsonl",
+		testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsEarly, "outside single", outsideCWD).
+			AddClaudeAssistant(tsEarlyS5, "reply").
+			String(),
+	)
+	seedPhase16ArchivedClaudeSession(t, env, "single-outside", path, outsideCWD,
+		"archived single")
+
+	resync := env.engine.ResyncAll(context.Background(), nil)
+	require.False(t, resync.Aborted, "ResyncAll aborted: %+v", resync)
+	assert.Equal(t, 0, resync.Synced, "resync stats = %+v", resync)
+	assert.GreaterOrEqual(t, resync.Skipped, 1, "resync stats = %+v", resync)
+	assertMessageContent(t, env.db, "single-outside", "archived single")
+}
+
+func TestPhase16CWDPrefixPolicyKeepsArchivedIncrementalAppend(t *testing.T) {
+	root := t.TempDir()
+	allowedPrefix := filepath.Join(root, "allowed")
+	outsideCWD := filepath.Join(root, "outside")
+	env := setupTestEnv(t, WithSyncIncludeCWDPrefixes([]string{allowedPrefix}))
+	path := env.writeClaudeSessionForProject(
+		t, outsideCWD, "incremental-outside.jsonl",
+		testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsEarly, "existing outside", outsideCWD).
+			AddClaudeAssistant(tsEarlyS5, "first reply").
+			String(),
+	)
+	seedPhase16ArchivedClaudeSession(t, env, "incremental-outside", path, outsideCWD,
+		"existing outside", "first reply")
+
+	appended := testjsonl.NewSessionBuilder().
+		AddClaudeUser("2024-01-01T10:00:06Z", "follow up", outsideCWD).
+		AddClaudeAssistant("2024-01-01T10:00:07Z", "second reply").
+		String()
+	require.NoError(t, appendPhase16File(t, path, appended), "append outside session")
+	seededInfo, ok := env.db.GetSessionForIncremental(path)
+	require.True(t, ok, "seeded session should be eligible for incremental lookup")
+	stat, err := os.Stat(path)
+	require.NoError(t, err, "stat appended source")
+	require.Less(t, seededInfo.FileSize, stat.Size(), "append must grow source past seeded offset")
+	env.engine.SyncPaths([]string{path})
+	pathStats := env.engine.LastSyncStats()
+	require.Equal(t, 1, pathStats.Synced, "incremental stats = %+v", pathStats)
+	assertSessionMessageCount(t, env.db, "incremental-outside", 4)
+}
+
+func writePhase16CWDSession(
+	t *testing.T, env *testEnv, filename, prompt, cwd string,
+) {
+	t.Helper()
+	env.writeClaudeSession(t, "phase16", filename,
+		testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsEarly, prompt, cwd).
+			AddClaudeAssistant(tsEarlyS5, "ok").
+			String())
+}
+
+func seedPhase16ArchivedClaudeSession(
+	t *testing.T, env *testEnv, id, path, cwd string, contents ...string,
+) {
+	t.Helper()
+	info, err := os.Stat(path)
+	require.NoError(t, err, "stat seed source %s", path)
+	size := info.Size()
+	mtime := info.ModTime().UnixNano()
+	sess := db.Session{
+		ID:               id,
+		Project:          "phase16",
+		Machine:          "local",
+		Agent:            "claude",
+		FirstMessage:     firstContentPtr(contents),
+		Cwd:              cwd,
+		FilePath:         &path,
+		FileSize:         &size,
+		FileMtime:        &mtime,
+		MessageCount:     len(contents),
+		UserMessageCount: 1,
+	}
+	require.NoError(t, env.db.UpsertSession(sess), "seed session %s", id)
+	require.NoError(t, env.db.SetSessionDataVersion(id, db.CurrentDataVersion()),
+		"seed data version %s", id)
+	msgs := make([]db.Message, 0, len(contents))
+	for i, content := range contents {
+		role := "assistant"
+		if i == 0 {
+			role = "user"
+		}
+		msgs = append(msgs, db.Message{
+			SessionID: id,
+			Ordinal:   i,
+			Role:      role,
+			Content:   content,
+		})
+	}
+	require.NoError(t, env.db.ReplaceSessionMessages(id, msgs), "seed messages %s", id)
+}
+
+func firstContentPtr(contents []string) *string {
+	if len(contents) == 0 {
+		return nil
+	}
+	return &contents[0]
+}
+
+func phase16UsageCommand() string {
+	return "<command-name>/usage</command-name>\n" +
+		"<command-message>usage</command-message>\n" +
+		"<command-args></command-args>"
+}
+
+func claudeForkFixtureWithCWD(cwd string) string {
+	return testjsonl.NewSessionBuilder().
+		AddClaudeUserWithUUID("2024-01-01T10:00:00Z", "start", "a", "", cwd).
+		AddClaudeAssistantWithUUID("2024-01-01T10:00:01Z", "a", "b", "a").
+		AddClaudeUserWithUUID("2024-01-01T10:00:02Z", "main 1", "c", "b", cwd).
+		AddClaudeAssistantWithUUID("2024-01-01T10:00:03Z", "c", "d", "c").
+		AddClaudeUserWithUUID("2024-01-01T10:00:04Z", "main 2", "e", "d", cwd).
+		AddClaudeAssistantWithUUID("2024-01-01T10:00:05Z", "e", "f", "e").
+		AddClaudeUserWithUUID("2024-01-01T10:00:06Z", "main 3", "g", "f", cwd).
+		AddClaudeAssistantWithUUID("2024-01-01T10:00:07Z", "g", "h", "g").
+		AddClaudeUserWithUUID("2024-01-01T10:00:08Z", "fork", "i", "b", cwd).
+		AddClaudeAssistantWithUUID("2024-01-01T10:00:09Z", "i", "j", "i").
+		AddClaudeUserWithUUID("2024-01-01T10:00:10Z", "main 4", "k", "h", cwd).
+		AddClaudeAssistantWithUUID("2024-01-01T10:00:11Z", "k", "l", "k").
+		String()
+}
+
+func (e *testEnv) engineAgentDirs() map[parser.AgentType][]string {
+	return map[parser.AgentType][]string{
+		parser.AgentClaude:         {e.claudeDir},
+		parser.AgentCodex:          {e.codexDir},
+		parser.AgentCursor:         {e.cursorDir},
+		parser.AgentDroid:          {e.droidDir},
+		parser.AgentGemini:         {e.geminiDir},
+		parser.AgentKilo:           {e.kiloDir},
+		parser.AgentOpenCode:       {e.opencodeDir},
+		parser.AgentForge:          {e.forgeDir},
+		parser.AgentPiebald:        {e.piebaldDir},
+		parser.AgentIflow:          {e.iflowDir},
+		parser.AgentAmp:            {e.ampDir},
+		parser.AgentPi:             {e.piDir},
+		parser.AgentKiro:           {e.kiroDir},
+		parser.AgentAntigravityCLI: {e.antigravityCLIDir},
+	}
+}
+
+func assertPhase16CWDResults(t *testing.T, env *testEnv) {
+	t.Helper()
+	assertSessionState(t, env.db, "allowed", nil)
+	assertSessionState(t, env.db, "empty-cwd", nil)
+	assertPhase16SessionMissing(t, env.db, "sibling")
+	assertPhase16SessionMissing(t, env.db, "other")
+	assertPhase16SessionMissing(t, env.db, "escaped")
+}
+
+func assertPhase16SessionMissing(t *testing.T, database *db.DB, id string) {
+	t.Helper()
+	sess, err := database.GetSession(context.Background(), id)
+	require.NoError(t, err, "GetSession(%s)", id)
+	assert.Nil(t, sess, "session %q should be filtered", id)
+}
+
+func appendPhase16File(t *testing.T, path, content string) error {
+	t.Helper()
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	_, writeErr := f.WriteString(content)
+	closeErr := f.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	return closeErr
 }
 
 func TestSyncEngineKiloSQLiteCurrentStore(t *testing.T) {

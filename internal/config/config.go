@@ -118,7 +118,9 @@ func (c LLMConfig) EmbeddingAvailable() bool {
 // normalization (trim, dedupe, length cap, built-in overlap
 // drop) happens inside db.SetUserAutomationPrefixes.
 type AutomatedConfig struct {
-	Prefixes []string `toml:"prefixes" json:"prefixes,omitempty"`
+	Prefixes     []string `toml:"prefixes" json:"prefixes,omitempty"`
+	Substrings   []string `toml:"substrings" json:"substrings,omitempty"`
+	ExactMatches []string `toml:"exact_matches" json:"exact_matches,omitempty"`
 }
 
 // AgentConfig holds per-agent runtime overrides.
@@ -144,28 +146,29 @@ type RemoteHost struct {
 
 // Config holds all application configuration.
 type Config struct {
-	Host                 string                 `json:"host" toml:"host"`
-	Port                 int                    `json:"port" toml:"port"`
-	DataDir              string                 `json:"data_dir" toml:"data_dir"`
-	DBPath               string                 `json:"-" toml:"-"`
-	PublicURL            string                 `json:"public_url,omitempty" toml:"public_url"`
-	PublicOrigins        []string               `json:"public_origins,omitempty" toml:"public_origins"`
-	Proxy                ProxyConfig            `json:"proxy,omitempty" toml:"proxy"`
-	WatchExcludePatterns []string               `json:"watch_exclude_patterns,omitempty" toml:"watch_exclude_patterns"`
-	CursorSecret         string                 `json:"cursor_secret" toml:"cursor_secret"`
-	GithubToken          string                 `json:"github_token,omitempty" toml:"github_token"`
-	Terminal             TerminalConfig         `json:"terminal,omitempty" toml:"terminal"`
-	AuthToken            string                 `json:"auth_token,omitempty" toml:"auth_token"`
-	RequireAuth          bool                   `json:"require_auth" toml:"require_auth"`
-	NoBrowser            bool                   `json:"no_browser" toml:"no_browser"`
-	DisableUpdateCheck   bool                   `json:"disable_update_check" toml:"disable_update_check"`
-	NoSync               bool                   `json:"-" toml:"-"`
-	PG                   PGConfig               `json:"pg,omitempty" toml:"pg"`
-	DuckDB               DuckDBConfig           `json:"duckdb,omitempty" toml:"duckdb"`
-	LLM                  LLMConfig              `json:"llm,omitempty" toml:"llm"`
-	Automated            AutomatedConfig        `json:"automated,omitempty" toml:"automated"`
-	Agent                map[string]AgentConfig `json:"agent,omitempty" toml:"agent"`
-	WriteTimeout         time.Duration          `json:"-" toml:"-"`
+	Host                   string                 `json:"host" toml:"host"`
+	Port                   int                    `json:"port" toml:"port"`
+	DataDir                string                 `json:"data_dir" toml:"data_dir"`
+	DBPath                 string                 `json:"-" toml:"-"`
+	PublicURL              string                 `json:"public_url,omitempty" toml:"public_url"`
+	PublicOrigins          []string               `json:"public_origins,omitempty" toml:"public_origins"`
+	Proxy                  ProxyConfig            `json:"proxy,omitempty" toml:"proxy"`
+	WatchExcludePatterns   []string               `json:"watch_exclude_patterns,omitempty" toml:"watch_exclude_patterns"`
+	SyncIncludeCWDPrefixes []string               `json:"sync_include_cwd_prefixes,omitempty" toml:"sync_include_cwd_prefixes"`
+	CursorSecret           string                 `json:"cursor_secret" toml:"cursor_secret"`
+	GithubToken            string                 `json:"github_token,omitempty" toml:"github_token"`
+	Terminal               TerminalConfig         `json:"terminal,omitempty" toml:"terminal"`
+	AuthToken              string                 `json:"auth_token,omitempty" toml:"auth_token"`
+	RequireAuth            bool                   `json:"require_auth" toml:"require_auth"`
+	NoBrowser              bool                   `json:"no_browser" toml:"no_browser"`
+	DisableUpdateCheck     bool                   `json:"disable_update_check" toml:"disable_update_check"`
+	NoSync                 bool                   `json:"-" toml:"-"`
+	PG                     PGConfig               `json:"pg,omitempty" toml:"pg"`
+	DuckDB                 DuckDBConfig           `json:"duckdb,omitempty" toml:"duckdb"`
+	LLM                    LLMConfig              `json:"llm,omitempty" toml:"llm"`
+	Automated              AutomatedConfig        `json:"automated,omitempty" toml:"automated"`
+	Agent                  map[string]AgentConfig `json:"agent,omitempty" toml:"agent"`
+	WriteTimeout           time.Duration          `json:"-" toml:"-"`
 
 	// AgentDirs maps each AgentType to its configured
 	// directories. Single-dir agents store a one-element
@@ -899,6 +902,7 @@ func (c *Config) loadFile() error {
 		PublicOrigins                  []string                   `toml:"public_origins"`
 		Proxy                          ProxyConfig                `toml:"proxy"`
 		WatchExcludePatterns           []string                   `toml:"watch_exclude_patterns"`
+		SyncIncludeCWDPrefixes         []string                   `toml:"sync_include_cwd_prefixes"`
 		ResultContentBlockedCategories []string                   `toml:"result_content_blocked_categories"`
 		Terminal                       TerminalConfig             `toml:"terminal"`
 		AuthToken                      string                     `toml:"auth_token"`
@@ -955,6 +959,9 @@ func (c *Config) loadFile() error {
 	}
 	if file.WatchExcludePatterns != nil {
 		c.WatchExcludePatterns = file.WatchExcludePatterns
+	}
+	if file.SyncIncludeCWDPrefixes != nil {
+		c.SyncIncludeCWDPrefixes = file.SyncIncludeCWDPrefixes
 	}
 	if file.ResultContentBlockedCategories != nil {
 		c.ResultContentBlockedCategories = file.ResultContentBlockedCategories
@@ -1080,8 +1087,9 @@ func (c *Config) loadFile() error {
 	if meta.IsDefined("events_coalesce_interval") {
 		c.EventsCoalesceInterval = file.EventsCoalesceInterval
 	}
-	if file.Automated.Prefixes != nil {
-		c.Automated.Prefixes = file.Automated.Prefixes
+	if file.Automated.Prefixes != nil || file.Automated.Substrings != nil ||
+		file.Automated.ExactMatches != nil {
+		c.Automated = file.Automated
 	}
 	if len(file.Agent) > 0 {
 		if c.Agent == nil {
@@ -1824,7 +1832,135 @@ func finalize(cfg *Config) error {
 			return fmt.Errorf("invalid public url: %w", err)
 		}
 	}
+	cfg.SyncIncludeCWDPrefixes = normalizeSyncIncludeCWDPrefixes(
+		cfg.SyncIncludeCWDPrefixes,
+	)
 	return nil
+}
+
+func normalizeSyncIncludeCWDPrefixes(prefixes []string) []string {
+	if len(prefixes) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(prefixes))
+	out := make([]string, 0, len(prefixes))
+	for _, raw := range prefixes {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		missing := missingEnvRefs(trimmed)
+		if len(missing) > 0 {
+			log.Printf(
+				"sync_include_cwd_prefixes: ignoring %q: environment variable(s) not set: %s",
+				raw, strings.Join(missing, ", "),
+			)
+			continue
+		}
+		expanded := os.ExpandEnv(trimmed)
+		if strings.HasPrefix(expanded, "~/") || expanded == "~" {
+			home, err := os.UserHomeDir()
+			if err != nil || home == "" {
+				log.Printf(
+					"sync_include_cwd_prefixes: ignoring %q: cannot expand ~",
+					raw,
+				)
+				continue
+			}
+			if expanded == "~" {
+				expanded = home
+			} else {
+				expanded = filepath.Join(home, strings.TrimPrefix(expanded, "~/"))
+			}
+		}
+		if !filepath.IsAbs(expanded) {
+			log.Printf(
+				"sync_include_cwd_prefixes: ignoring %q: path must be absolute",
+				raw,
+			)
+			continue
+		}
+		cleaned := filepath.Clean(expanded)
+		if seen[cleaned] {
+			continue
+		}
+		seen[cleaned] = true
+		out = append(out, cleaned)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func missingEnvRefs(value string) []string {
+	seen := make(map[string]bool)
+	var missing []string
+	for i := 0; i < len(value); i++ {
+		if value[i] != '$' {
+			continue
+		}
+		name, end := parseEnvRef(value, i+1)
+		if name == "" {
+			continue
+		}
+		i = end - 1
+		if _, ok := os.LookupEnv(name); ok || seen[name] {
+			continue
+		}
+		seen[name] = true
+		missing = append(missing, name)
+	}
+	return missing
+}
+
+func parseEnvRef(value string, start int) (string, int) {
+	if start >= len(value) {
+		return "", start
+	}
+	if value[start] == '{' {
+		end := strings.IndexByte(value[start+1:], '}')
+		if end < 0 {
+			return "", start
+		}
+		name := value[start+1 : start+1+end]
+		if !validEnvName(name) {
+			return "", start + end + 2
+		}
+		return name, start + end + 2
+	}
+	end := start
+	for end < len(value) && isEnvNameChar(value[end]) {
+		end++
+	}
+	if end == start {
+		return "", start
+	}
+	name := value[start:end]
+	if !validEnvName(name) {
+		return "", end
+	}
+	return name, end
+}
+
+func validEnvName(name string) bool {
+	if name == "" || !isEnvNameStart(name[0]) {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if !isEnvNameChar(name[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isEnvNameStart(ch byte) bool {
+	return ch == '_' || ('A' <= ch && ch <= 'Z') || ('a' <= ch && ch <= 'z')
+}
+
+func isEnvNameChar(ch byte) bool {
+	return isEnvNameStart(ch) || ('0' <= ch && ch <= '9')
 }
 
 func resolvePublicURL(value string, proxyCfg ProxyConfig) (string, error) {

@@ -242,8 +242,9 @@ func ensureFreshData(
 
 	if database.NeedsResync() {
 		engine := sync.NewEngine(database, sync.EngineConfig{
-			AgentDirs: appCfg.AgentDirs,
-			Machine:   "local",
+			AgentDirs:              appCfg.AgentDirs,
+			Machine:                "local",
+			SyncIncludeCWDPrefixes: appCfg.SyncIncludeCWDPrefixes,
 		})
 		fmt.Fprintln(os.Stderr,
 			"Data version changed, running full resync...")
@@ -262,8 +263,9 @@ func ensureFreshData(
 	}
 
 	engine := sync.NewEngine(database, sync.EngineConfig{
-		AgentDirs: appCfg.AgentDirs,
-		Machine:   "local",
+		AgentDirs:              appCfg.AgentDirs,
+		Machine:                "local",
+		SyncIncludeCWDPrefixes: appCfg.SyncIncludeCWDPrefixes,
 	})
 
 	since := engine.LastSyncStartedAt()

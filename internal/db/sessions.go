@@ -1227,6 +1227,7 @@ type IncrementalInfo struct {
 	MsgCount             int
 	UserMsgCount         int
 	FirstMessage         string
+	Cwd                  string
 	TotalOutputTokens    int
 	PeakContextTokens    int
 	HasTotalOutputTokens bool
@@ -1255,12 +1256,12 @@ func (db *DB) GetSessionForIncremental(
 
 	var info IncrementalInfo
 	var fs, fm, fi, fd sql.NullInt64
-	var firstMsg sql.NullString
+	var firstMsg, cwd sql.NullString
 	err = db.getReader().QueryRow(
 		`SELECT id, file_size, file_mtime,
 			file_inode, file_device,
 			message_count, user_message_count,
-			first_message,
+			first_message, cwd,
 			total_output_tokens, peak_context_tokens,
 			has_total_output_tokens, has_peak_context_tokens
 		 FROM sessions
@@ -1270,7 +1271,7 @@ func (db *DB) GetSessionForIncremental(
 	).Scan(
 		&info.ID, &fs, &fm, &fi, &fd,
 		&info.MsgCount, &info.UserMsgCount,
-		&firstMsg,
+		&firstMsg, &cwd,
 		&info.TotalOutputTokens, &info.PeakContextTokens,
 		&info.HasTotalOutputTokens, &info.HasPeakContextTokens,
 	)
@@ -1279,6 +1280,9 @@ func (db *DB) GetSessionForIncremental(
 	}
 	if firstMsg.Valid {
 		info.FirstMessage = firstMsg.String
+	}
+	if cwd.Valid {
+		info.Cwd = cwd.String
 	}
 	if fs.Valid {
 		info.FileSize = fs.Int64

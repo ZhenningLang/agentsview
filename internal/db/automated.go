@@ -52,9 +52,15 @@ var automatedExactMatches = []string{
 
 const userPrefixMaxLen = 1024
 
+type userAutomationConfig struct {
+	prefixes     []string
+	substrings   []string
+	exactMatches []string
+}
+
 var (
-	userPrefixesMu sync.RWMutex
-	userPrefixes   []string
+	userAutomationMu sync.RWMutex
+	userAutomation   userAutomationConfig
 )
 
 // SetUserAutomationPrefixes replaces the user-pattern slice
@@ -66,19 +72,43 @@ var (
 // (statusline, JSON output). Callers that want a startup
 // summary should read len(UserAutomationPrefixes()).
 func SetUserAutomationPrefixes(prefixes []string) {
-	cleaned := normalizeUserPrefixes(prefixes)
-	userPrefixesMu.Lock()
-	defer userPrefixesMu.Unlock()
-	userPrefixes = cleaned
+	SetUserAutomationMatchers(prefixes, nil, nil)
+}
+
+// SetUserAutomationMatchers replaces all user-supplied automated-session
+// matcher slices with normalized copies of the input. Pass nil slices to clear.
+func SetUserAutomationMatchers(prefixes, substrings, exactMatches []string) {
+	cleaned := userAutomationConfig{
+		prefixes:     normalizeUserPatterns(prefixes, automatedPrefixes),
+		substrings:   normalizeUserPatterns(substrings, automatedSubstrings),
+		exactMatches: normalizeUserPatterns(exactMatches, automatedExactMatches),
+	}
+	userAutomationMu.Lock()
+	defer userAutomationMu.Unlock()
+	userAutomation = cleaned
 }
 
 // UserAutomationPrefixes returns a copy of the current
 // user-prefix slice. Used by ClassifierHash and tests; the
 // copy prevents callers from mutating singleton state.
 func UserAutomationPrefixes() []string {
-	userPrefixesMu.RLock()
-	defer userPrefixesMu.RUnlock()
-	return append([]string(nil), userPrefixes...)
+	userAutomationMu.RLock()
+	defer userAutomationMu.RUnlock()
+	return append([]string(nil), userAutomation.prefixes...)
+}
+
+// UserAutomationSubstrings returns a copy of the current user substring slice.
+func UserAutomationSubstrings() []string {
+	userAutomationMu.RLock()
+	defer userAutomationMu.RUnlock()
+	return append([]string(nil), userAutomation.substrings...)
+}
+
+// UserAutomationExactMatches returns a copy of the current user exact slice.
+func UserAutomationExactMatches() []string {
+	userAutomationMu.RLock()
+	defer userAutomationMu.RUnlock()
+	return append([]string(nil), userAutomation.exactMatches...)
 }
 
 // normalizeUserPrefixes applies the validation rules from the
@@ -86,6 +116,10 @@ func UserAutomationPrefixes() []string {
 // overlap is checked against the package-private
 // automatedPrefixes directly.
 func normalizeUserPrefixes(in []string) []string {
+	return normalizeUserPatterns(in, automatedPrefixes)
+}
+
+func normalizeUserPatterns(in []string, builtins []string) []string {
 	seen := make(map[string]struct{}, len(in))
 	out := make([]string, 0, len(in))
 	for _, raw := range in {
@@ -96,7 +130,7 @@ func normalizeUserPrefixes(in []string) []string {
 		if _, dup := seen[s]; dup {
 			continue
 		}
-		if slices.Contains(automatedPrefixes, s) {
+		if slices.Contains(builtins, s) {
 			continue
 		}
 		seen[s] = struct{}{}
@@ -116,19 +150,29 @@ func IsAutomatedSession(firstMessage string) bool {
 			return true
 		}
 	}
-	userPrefixesMu.RLock()
-	for _, prefix := range userPrefixes {
+	userAutomationMu.RLock()
+	configured := userAutomationConfig{
+		prefixes:     append([]string(nil), userAutomation.prefixes...),
+		substrings:   append([]string(nil), userAutomation.substrings...),
+		exactMatches: append([]string(nil), userAutomation.exactMatches...),
+	}
+	userAutomationMu.RUnlock()
+	for _, prefix := range configured.prefixes {
 		if strings.HasPrefix(firstMessage, prefix) {
-			userPrefixesMu.RUnlock()
 			return true
 		}
 	}
-	userPrefixesMu.RUnlock()
 	for _, sub := range automatedSubstrings {
 		if strings.Contains(firstMessage, sub) {
 			return true
 		}
 	}
+	for _, sub := range configured.substrings {
+		if strings.Contains(firstMessage, sub) {
+			return true
+		}
+	}
 	trimmed := strings.TrimSpace(firstMessage)
-	return slices.Contains(automatedExactMatches, trimmed)
+	return slices.Contains(automatedExactMatches, trimmed) ||
+		slices.Contains(configured.exactMatches, trimmed)
 }

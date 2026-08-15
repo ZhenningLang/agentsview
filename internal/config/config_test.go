@@ -1662,6 +1662,67 @@ func TestAutomatedPrefixesRoundTrip(t *testing.T) {
 	assert.Equal(t, want, cfg.Automated.Prefixes)
 }
 
+func TestPhase16AutomatedMatcherConfig(t *testing.T) {
+	dir := setupTestEnv(t)
+	writeConfig(t, dir, map[string]any{
+		"sync_include_cwd_prefixes": []string{
+			"/tmp/phase16-allowed",
+		},
+		"automated": map[string]any{
+			"prefixes":      []string{"Phase16 prefix rule"},
+			"substrings":    []string{"phase16 embedded marker"},
+			"exact_matches": []string{"Phase16 exact rule"},
+		},
+	})
+	cfg, err := loadConfigFromPFlags(t)
+	require.NoError(t, err, "loading config")
+
+	assert.Equal(t, []string{"Phase16 prefix rule"}, cfg.Automated.Prefixes)
+	assert.Equal(t, []string{"phase16 embedded marker"}, cfg.Automated.Substrings)
+	assert.Equal(t, []string{"Phase16 exact rule"}, cfg.Automated.ExactMatches)
+	assert.Equal(t, []string{"/tmp/phase16-allowed"}, cfg.SyncIncludeCWDPrefixes)
+
+	writeConfig(t, dir, map[string]any{"public_url": "http://example.com"})
+	cfg, err = loadConfigFromPFlags(t)
+	require.NoError(t, err, "loading config without phase16 fields")
+	assert.Nil(t, cfg.Automated.Substrings)
+	assert.Nil(t, cfg.Automated.ExactMatches)
+	assert.Nil(t, cfg.SyncIncludeCWDPrefixes)
+}
+
+func TestPhase16SyncIncludeCWDPrefixesNormalizeAndWarn(t *testing.T) {
+	dir := setupTestEnv(t)
+	home := filepath.Join(dir, "home")
+	projectRoot := filepath.Join(home, "Projects", "allowed")
+	envRoot := filepath.Join(dir, "env", "allowed")
+	t.Setenv("HOME", home)
+	t.Setenv("PHASE16_ALLOWED_ROOT", envRoot)
+	writeConfig(t, dir, map[string]any{
+		"sync_include_cwd_prefixes": []string{
+			"~/Projects/allowed",
+			"${PHASE16_ALLOWED_ROOT}",
+			"$PHASE16_MISSING/Projects",
+			"/data/${PHASE16_MISSING}",
+			"relative/project",
+			"   ",
+		},
+	})
+
+	var logs bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	cfg, err := loadConfigFromPFlags(t)
+	require.NoError(t, err, "loading config")
+	assert.Equal(t, []string{projectRoot, envRoot}, cfg.SyncIncludeCWDPrefixes)
+	assert.Contains(t, logs.String(), "sync_include_cwd_prefixes")
+	assert.Contains(t, logs.String(), "PHASE16_MISSING")
+	assert.Contains(t, logs.String(), "not set")
+	assert.Contains(t, logs.String(), "relative/project")
+	assert.Contains(t, logs.String(), "absolute")
+}
+
 func TestAutomatedPrefixesAbsentIsNil(t *testing.T) {
 	dir := setupTestEnv(t)
 	writeConfig(t, dir, map[string]any{

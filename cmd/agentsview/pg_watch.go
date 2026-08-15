@@ -183,6 +183,7 @@ func runPGPushWatch(cfg PGPushConfig) {
 		AgentDirs:               appCfg.AgentDirs,
 		Machine:                 "local",
 		BlockedResultCategories: appCfg.ResultContentBlockedCategories,
+		SyncIncludeCWDPrefixes:  appCfg.SyncIncludeCWDPrefixes,
 	})
 
 	// Initial local sync. A data-version change forces a full push.

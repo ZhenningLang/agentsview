@@ -229,6 +229,7 @@ func runLocalSync(
 		AgentDirs:               appCfg.AgentDirs,
 		Machine:                 "local",
 		BlockedResultCategories: appCfg.ResultContentBlockedCategories,
+		SyncIncludeCWDPrefixes:  appCfg.SyncIncludeCWDPrefixes,
 	})
 
 	didResync := full || database.NeedsResync()
