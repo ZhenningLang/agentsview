@@ -216,6 +216,56 @@ describe("SyncStore.loadStats", () => {
   });
 });
 
+describe("SyncStore.loadStatus", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const s = sync as unknown as Record<string, unknown>;
+    s.syncing = false;
+    s.progress = null;
+    s.lastSync = null;
+    s.lastSyncStats = null;
+    s.statusHydrated = false;
+    s.pendingHydration = false;
+    s.syncCompleteListeners = [];
+  });
+
+  it("adopts and clears Phase 22 transient status progress", async () => {
+    vi.mocked(api.getSyncStatus)
+      .mockResolvedValueOnce({
+        last_sync: "",
+        stats: null,
+        progress: {
+          phase: "rebuilding_search",
+          detail: "Rebuilding search index",
+          hint: "Rebuilding the search index may take a while on large archives.",
+          resync: true,
+          projects_total: 0,
+          projects_done: 0,
+          sessions_total: 1,
+          sessions_done: 0,
+          messages_indexed: 0,
+        },
+      })
+      .mockResolvedValueOnce({
+        last_sync: "2024-01-01T00:00:00Z",
+        stats: MOCK_STATS,
+      });
+
+    await sync.loadStatus();
+
+    expect(sync.syncing).toBe(true);
+    expect(sync.progress).toEqual(expect.objectContaining({
+      phase: "rebuilding_search",
+      detail: "Rebuilding search index",
+      resync: true,
+    }));
+
+    await sync.loadStatus();
+
+    expect(sync.progress).toBeNull();
+  });
+});
+
 describe("SyncStore.triggerSync", () => {
   beforeEach(() => {
     vi.clearAllMocks();

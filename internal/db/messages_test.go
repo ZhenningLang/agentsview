@@ -156,6 +156,137 @@ func TestDirectDBWriteEntrypointsSanitizeParserOutput(t *testing.T) {
 	})
 }
 
+func TestPhase22CentralValidationPersistenceParity(t *testing.T) {
+	t.Run("direct writes share fixed point sanitization", func(t *testing.T) {
+		d := testDB(t)
+		first := "first\x07message"
+		started := "1500-01-01T00:00:00Z"
+		require.NoError(t, d.UpsertSession(Session{
+			ID: "phase22-direct", Project: "proj\x1bect",
+			Machine: defaultMachine, Agent: defaultAgent,
+			FirstMessage: &first, StartedAt: &started,
+		}))
+		require.NoError(t, d.InsertMessages([]Message{{
+			SessionID: "phase22-direct", Ordinal: 0,
+			Role: "wizard", Content: "answer\x1bbody",
+			ContentLength: len("answer\x1bbody"),
+			Model:         strings.Repeat("m", MaxModelLen+20),
+			ContextTokens: -1, OutputTokens: MaxPlausibleTokens + 1,
+			HasContextTokens: true, HasOutputTokens: true,
+			Timestamp: "2999-01-01T00:00:00Z",
+		}}))
+		require.NoError(t, d.ReplaceSessionUsageEvents("phase22-direct", []UsageEvent{{
+			SessionID: "phase22-direct", Source: "generation\x07",
+			Model:       strings.Repeat("u", MaxModelLen+1),
+			InputTokens: 9_000_000,
+			OccurredAt:  "1800-01-01T00:00:00Z",
+		}}))
+
+		session, err := d.GetSessionFull(context.Background(), "phase22-direct")
+		require.NoError(t, err)
+		require.NotNil(t, session)
+		assert.Equal(t, "project", session.Project)
+		require.NotNil(t, session.FirstMessage)
+		assert.Equal(t, "firstmessage", *session.FirstMessage)
+		assert.Nil(t, session.StartedAt)
+
+		msgs, err := d.GetAllMessages(context.Background(), "phase22-direct")
+		require.NoError(t, err)
+		require.Len(t, msgs, 1)
+		assert.Empty(t, msgs[0].Role)
+		assert.Equal(t, "answerbody", msgs[0].Content)
+		assert.Equal(t, len("answerbody"), msgs[0].ContentLength)
+		assert.Len(t, msgs[0].Model, MaxModelLen)
+		assert.Zero(t, msgs[0].ContextTokens)
+		assert.Equal(t, MaxPlausibleTokens, msgs[0].OutputTokens)
+		assert.Empty(t, msgs[0].Timestamp)
+
+		events, err := d.GetUsageEvents(context.Background(), "phase22-direct")
+		require.NoError(t, err)
+		require.Len(t, events, 1)
+		assert.Equal(t, "generation", events[0].Source)
+		assert.Len(t, events[0].Model, MaxModelLen)
+		assert.Equal(t, MaxPlausibleTokens, events[0].InputTokens)
+		assert.Empty(t, events[0].OccurredAt)
+
+		stored := append([]Message(nil), msgs...)
+		assert.Equal(t, ValidationStats{}, ValidateAndSanitize(session, msgs, events))
+		assert.Equal(t, stored, msgs)
+	})
+
+	t.Run("atomic batch and source snapshot rederive aggregates from sanitized rows", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			write func(*DB, []SessionBatchWrite) (SessionBatchResult, error)
+		}{
+			{
+				name: "batch",
+				write: func(d *DB, writes []SessionBatchWrite) (SessionBatchResult, error) {
+					return d.WriteSessionBatch(writes)
+				},
+			},
+			{
+				name: "source snapshot",
+				write: func(d *DB, writes []SessionBatchWrite) (SessionBatchResult, error) {
+					return d.WriteSessionSnapshot(writes, nil, nil)
+				},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				d := testDB(t)
+				id := "phase22-" + strings.ReplaceAll(tc.name, " ", "-")
+				result, err := tc.write(d, []SessionBatchWrite{{
+					Session: Session{
+						ID: id, Project: "proj\x07ect",
+						Machine: defaultMachine, Agent: defaultAgent,
+						MessageCount:         1,
+						TotalOutputTokens:    9_000_000,
+						PeakContextTokens:    9_000_000,
+						HasTotalOutputTokens: true,
+						HasPeakContextTokens: true,
+					},
+					Messages: []Message{{
+						SessionID: id, Ordinal: 0,
+						Role: "assistant", Content: "ok\x07",
+						ContentLength: len("ok\x07"),
+						OutputTokens:  9_000_000, ContextTokens: 9_000_000,
+						HasOutputTokens: true, HasContextTokens: true,
+					}},
+					UsageEvents: []UsageEvent{{
+						SessionID: id, Source: "generation\x07",
+						InputTokens: 9_000_000,
+					}},
+					TokenAggregateSource: TokenAggregateMessages,
+					ReplaceMessages:      true,
+				}})
+				require.NoError(t, err)
+				assert.Equal(t, 1, result.WrittenSessions)
+
+				session, err := d.GetSessionFull(context.Background(), id)
+				require.NoError(t, err)
+				require.NotNil(t, session)
+				assert.Equal(t, "project", session.Project)
+				assert.Equal(t, MaxPlausibleTokens, session.TotalOutputTokens)
+				assert.Equal(t, MaxPlausibleTokens, session.PeakContextTokens)
+
+				msgs, err := d.GetAllMessages(context.Background(), id)
+				require.NoError(t, err)
+				require.Len(t, msgs, 1)
+				assert.Equal(t, "ok", msgs[0].Content)
+				assert.Equal(t, len("ok"), msgs[0].ContentLength)
+				assert.Equal(t, MaxPlausibleTokens, msgs[0].OutputTokens)
+				assert.Equal(t, MaxPlausibleTokens, msgs[0].ContextTokens)
+
+				events, err := d.GetUsageEvents(context.Background(), id)
+				require.NoError(t, err)
+				require.Len(t, events, 1)
+				assert.Equal(t, "generation", events[0].Source)
+				assert.Equal(t, MaxPlausibleTokens, events[0].InputTokens)
+			})
+		}
+	})
+}
+
 func TestSessionBatchTokenAggregateProvenanceIsExplicit(t *testing.T) {
 	tests := []struct {
 		name       string

@@ -1646,6 +1646,50 @@ func TestSyncEngineProgressDoneCatchesResyncDBBackedWork(t *testing.T) {
 	require.Equal(t, 3, last.SessionsTotal, "last progress = %d/%d, want 3/3", last.SessionsDone, last.SessionsTotal)
 }
 
+func TestPhase22DetailedResyncProgressLifecycle(t *testing.T) {
+	env := setupTestEnv(t)
+
+	msg := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsZero, "msg").
+		String()
+	env.writeClaudeSession(t, "test-proj", "phase22-progress.jsonl", msg)
+
+	var events []map[string]any
+	stats := env.engine.ResyncAll(context.Background(), func(p sync.Progress) {
+		data, err := json.Marshal(p)
+		require.NoError(t, err)
+		var event map[string]any
+		require.NoError(t, json.Unmarshal(data, &event))
+		events = append(events, event)
+	})
+
+	require.False(t, stats.Aborted, "resync should complete: %+v", stats)
+	require.NotEmpty(t, events, "expected resync progress callbacks")
+
+	var sawPrepare, sawSearchHint, sawSwap bool
+	for _, event := range events {
+		assert.Equal(t, true, event["resync"], "resync progress must be labelled: %+v", event)
+		if event["detail"] != nil {
+			assert.NotEmpty(t, event["detail"], "detail must be non-empty when present")
+		}
+		switch event["phase"] {
+		case "preparing_resync":
+			sawPrepare = true
+		case "rebuilding_search":
+			sawSearchHint = true
+			assert.Contains(t, fmt.Sprint(event["hint"]), "search index")
+		case "swapping_database":
+			sawSwap = true
+		}
+	}
+	assert.True(t, sawPrepare, "expected preparing_resync milestone in %+v", events)
+	assert.True(t, sawSearchHint, "expected rebuilding_search milestone with hint in %+v", events)
+	assert.True(t, sawSwap, "expected swapping_database milestone in %+v", events)
+
+	current, ok := env.engine.CurrentProgress()
+	assert.False(t, ok, "current progress should clear after resync, got %+v", current)
+}
+
 func TestSyncEngineHashSkip(t *testing.T) {
 	env := setupTestEnv(t)
 

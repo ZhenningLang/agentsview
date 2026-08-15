@@ -146,6 +146,13 @@ class SyncStore {
         newLastSync !== null && newLastSync !== this.lastSync;
       this.lastSync = newLastSync;
       this.lastSyncStats = status.stats as unknown as SyncStats | null;
+      const statusProgress = status.progress as unknown as SyncProgress | null | undefined;
+      if (statusProgress) {
+        this.syncing = true;
+        this.progress = statusProgress;
+      } else {
+        this.progress = null;
+      }
       const shouldRetryStats = this.backendDegraded;
       // Suppress notifications on initial hydration and
       // when a local sync just completed (pendingHydration).
