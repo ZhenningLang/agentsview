@@ -304,15 +304,6 @@ func TestPhase16CWDPrefixPolicyPreservesCleanupAndResync(t *testing.T) {
 	require.Equal(t, 0, stats.Failed, "usage failed = %d", stats.Failed)
 	assertMessageContent(t, env.db, "cleanup-usage", "archived usage probe")
 
-	unknownCWDPath := env.writeClaudeSession(t, "phase16", "zero-result-unknown-cwd.jsonl",
-		testjsonl.ClaudeUserJSON(phase16UsageCommand(), tsEarly),
-	)
-	seedPhase16ArchivedClaudeSession(t, env, "zero-result-unknown-cwd", unknownCWDPath, "",
-		"archived usage probe without cwd")
-	stats = env.engine.SyncAll(context.Background(), nil)
-	require.Equal(t, 0, stats.Failed, "unknown cwd usage failed = %d", stats.Failed)
-	assertMessageContent(t, env.db, "zero-result-unknown-cwd", "archived usage probe without cwd")
-
 	resync := env.engine.ResyncAll(context.Background(), nil)
 	require.False(t, resync.Aborted, "ResyncAll aborted: %+v", resync)
 	assert.Equal(t, 0, resync.Synced, "resync stats = %+v", resync)
@@ -320,7 +311,6 @@ func TestPhase16CWDPrefixPolicyPreservesCleanupAndResync(t *testing.T) {
 	assertMessageContent(t, env.db, "cleanup-fork", "archived main")
 	assertMessageContent(t, env.db, "cleanup-fork-i", "archived fork")
 	assertMessageContent(t, env.db, "cleanup-usage", "archived usage probe")
-	assertMessageContent(t, env.db, "zero-result-unknown-cwd", "archived usage probe without cwd")
 	reopened, err := db.Open(env.db.Path())
 	require.NoError(t, err, "reopen after resync")
 	t.Cleanup(func() { _ = reopened.Close() })

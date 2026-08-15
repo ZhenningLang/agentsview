@@ -3322,7 +3322,7 @@ func (e *Engine) collectAndBatch(
 			writtenSessions, writtenMessages, failedWrites, skippedWrites, cwdExcludedWrites :=
 				e.writeSourceSnapshot(
 					r.results, r.staleSessionIDs,
-					excludedSessionIDs, r.needsRetry,
+					excludedSessionIDs, r.needsRetry, r.cwdExcluded,
 				)
 			stats.RecordSynced(writtenSessions)
 			for range failedWrites {
@@ -3330,15 +3330,21 @@ func (e *Engine) collectAndBatch(
 			}
 			stats.recordSkippedWrites(skippedWrites, cwdExcludedWrites)
 			if failedWrites == 0 {
-				cleanupSuppressed := cwdExcludedWrites > 0 ||
-					(len(r.results) == 0 && len(excludedSessionIDs) > 0)
-				if cwdExcludedWrites > 0 {
+				if r.cwdExcluded > cwdExcludedWrites {
+					delta := r.cwdExcluded - cwdExcludedWrites
+					for range delta {
+						stats.RecordSkip()
+					}
+					stats.cwdExcludedSessions += delta
+				}
+				sourceHasCWDExclusion := cwdExcludedWrites > 0 || r.cwdExcluded > 0
+				if sourceHasCWDExclusion {
 					stats.cwdExcludedFiles++
 				}
-				if len(r.results) == 0 && len(excludedSessionIDs) > 0 && cwdExcludedWrites == 0 {
+				if len(r.results) == 0 && len(excludedSessionIDs) > 0 && !sourceHasCWDExclusion {
 					stats.parserExcludedFiles++
 				}
-				if !cleanupSuppressed {
+				if !sourceHasCWDExclusion {
 					stats.parserExcludedIDs = append(
 						stats.parserExcludedIDs,
 						mergeUniqueStrings(
@@ -5657,6 +5663,7 @@ func (e *Engine) writeSourceSnapshot(
 	staleIDs []string,
 	parserExcludedIDs []string,
 	needsRetry bool,
+	sourceCWDExcluded int,
 ) (writtenSessions, writtenMessages, failedSessions, skippedSessions, cwdExcludedSessions int) {
 	resolveWorktreeProject := e.loadWorktreeProjectResolver()
 	writes := make([]db.SessionBatchWrite, 0, len(results))
@@ -5693,7 +5700,7 @@ func (e *Engine) writeSourceSnapshot(
 
 	cleanupStaleIDs := staleIDs
 	cleanupParserExcludedIDs := parserExcludedIDs
-	if cwdExcludedSessions > 0 || (len(results) == 0 && len(parserExcludedIDs) > 0) {
+	if cwdExcludedSessions > 0 || sourceCWDExcluded > 0 {
 		cleanupStaleIDs = nil
 		cleanupParserExcludedIDs = nil
 	}
