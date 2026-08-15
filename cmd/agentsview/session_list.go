@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -26,6 +27,8 @@ func newSessionListCommand() *cobra.Command {
 		hasSecret, resume, active               bool
 		cursor                                  string
 		limit                                   int
+		sort                                    string
+		reverse                                 bool
 	)
 	cmd := &cobra.Command{
 		Use:          "list",
@@ -33,6 +36,22 @@ func newSessionListCommand() *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			keys, err := db.ParseSortSpec(sort)
+			if err != nil {
+				return fmt.Errorf("invalid sort %q: %w", sort, err)
+			}
+			if len(keys) == 0 {
+				keys = []db.SortKey{{Key: db.DefaultSortKey()}}
+			}
+			if reverse {
+				for i := range keys {
+					if keys[i].Descending == nil {
+						d := !db.SortDefaultDescending(keys[i].Key)
+						keys[i].Descending = &d
+					}
+				}
+			}
+
 			svc, cleanup, err := resolveService(cmd)
 			if err != nil {
 				return err
@@ -62,6 +81,7 @@ func newSessionListCommand() *cobra.Command {
 				HasSecret:        hasSecret,
 				Cursor:           cursor,
 				Limit:            limit,
+				OrderBy:          db.FormatSortSpec(keys),
 			}
 			if cmd.Flags().Changed("min-tool-failures") {
 				f.MinToolFailures = &minToolFailures
@@ -127,5 +147,10 @@ func newSessionListCommand() *cobra.Command {
 			"Maximum sessions to return (default %d, max %d)",
 			db.DefaultSessionLimit, db.MaxSessionLimit,
 		))
+	flags.StringVar(&sort, "sort", "recent",
+		"Sort by comma-separated keys, each optionally key:asc or key:desc. Keys: "+
+			strings.Join(db.SortKeys(), ", "))
+	flags.BoolVarP(&reverse, "reverse", "r", false,
+		"Reverse sort keys that have no explicit :asc/:desc suffix")
 	return cmd
 }

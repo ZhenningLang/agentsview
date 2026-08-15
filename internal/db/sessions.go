@@ -255,9 +255,48 @@ type Session struct {
 
 // SessionCursor is the opaque pagination token.
 type SessionCursor struct {
-	EndedAt string `json:"e"`
-	ID      string `json:"i"`
-	Total   int    `json:"t,omitempty"`
+	EndedAt string             `json:"e"`
+	ID      string             `json:"i"`
+	Total   int                `json:"t,omitempty"`
+	Sort    string             `json:"k,omitempty"`
+	Desc    bool               `json:"d,omitempty"`
+	Value   string             `json:"v,omitempty"`
+	Keys    []SessionCursorKey `json:"ks,omitempty"`
+}
+
+type SessionCursorKey struct {
+	Sort  string `json:"k"`
+	Desc  bool   `json:"d,omitempty"`
+	Value string `json:"v,omitempty"`
+}
+
+func (cur SessionCursor) resolvedKeys() []SessionCursorKey {
+	if len(cur.Keys) > 0 {
+		return cur.Keys
+	}
+	if cur.Sort != "" {
+		return []SessionCursorKey{{Sort: cur.Sort, Desc: cur.Desc, Value: cur.Value}}
+	}
+	return []SessionCursorKey{{Sort: defaultSortKey, Desc: true, Value: cur.EndedAt}}
+}
+
+func DecodeUnsignedLegacySessionCursor(data []byte) (SessionCursor, error) {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return SessionCursor{}, fmt.Errorf("%w: %v", ErrInvalidCursor, err)
+	}
+	for key := range raw {
+		switch strings.ToLower(key) {
+		case "k", "d", "v", "ks":
+			return SessionCursor{}, fmt.Errorf("%w: unsigned cursor contains signed-only sort fields", ErrInvalidCursor)
+		}
+	}
+	var c SessionCursor
+	if err := json.Unmarshal(data, &c); err != nil {
+		return SessionCursor{}, fmt.Errorf("%w: %v", ErrInvalidCursor, err)
+	}
+	c.Total = 0
+	return c, nil
 }
 
 // EncodeCursor returns a base64-encoded cursor string.
@@ -266,7 +305,10 @@ func (db *DB) EncodeCursor(endedAt, id string, total ...int) string {
 	if len(total) > 0 {
 		t = total[0]
 	}
-	c := SessionCursor{EndedAt: endedAt, ID: id, Total: t}
+	return db.EncodeSessionCursor(SessionCursor{EndedAt: endedAt, ID: id, Total: t})
+}
+
+func (db *DB) EncodeSessionCursor(c SessionCursor) string {
 	data, _ := json.Marshal(c)
 
 	db.cursorMu.RLock()
@@ -284,17 +326,12 @@ func (db *DB) EncodeCursor(endedAt, id string, total ...int) string {
 func (db *DB) DecodeCursor(s string) (SessionCursor, error) {
 	parts := strings.Split(s, ".")
 	if len(parts) == 1 {
-		// Legacy cursor (unsigned). Trust nothing about the Total.
+		// Legacy cursor (unsigned). Trust only the pre-sort fields.
 		data, err := base64.RawURLEncoding.DecodeString(parts[0])
 		if err != nil {
 			return SessionCursor{}, fmt.Errorf("%w: %v", ErrInvalidCursor, err)
 		}
-		var c SessionCursor
-		if err := json.Unmarshal(data, &c); err != nil {
-			return SessionCursor{}, fmt.Errorf("%w: %v", ErrInvalidCursor, err)
-		}
-		c.Total = 0 // Force re-computation
-		return c, nil
+		return DecodeUnsignedLegacySessionCursor(data)
 	} else if len(parts) != 2 {
 		return SessionCursor{}, fmt.Errorf("%w: invalid format", ErrInvalidCursor)
 	}
@@ -362,6 +399,9 @@ type SessionFilter struct {
 	//   "unclean"    → only sessions with status IN
 	//                  ('tool_call_pending', 'truncated')
 	Termination string
+	Sort        []SortKey
+	OrderBy     string
+	Descending  *bool
 }
 
 // activeWindow is the freshness window for "active" sessions
@@ -443,6 +483,7 @@ func (db *DB) ListSessions(
 	}
 
 	where, args := buildSessionFilter(f)
+	rs := ResolveSort(f)
 
 	var total int
 	var cur SessionCursor
@@ -472,18 +513,17 @@ func (db *DB) ListSessions(
 	pageBuilder := NewQueryBuilder(SQLiteQueryDialect(), len(args))
 	cursorWhere := where
 	if f.Cursor != "" {
-		cursorWhere += " AND " +
-			pageBuilder.CursorBeforePredicate(cur)
+		vals, err := CursorPredicateValues(cur, rs)
+		if err != nil {
+			return SessionPage{}, err
+		}
+		cursorWhere += " AND " + pageBuilder.CursorPredicate(rs, f, vals, cur.ID)
 	}
 
 	query := "SELECT " + sessionBaseCols +
-		" FROM sessions WHERE " + cursorWhere + `
-		ORDER BY COALESCE(
-			NULLIF(ended_at, ''),
-			NULLIF(started_at, ''),
-			created_at
-		) DESC, id DESC
-		` + pageBuilder.Limit(f.Limit+1)
+		" FROM sessions WHERE " + cursorWhere + " " +
+		pageBuilder.OrderByClause(rs, f) + " " +
+		pageBuilder.Limit(f.Limit+1)
 	cursorArgs = append(cursorArgs, pageBuilder.Args()...)
 
 	rows, err := db.getReader().QueryContext(ctx, query, cursorArgs...)
@@ -502,14 +542,7 @@ func (db *DB) ListSessions(
 	if len(sessions) > f.Limit {
 		page.Sessions = sessions[:f.Limit]
 		last := page.Sessions[f.Limit-1]
-		ea := last.CreatedAt
-		if last.StartedAt != nil && *last.StartedAt != "" {
-			ea = *last.StartedAt
-		}
-		if last.EndedAt != nil && *last.EndedAt != "" {
-			ea = *last.EndedAt
-		}
-		page.NextCursor = db.EncodeCursor(ea, last.ID, total)
+		page.NextCursor = db.EncodeSessionCursor(NextSessionCursor(&last, rs, total, f))
 	}
 
 	return page, nil

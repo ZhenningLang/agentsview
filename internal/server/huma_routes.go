@@ -128,6 +128,30 @@ func optionalIntValue(p optionalIntParam) *int {
 	return &p.Value
 }
 
+type optionalBoolParam struct {
+	Value bool
+	IsSet bool
+}
+
+func (p optionalBoolParam) Schema(r huma.Registry) *huma.Schema {
+	return huma.SchemaFromType(r, reflect.TypeFor[bool]())
+}
+
+func (p *optionalBoolParam) Receiver() reflect.Value {
+	return reflect.ValueOf(p).Elem().FieldByName("Value")
+}
+
+func (p *optionalBoolParam) OnParamSet(isSet bool, _ any) {
+	p.IsSet = isSet
+}
+
+func optionalBoolValue(p optionalBoolParam) *bool {
+	if !p.IsSet {
+		return nil
+	}
+	return &p.Value
+}
+
 const ctxKeyHumaRequestInfo contextKey = 100
 
 func humaRequestInfoMiddleware(ctx huma.Context, next func(huma.Context)) {

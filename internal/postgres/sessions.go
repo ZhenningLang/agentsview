@@ -228,7 +228,10 @@ func (s *Store) EncodeCursor(
 	if len(total) > 0 {
 		t = total[0]
 	}
-	c := db.SessionCursor{EndedAt: endedAt, ID: id, Total: t}
+	return s.EncodeSessionCursor(db.SessionCursor{EndedAt: endedAt, ID: id, Total: t})
+}
+
+func (s *Store) EncodeSessionCursor(c db.SessionCursor) string {
 	data, _ := json.Marshal(c)
 
 	s.cursorMu.RLock()
@@ -258,14 +261,7 @@ func (s *Store) DecodeCursor(
 				fmt.Errorf("%w: %v",
 					db.ErrInvalidCursor, err)
 		}
-		var c db.SessionCursor
-		if err := json.Unmarshal(data, &c); err != nil {
-			return db.SessionCursor{},
-				fmt.Errorf("%w: %v",
-					db.ErrInvalidCursor, err)
-		}
-		c.Total = 0
-		return c, nil
+		return db.DecodeUnsignedLegacySessionCursor(data)
 	} else if len(parts) != 2 {
 		return db.SessionCursor{},
 			fmt.Errorf("%w: invalid format",
@@ -323,6 +319,7 @@ func (s *Store) ListSessions(
 	}
 
 	where, args := buildPGSessionFilter(f)
+	rs := db.ResolveSort(f)
 
 	var total int
 	var cur db.SessionCursor
@@ -352,16 +349,17 @@ func (s *Store) ListSessions(
 	)
 	cursorWhere := where
 	if f.Cursor != "" {
-		cursorWhere += " AND " +
-			pageBuilder.CursorBeforePredicate(cur)
+		vals, err := db.CursorPredicateValues(cur, rs)
+		if err != nil {
+			return db.SessionPage{}, err
+		}
+		cursorWhere += " AND " + pageBuilder.CursorPredicate(rs, f, vals, cur.ID)
 	}
 
 	query := "SELECT " + pgSessionCols +
-		" FROM sessions WHERE " + cursorWhere + `
-		ORDER BY COALESCE(
-			ended_at, started_at, created_at
-		) DESC, id DESC
-		` + pageBuilder.Limit(f.Limit+1)
+		" FROM sessions WHERE " + cursorWhere + " " +
+		pageBuilder.OrderByClause(rs, f) + " " +
+		pageBuilder.Limit(f.Limit+1)
 	cursorArgs = append(cursorArgs, pageBuilder.Args()...)
 
 	rows, err := s.pg.QueryContext(
@@ -384,14 +382,7 @@ func (s *Store) ListSessions(
 	if len(sessions) > f.Limit {
 		page.Sessions = sessions[:f.Limit]
 		last := page.Sessions[f.Limit-1]
-		ea := last.CreatedAt
-		if last.StartedAt != nil && *last.StartedAt != "" {
-			ea = *last.StartedAt
-		}
-		if last.EndedAt != nil && *last.EndedAt != "" {
-			ea = *last.EndedAt
-		}
-		page.NextCursor = s.EncodeCursor(ea, last.ID, total)
+		page.NextCursor = s.EncodeSessionCursor(db.NextSessionCursor(&last, rs, total, f))
 	}
 
 	return page, nil

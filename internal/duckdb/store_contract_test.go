@@ -2,6 +2,7 @@ package duckdb
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"testing"
 
@@ -17,6 +18,7 @@ func TestDuckDBStoreContract(t *testing.T) {
 		run  func(t *testing.T, store *Store, fixture syncFixture)
 	}{
 		{"sessions_cursors_and_metadata", duckContractSessionsCursorsAndMetadata},
+		{"phase15_sort_cursor_parity", duckContractPhase15SortCursorParity},
 		{"messages_search_and_secrets", duckContractMessagesSearchAndSecrets},
 		{"session_embeddings", duckContractSessionEmbeddings},
 		{"read_only_curation", duckContractReadOnlyCuration},
@@ -29,6 +31,100 @@ func TestDuckDBStoreContract(t *testing.T) {
 			tt.run(t, store, fixture)
 		})
 	}
+}
+
+func duckContractPhase15SortCursorParity(
+	t *testing.T, store *Store, fixture syncFixture,
+) {
+	t.Helper()
+	ctx := context.Background()
+	page, err := store.ListSessions(ctx, db.SessionFilter{
+		OrderBy: "messages:desc,started:asc",
+		Limit:   1,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, page.Total)
+	require.Equal(t, []string{fixture.alphaID}, duckSessionIDs(page.Sessions))
+	require.NotEmpty(t, page.NextCursor)
+
+	cur, err := store.DecodeCursor(page.NextCursor)
+	require.NoError(t, err)
+	require.Equal(t, fixture.alphaID, cur.ID)
+	require.Len(t, cur.Keys, 2)
+	require.Equal(t, "messages", cur.Keys[0].Sort)
+	require.True(t, cur.Keys[0].Desc)
+	require.Equal(t, "started", cur.Keys[1].Sort)
+	require.False(t, cur.Keys[1].Desc)
+
+	next, err := store.ListSessions(ctx, db.SessionFilter{
+		OrderBy: "messages:desc,started:asc",
+		Limit:   1,
+		Cursor:  page.NextCursor,
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{fixture.betaID}, duckSessionIDs(next.Sessions))
+
+	all := duckWalkSessionIDs(t, store, db.SessionFilter{
+		OrderBy: "messages:desc,started:asc",
+		Limit:   1,
+	})
+	require.Equal(t, []string{fixture.alphaID, fixture.betaID}, all)
+
+	for _, payload := range []string{
+		`{"i":"` + fixture.alphaID + `","ks":[{"k":"messages","d":true,"v":"2"}]}`,
+		`{"i":"` + fixture.alphaID + `","KS":[{"k":"messages","d":true,"v":"2"}]}`,
+		`{"i":"` + fixture.alphaID + `","K":"messages","D":true,"V":"2"}`,
+	} {
+		_, err = store.DecodeCursor(base64.RawURLEncoding.EncodeToString([]byte(payload)))
+		require.ErrorIs(t, err, db.ErrInvalidCursor)
+	}
+
+	_, err = store.DB().ExecContext(ctx, `
+		INSERT INTO sessions (
+			id, project, machine, agent, first_message, created_at, started_at,
+			message_count, user_message_count, health_score, context_pressure_max,
+			secret_leak_count, secrets_rules_version
+		) VALUES
+			('duck-p15-null', 'p15-extra', 'test-machine', 'claude', 'n',
+			 '2026-02-01T00:00:00Z', '2026-02-01T00:00:00Z', 1, 1, NULL, NULL, 0, ''),
+			('duck-p15-low', 'p15-extra', 'test-machine', 'claude', 'l',
+			 '2026-02-02T00:00:00Z', '2026-02-02T00:00:00Z', 1, 1, 10, 0.95, 9, 'old-rules'),
+			('duck-p15-high', 'p15-extra', 'test-machine', 'claude', 'h',
+			 '2026-02-03T00:00:00Z', '2026-02-03T00:00:00Z', 1, 1, 90, 0.25, 1, 'current-rules')`)
+	require.NoError(t, err)
+	require.Equal(t, []string{"duck-p15-low", "duck-p15-high", "duck-p15-null"},
+		duckWalkSessionIDs(t, store, db.SessionFilter{Project: "p15-extra", OrderBy: "health", Limit: 1}))
+	require.Equal(t, []string{"duck-p15-high", "duck-p15-low", "duck-p15-null"},
+		duckWalkSessionIDs(t, store, db.SessionFilter{Project: "p15-extra", OrderBy: "health:desc", Limit: 1}))
+	require.Equal(t, []string{"duck-p15-high", "duck-p15-low", "duck-p15-null"},
+		duckWalkSessionIDs(t, store, db.SessionFilter{Project: "p15-extra", OrderBy: "context-pressure", Limit: 1}))
+	require.Equal(t, []string{"duck-p15-high", "duck-p15-null", "duck-p15-low"},
+		duckWalkSessionIDs(t, store, db.SessionFilter{
+			Project: "p15-extra", OrderBy: "secrets:desc", Limit: 1,
+			SecretsRulesVersions: []string{"current-rules"},
+		}))
+}
+
+func duckWalkSessionIDs(t *testing.T, store *Store, f db.SessionFilter) []string {
+	t.Helper()
+	ctx := context.Background()
+	cursor := f.Cursor
+	seen := map[string]bool{}
+	ids := []string{}
+	for i := 0; i < 20; i++ {
+		f.Cursor = cursor
+		page, err := store.ListSessions(ctx, f)
+		require.NoError(t, err)
+		ids = append(ids, duckSessionIDs(page.Sessions)...)
+		if page.NextCursor == "" {
+			return ids
+		}
+		require.False(t, seen[page.NextCursor], "cursor repeated")
+		seen[page.NextCursor] = true
+		cursor = page.NextCursor
+	}
+	t.Fatalf("pagination did not terminate; ids=%v", ids)
+	return nil
 }
 
 func duckContractSessionEmbeddings(

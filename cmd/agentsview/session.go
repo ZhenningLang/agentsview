@@ -24,11 +24,7 @@ func newSessionCommand() *cobra.Command {
 			return cmd.Help()
 		},
 	}
-	cmd.PersistentFlags().String(
-		"format", "human",
-		"Output format: human or json",
-	)
-	cmd.PersistentFlags().Bool("json", false, "Output as JSON")
+	registerFormatFlags(cmd.PersistentFlags())
 	cmd.PersistentFlags().String(
 		"server", "",
 		"Remote daemon URL",
@@ -121,22 +117,6 @@ func resolveWritableService(
 		)
 	}
 	return syncService(cfg, tr)
-}
-
-// outputFormat returns the requested --format flag value
-// ("human" or "json"). Defaults to "human".
-func outputFormat(cmd *cobra.Command) string {
-	if f := cmd.Flags().Lookup("json"); f != nil {
-		v, _ := cmd.Flags().GetBool("json")
-		if v {
-			return "json"
-		}
-	}
-	v, _ := cmd.Flags().GetString("format")
-	if v == "" {
-		return "human"
-	}
-	return v
 }
 
 func explicitServerToken(cmd *cobra.Command) (string, error) {

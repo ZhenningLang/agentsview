@@ -22,6 +22,7 @@ type Store interface {
 	// Cursor pagination.
 	SetCursorSecret(secret []byte)
 	EncodeCursor(endedAt, id string, total ...int) string
+	EncodeSessionCursor(c SessionCursor) string
 	DecodeCursor(s string) (SessionCursor, error)
 
 	// Sessions.
