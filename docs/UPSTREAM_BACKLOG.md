@@ -42,6 +42,14 @@ Source ledger: `docs/UPSTREAM_AUDIT.md`. This file contains only records whose l
 - **Dependencies / risks:** Schema-contract change; preserve phase 01 legacy repair and backend parity.
 - **Review after:** `2026-09-12`
 
+### `7ee9e4e15b` — `feat(parse-diff): classify incremental-append skew and recommend a resync baseline (#970)`
+- **Category:** `parse-diff-foundation`
+- **Priority:** `P1`
+- **Gap / evidence:** Phase 14 re-read the upstream dependency chain and confirmed this commit is not a standalone 14-file schema feature. It depends on the parse-diff subsystem introduced by upstream `4592129b`, then extended by `b96075cf` and `e359fbc0`. This fork has no local parse-diff subsystem, so adding only `last_write_incremental` would create dead schema with no classifier/report/CLI consumer.
+- **Proposed acceptance:** Adopt parse-diff as its own foundation slice first, including usable CLI/report output, live-write race precedence, synthetic corpus coverage, and incremental-skew classification; only then add `last_write_incremental` marker semantics.
+- **Dependencies / risks:** Requires parse-diff foundation; migration cost is materially larger than the feature ledger's original `conflict + 14 files` surface.
+- **Review after:** `2026-09-13`
+
 ### `1b5124bfdf3d3247c90522d30c3d5eb66080408f` — `fix(docs): scrub screenshot fixtures and sidebar trees (#1030)`
 - **Category:** `archive-schema`
 - **Priority:** `P1`

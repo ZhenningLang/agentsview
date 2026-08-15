@@ -4266,6 +4266,15 @@ func TestCopySessionMetadataPreservesWorktreeProjectMappings(t *testing.T) {
 		Machine: "laptop", PathPrefix: dstPrefix, Project: "src-conflict", Enabled: true,
 	})
 	requireNoError(t, err, "CreateWorktreeProjectMapping conflict")
+	conflictRows, err := srcDB.getWriter().ExecContext(ctx, `
+		UPDATE worktree_project_mappings
+		SET layout = 'repo_dot_worktrees', project = ''
+		WHERE machine = ? AND path_prefix = ?`,
+		"laptop", dstPrefix,
+	)
+	requireNoError(t, err, "set source conflict layout")
+	changed, _ := conflictRows.RowsAffected()
+	require.Equal(t, int64(1), changed, "source conflict layout rows affected")
 	srcDB.Close()
 
 	dstPath := filepath.Join(dir, "dst.db")
@@ -4284,11 +4293,15 @@ func TestCopySessionMetadataPreservesWorktreeProjectMappings(t *testing.T) {
 	requireNoError(t, err, "ListWorktreeProjectMappings")
 	require.Len(t, got, 2, "mapping count = %d, want 2: %+v", len(got), got)
 	projects := map[string]string{}
+	layouts := map[string]string{}
 	for _, m := range got {
 		projects[m.PathPrefix] = m.Project
+		layouts[m.PathPrefix] = m.Layout
 	}
 	require.Equal(t, "src_repo", projects[srcPrefix], "source mapping project")
-	require.Equal(t, "src_conflict", projects[dstPrefix], "destination mapping project")
+	require.Equal(t, WorktreeMappingLayoutExplicit, layouts[srcPrefix], "source mapping layout")
+	require.Equal(t, "", projects[dstPrefix], "destination mapping project")
+	require.Equal(t, WorktreeMappingLayoutRepoDotWorktrees, layouts[dstPrefix], "destination mapping layout")
 }
 
 func TestCopySessionMetadataPreservesClears(t *testing.T) {

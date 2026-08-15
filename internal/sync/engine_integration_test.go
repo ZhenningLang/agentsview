@@ -688,6 +688,40 @@ func TestSyncEngineAppliesWorktreeProjectMapping(t *testing.T) {
 	)
 }
 
+func TestSyncEngineAppliesRepoDotWorktreesLayoutMapping(t *testing.T) {
+	env := setupTestEnv(t)
+	root := t.TempDir()
+	sessionCwd := filepath.Join(root, "service.worktrees", "feature-login")
+
+	_, err := env.db.CreateWorktreeProjectMapping(
+		context.Background(),
+		db.WorktreeProjectMapping{
+			Machine:    "local",
+			PathPrefix: root,
+			Layout:     db.WorktreeMappingLayoutRepoDotWorktrees,
+			Enabled:    true,
+		},
+	)
+	require.NoError(t, err, "CreateWorktreeProjectMapping")
+
+	content := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "Worktree layout mapped", sessionCwd).
+		AddClaudeAssistant(tsEarlyS5, "ok").
+		String()
+
+	env.writeClaudeSessionForProject(
+		t, sessionCwd, "mapped-worktree-layout.jsonl", content,
+	)
+
+	runSyncAndAssert(t, env.engine, sync.SyncStats{
+		TotalSessions: 1,
+		Synced:        1,
+		Skipped:       0,
+	})
+
+	assertSessionProject(t, env.db, "mapped-worktree-layout", "service")
+}
+
 func TestSyncSingleSessionAppliesWorktreeProjectMapping(t *testing.T) {
 	env := setupTestEnv(t)
 
