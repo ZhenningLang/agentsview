@@ -5,4 +5,3 @@
 export type EmptyTrashResponse = {
   deleted: number;
 };
-

@@ -1,12 +1,15 @@
 package server
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -55,6 +58,118 @@ func TestShellQuote(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestPhase18MessagePointForkCommandsCrossPlatform(t *testing.T) {
+	cwd := t.TempDir()
+	promptPath := filepath.Join(t.TempDir(), "prompt's file.txt")
+
+	posix := claudeMessagePointResponseCommand(
+		promptPath, true, cwd, "linux",
+	)
+	assert.Equal(t,
+		"cd "+shellQuote(cwd)+" && claude --dangerously-skip-permissions < "+
+			shellQuote(promptPath)+"; rm -f -- "+shellQuote(promptPath),
+		posix,
+	)
+
+	windowsPath := `C:\Users\Ada\AppData\Local\Temp\prompt's file.txt`
+	windowsCWD := `C:\Users\Ada\source\agentsview`
+	windows := claudeMessagePointResponseCommand(
+		windowsPath, true, windowsCWD, "windows",
+	)
+	const prefix = "powershell.exe -NoProfile -EncodedCommand "
+	require.True(t, strings.HasPrefix(windows, prefix), "command = %q", windows)
+	assert.NotContains(t, windows, " < ")
+	assert.NotContains(t, windows, "rm -f --")
+	script := decodePhase18PowerShellCommand(t, strings.TrimPrefix(windows, prefix))
+	assert.Contains(t, script,
+		"Set-Location -LiteralPath 'C:\\Users\\Ada\\source\\agentsview'")
+	assert.Contains(t, script,
+		"Get-Content -Raw -Encoding UTF8 -LiteralPath "+
+			"'C:\\Users\\Ada\\AppData\\Local\\Temp\\prompt''s file.txt'")
+	assert.Contains(t, script, "| & 'claude' --dangerously-skip-permissions")
+	assert.Contains(t, script,
+		"Remove-Item -LiteralPath "+
+			"'C:\\Users\\Ada\\AppData\\Local\\Temp\\prompt''s file.txt' "+
+			"-Force -ErrorAction SilentlyContinue")
+	assert.NotContains(t, script, " < ")
+	assert.NotContains(t, script, "rm -f --")
+}
+
+func decodePhase18PowerShellCommand(t *testing.T, encoded string) string {
+	t.Helper()
+	raw, err := base64.StdEncoding.DecodeString(encoded)
+	require.NoError(t, err)
+	require.Zero(t, len(raw)%2, "UTF-16LE byte length must be even")
+	codeUnits := make([]uint16, len(raw)/2)
+	for i := range codeUnits {
+		codeUnits[i] = binary.LittleEndian.Uint16(raw[i*2:])
+	}
+	return string(utf16.Decode(codeUnits))
+}
+
+func TestPhase18MessagePointForkPromptLifecycle(t *testing.T) {
+	cacheRoot := t.TempDir()
+	t.Setenv("HOME", cacheRoot)
+	t.Setenv("USERPROFILE", cacheRoot)
+
+	first, err := claudeMessagePointPromptPath("phase18-session", 3)
+	require.NoError(t, err)
+	second, err := claudeMessagePointPromptPath("phase18-session", 3)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Remove(first); _ = os.Remove(second) })
+
+	assert.NotEqual(t, first, second)
+	assert.True(t, filepath.IsAbs(first), "prompt path should be absolute")
+	assert.True(t, strings.HasPrefix(first, cacheRoot), "prompt path = %q", first)
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(first)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	}
+}
+
+func TestPhase18MessagePointForkPromptRenderer(t *testing.T) {
+	session := &db.Session{ID: "phase18-session", Project: "demo"}
+	msgs := []db.Message{
+		{
+			Ordinal:   0,
+			Role:      "user",
+			Content:   "please inspect",
+			Timestamp: "2026-08-16T01:02:03Z",
+			Model:     "claude-opus",
+		},
+		{
+			Ordinal: 3,
+			Role:    "assistant",
+			Content: "I will call a tool",
+			ToolCalls: []db.ToolCall{{
+				ToolName:      "Bash",
+				InputJSON:     `{"command":"pwd"}`,
+				ResultContent: "canonical stdout",
+				ResultEvents: []db.ToolResultEvent{{
+					Source:     "tool",
+					Status:     "completed",
+					Content:    "canonical stdout",
+					EventIndex: 0,
+				}},
+			}},
+		},
+	}
+
+	prompt := renderClaudeMessagePointPrompt(session, msgs, 3)
+	assert.Contains(t, prompt, "Fork point ordinal: 3")
+	assert.Contains(t, prompt, "## Message 0")
+	assert.Contains(t, prompt, "Role: user")
+	assert.Contains(t, prompt, "Timestamp: 2026-08-16T01:02:03Z")
+	assert.Contains(t, prompt, "Model: claude-opus")
+	assert.Contains(t, prompt, "please inspect")
+	assert.Contains(t, prompt, "## Message 3")
+	assert.Contains(t, prompt, "[Bash]")
+	assert.Contains(t, prompt, `{"command":"pwd"}`)
+	assert.Contains(t, prompt, "canonical stdout")
+	assert.Equal(t, 1, strings.Count(prompt, "canonical stdout"))
 }
 
 func TestDetectTerminalLinux_NoTerminal(t *testing.T) {

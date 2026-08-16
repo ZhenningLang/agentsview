@@ -8,7 +8,7 @@ import {
   vi,
 } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import type { Message } from "../../api/types.js";
+import type { Message, Session } from "../../api/types.js";
 import { messages } from "../../stores/messages.svelte.js";
 import { sessions } from "../../stores/sessions.svelte.js";
 import { ui } from "../../stores/ui.svelte.js";
@@ -16,13 +16,43 @@ import { ui } from "../../stores/ui.svelte.js";
 const virtualizerMock = vi.hoisted(() => ({
   options: { count: 0 },
   scrollOffset: 0,
-  getVirtualItems: vi.fn(() => []),
+  visibleItems: [] as Array<{ index: number; key: string; start: number; end: number }>,
+  getVirtualItems: vi.fn(() => virtualizerMock.visibleItems),
   getTotalSize: vi.fn(() => 120),
   measureElement: vi.fn(),
   scrollToIndex: vi.fn(),
   scrollToOffset: vi.fn(),
   getOffsetForIndex: vi.fn(),
 }));
+
+const phase18State = vi.hoisted(() => ({
+  resume: vi.fn().mockResolvedValue({
+    launched: true,
+    terminal: "terminal",
+    command: "",
+  }),
+}));
+
+vi.mock("../../api/runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../api/runtime.js")>();
+  return {
+    ...actual,
+    configureGeneratedClient: vi.fn(),
+    isRemoteConnection: () => false,
+  };
+});
+
+vi.mock("../../api/generated/index", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../api/generated/index")>();
+  return {
+    ...actual,
+    SessionsService: {
+      ...actual.SessionsService,
+      postApiV1SessionsIdResume: phase18State.resume,
+    },
+  };
+});
 
 vi.mock("../../virtual/createVirtualizer.svelte.js", () => ({
   createVirtualizer: (
@@ -60,6 +90,41 @@ function makeMessage(ordinal: number): Message {
   };
 }
 
+function makeSession(overrides: Partial<Session> = {}): Session {
+  return {
+    id: "s1",
+    project: "proj",
+    machine: "local",
+    agent: "claude",
+    first_message: "hello",
+    started_at: "2026-02-20T12:30:00Z",
+    ended_at: "2026-02-20T12:31:00Z",
+    message_count: 2,
+    user_message_count: 1,
+    total_output_tokens: 0,
+    peak_context_tokens: 0,
+    is_automated: false,
+    created_at: "2026-02-20T12:30:00Z",
+    ...overrides,
+  };
+}
+
+function makeToolMessage(ordinal: number): Message {
+  return {
+    ...makeMessage(ordinal),
+    role: "assistant",
+    content: "",
+    has_tool_use: true,
+    content_length: 0,
+    tool_calls: [{
+      tool_name: "Bash",
+      tool_use_id: `toolu-${ordinal}`,
+      input_json: `{"command":"pwd"}`,
+      result_content: "ok",
+    }],
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   const promise = new Promise<T>((res) => {
@@ -74,7 +139,9 @@ describe("MessageList follow cancellation", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    virtualizerMock.visibleItems = [];
     messages.clear();
+    sessions.sessions = [];
     sessions.activeSessionId = "s1";
     messages.sessionId = "s1";
     messages.messages = [makeMessage(10)];
@@ -101,6 +168,7 @@ describe("MessageList follow cancellation", () => {
     }
     rafSpy.mockRestore();
     messages.clear();
+    sessions.sessions = [];
     sessions.activeSessionId = null;
     ui.followLatest = false;
     document.body.innerHTML = "";
@@ -135,6 +203,31 @@ describe("MessageList follow cancellation", () => {
     expect(ensureSpy).toHaveBeenCalledWith(0);
     expect(virtualizerMock.scrollToIndex).toHaveBeenCalledWith(0, {
       align: "start",
+    });
+  });
+
+  it("phase18 exposes fork action through the default tool-group render path", async () => {
+    sessions.sessions = [makeSession({ id: "s1", agent: "claude" })];
+    sessions.activeSessionId = "s1";
+    messages.sessionId = "s1";
+    messages.messages = [makeToolMessage(7)];
+    messages.messageCount = 1;
+    virtualizerMock.visibleItems = [{ index: 0, key: "row-0", start: 0, end: 80 }];
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+    document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Fork from this message"]',
+    )!.click();
+    await tick();
+    await Promise.resolve();
+
+    expect(phase18State.resume).toHaveBeenCalledWith({
+      id: "s1",
+      requestBody: {
+        from_ordinal: 7,
+        fork_session: true,
+      },
     });
   });
 });

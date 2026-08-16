@@ -7,4 +7,3 @@ export type DbHourOfWeekCell = {
   hour: number;
   messages: number;
 };
-

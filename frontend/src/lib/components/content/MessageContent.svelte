@@ -21,6 +21,7 @@
   import CodeBlock from "./CodeBlock.svelte";
   import MermaidBlock from "./MermaidBlock.svelte";
   import SkillBlock from "./SkillBlock.svelte";
+  import MessageForkButton from "./MessageForkButton.svelte";
   import CopyButton from "../shared/CopyButton.svelte";
   import { ui } from "../../stores/ui.svelte.js";
   import { pins } from "../../stores/pins.svelte.js";
@@ -35,12 +36,19 @@
 
   interface Props {
     message: Message;
+    session?: Session | null;
     isSubagentContext?: boolean;
     highlightQuery?: string;
     isCurrentHighlight?: boolean;
   }
 
-  let { message, isSubagentContext = false, highlightQuery = "", isCurrentHighlight = false }: Props = $props();
+  let {
+    message,
+    session,
+    isSubagentContext = false,
+    highlightQuery = "",
+    isCurrentHighlight = false,
+  }: Props = $props();
 
   let copied = $state(false);
 
@@ -87,10 +95,12 @@
     ),
   );
 
-  /** Resolve the session that owns this message, falling back to activeSession. */
+  /** Resolve the owner, favoring explicit embedded-session context. */
   let owningSession = $derived(
-    sessions.sessions.find((s) => s.id === message.session_id) ??
-      sessions.activeSession,
+    session !== undefined
+      ? session
+      : sessions.sessions.find((s) => s.id === message.session_id) ??
+        sessions.activeSession,
   );
 
   /** Walk the parent chain to check if any ancestor has the teammate tag. */
@@ -279,6 +289,7 @@
       // silently fail
     }
   }
+
 </script>
 
 <div
@@ -317,6 +328,10 @@
     >
       <PinIcon size="14" strokeWidth="1.8" aria-hidden="true" />
     </button>
+    <MessageForkButton
+      {message}
+      {session}
+    />
     {#if pinFeedback}
       <span class="pin-feedback">{pinFeedback}</span>
     {/if}

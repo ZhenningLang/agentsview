@@ -2,7 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbSession } from './DbSession';
 export type TrashResponse = {
-  sessions: any[] | null;
+  sessions: Array<DbSession> | null;
 };
-

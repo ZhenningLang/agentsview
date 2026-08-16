@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Message } from "../../api/types.js";
+  import type { Message, Session } from "../../api/types.js";
   import type { CallTiming, TurnTiming } from "../../api/types/timing.js";
   import { formatTimestamp } from "../../utils/format.js";
   import { formatDuration } from "../../utils/duration.js";
@@ -13,6 +13,7 @@
   import { liveTick } from "../../stores/liveTick.svelte.js";
   import ToolBlock from "./ToolBlock.svelte";
   import ParallelGroup from "./ParallelGroup.svelte";
+  import MessageForkButton from "./MessageForkButton.svelte";
   import CopyButton from "../shared/CopyButton.svelte";
   import { displayToolName } from "../../utils/toolDisplay.js";
   import { SettingsIcon } from "../../icons.js";
@@ -22,6 +23,7 @@
     timestamp: string;
     highlightQuery?: string;
     isCurrentHighlight?: boolean;
+    session?: Session | null;
   }
 
   let {
@@ -29,6 +31,7 @@
     timestamp,
     highlightQuery = "",
     isCurrentHighlight = false,
+    session,
   }: Props = $props();
 
   let copied = $state(false);
@@ -143,6 +146,13 @@
     {#each messages as message (message.id)}
       {@const calls = message.tool_calls ?? []}
       {@const turn = turnByMessage.get(message.id)}
+      <div class="tool-message-actions">
+        <MessageForkButton
+          {message}
+          {session}
+          variant="tool"
+        />
+      </div>
       {#if calls.length === 1}
         {@const soloCall = calls[0]!}
         <ToolBlock
@@ -227,6 +237,16 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+  }
+
+  .tool-message-actions {
+    display: flex;
+    justify-content: flex-end;
+    min-height: 18px;
+  }
+
+  .tool-message-actions:empty {
+    display: none;
   }
 
   .tool-group-body :global(.tool-block) {

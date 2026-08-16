@@ -7,4 +7,3 @@ export type DbHeatmapEntry = {
   level: number;
   value: number;
 };
-

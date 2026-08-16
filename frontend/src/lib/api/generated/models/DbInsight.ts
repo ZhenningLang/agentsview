@@ -14,4 +14,3 @@ export type DbInsight = {
   prompt: string | null;
   type: string;
 };
-

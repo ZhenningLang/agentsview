@@ -13,4 +13,3 @@ export type DbToolResultEvent = {
   timestamp?: string;
   tool_use_id?: string;
 };
-

@@ -9,4 +9,3 @@ export type DbSignalsAgentRow = {
   completed_rate: number;
   session_count: number;
 };
-

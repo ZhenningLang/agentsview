@@ -3,6 +3,5 @@
 /* tslint:disable */
 /* eslint-disable */
 export type StarredResponse = {
-  session_ids: any[] | null;
+  session_ids: Array<string> | null;
 };
-

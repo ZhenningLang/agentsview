@@ -6,4 +6,3 @@ export type DbTrendBucket = {
   date: string;
   message_count: number;
 };
-

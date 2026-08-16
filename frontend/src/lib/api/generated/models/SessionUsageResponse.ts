@@ -2,21 +2,22 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbSessionUsageBreakdownEntry } from './DbSessionUsageBreakdownEntry';
 export type SessionUsageResponse = {
   agent: string;
+  breakdown: Array<DbSessionUsageBreakdownEntry> | null;
+  breakdown_count: number;
   cost_usd: number;
   has_cost: boolean;
+  has_rollup_cost: boolean;
   has_token_data: boolean;
-  models: any[] | null;
+  models: Array<string> | null;
   peak_context_tokens: number;
   project: string;
-  breakdown_count: number;
-  breakdown: any[] | null;
   rollup_cost_usd?: number;
-  has_rollup_cost: boolean;
   rollup_subagent_count: number;
   server_running: boolean;
   session_id: string;
   total_output_tokens: number;
-  unpriced_models: any[] | null;
+  unpriced_models: Array<string> | null;
 };

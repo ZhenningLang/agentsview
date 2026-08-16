@@ -5,4 +5,3 @@
 export type OpenRequest = {
   opener_id: string;
 };
-

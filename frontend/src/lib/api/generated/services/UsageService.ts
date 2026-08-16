@@ -3,7 +3,8 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { Comparison } from '../models/Comparison';
-import type { PairwiseComparisonResponse } from '../models/PairwiseComparisonResponse';
+import type { DbTopSessionEntry } from '../models/DbTopSessionEntry';
+import type { ServicePairwiseComparisonResponse } from '../models/ServicePairwiseComparisonResponse';
 import type { UsageSummaryResponse } from '../models/UsageSummaryResponse';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
@@ -135,7 +136,7 @@ export class UsageService {
   }
   /**
    * Get pairwise usage comparison
-   * @returns PairwiseComparisonResponse OK
+   * @returns ServicePairwiseComparisonResponse OK
    * @throws ApiError
    */
   public static getApiV1UsagePairwiseComparison({
@@ -159,9 +160,21 @@ export class UsageService {
     includeAutomated,
     noCache,
   }: {
+    /**
+     * Left comparison dimension
+     */
     leftDimension: 'model' | 'project',
+    /**
+     * Left comparison value
+     */
     leftValue: string,
+    /**
+     * Right comparison dimension
+     */
     rightDimension: 'model' | 'project',
+    /**
+     * Right comparison value
+     */
     rightValue: string,
     /**
      * Range start date
@@ -223,7 +236,7 @@ export class UsageService {
      * Bypass the server-side usage cache and recompute
      */
     noCache?: boolean,
-  }): CancelablePromise<PairwiseComparisonResponse> {
+  }): CancelablePromise<ServicePairwiseComparisonResponse> {
     return __request(OpenAPI, {
       method: 'GET',
       url: '/api/v1/usage/pairwise-comparison',
@@ -383,7 +396,7 @@ export class UsageService {
   }
   /**
    * Get top usage sessions
-   * @returns any[] OK
+   * @returns DbTopSessionEntry OK
    * @throws ApiError
    */
   public static getApiV1UsageTopSessions({
@@ -468,7 +481,7 @@ export class UsageService {
      * Maximum number of sessions
      */
     limit?: number,
-  }): CancelablePromise<any[] | null> {
+  }): CancelablePromise<Array<DbTopSessionEntry> | null> {
     return __request(OpenAPI, {
       method: 'GET',
       url: '/api/v1/usage/top-sessions',

@@ -9,4 +9,3 @@ export type DbSessionActivityBucket = {
   start_time: string;
   user_count: number;
 };
-

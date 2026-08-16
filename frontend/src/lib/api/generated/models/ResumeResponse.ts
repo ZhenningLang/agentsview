@@ -9,4 +9,3 @@ export type ResumeResponse = {
   launched: boolean;
   terminal?: string;
 };
-

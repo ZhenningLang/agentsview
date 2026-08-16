@@ -5,4 +5,3 @@
 export type RenameRequest = {
   display_name: string | null;
 };
-

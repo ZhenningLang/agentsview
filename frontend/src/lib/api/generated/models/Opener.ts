@@ -8,4 +8,3 @@ export type Opener = {
   kind: string;
   name: string;
 };
-

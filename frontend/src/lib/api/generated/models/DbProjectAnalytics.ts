@@ -13,4 +13,3 @@ export type DbProjectAnalytics = {
   name: string;
   sessions: number;
 };
-

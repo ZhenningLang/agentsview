@@ -2,7 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbAgentInfo } from './DbAgentInfo';
 export type AgentsResponse = {
-  agents: any[] | null;
+  agents: Array<DbAgentInfo> | null;
 };
-

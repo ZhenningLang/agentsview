@@ -10,4 +10,3 @@ export type GenerateInsightRequest = {
   prompt?: string;
   type: string;
 };
-

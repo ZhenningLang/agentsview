@@ -26,4 +26,3 @@ export namespace TerminalConfigBody {
     CLIPBOARD = 'clipboard',
   }
 }
-

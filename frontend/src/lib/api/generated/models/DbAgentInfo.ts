@@ -6,4 +6,3 @@ export type DbAgentInfo = {
   name: string;
   session_count: number;
 };
-

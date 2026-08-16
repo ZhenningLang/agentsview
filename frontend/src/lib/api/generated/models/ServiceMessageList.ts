@@ -2,8 +2,8 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbMessage } from './DbMessage';
 export type ServiceMessageList = {
   count: number;
-  messages: any[] | null;
+  messages: Array<DbMessage> | null;
 };
-

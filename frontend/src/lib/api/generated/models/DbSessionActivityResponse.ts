@@ -2,9 +2,9 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbSessionActivityBucket } from './DbSessionActivityBucket';
 export type DbSessionActivityResponse = {
-  buckets: any[] | null;
+  buckets: Array<DbSessionActivityBucket> | null;
   interval_seconds: number;
   total_messages: number;
 };
-

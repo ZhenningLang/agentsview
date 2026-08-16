@@ -84,7 +84,7 @@ export class TrendsService {
     /**
      * Terms to trend
      */
-    term?: any[] | null,
+    term?: Array<string> | null,
     /**
      * Time bucket granularity
      */

@@ -8,4 +8,3 @@ export type PublishResponse = {
   raw_url: string;
   view_url: string;
 };
-

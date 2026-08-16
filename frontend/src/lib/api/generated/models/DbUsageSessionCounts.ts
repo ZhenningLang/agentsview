@@ -7,4 +7,3 @@ export type DbUsageSessionCounts = {
   byProject: Record<string, number>;
   total: number;
 };
-

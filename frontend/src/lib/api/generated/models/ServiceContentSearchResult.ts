@@ -2,8 +2,8 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbContentMatch } from './DbContentMatch';
 export type ServiceContentSearchResult = {
-  matches: any[] | null;
+  matches: Array<DbContentMatch> | null;
   next_cursor?: number;
 };
-

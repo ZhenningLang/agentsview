@@ -6,6 +6,5 @@ export type BulkStarInputBody = {
   /**
    * Session IDs to star
    */
-  session_ids: any[] | null;
+  session_ids: Array<string> | null;
 };
-

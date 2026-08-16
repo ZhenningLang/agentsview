@@ -10,4 +10,3 @@ export type AgentTotal = {
   inputTokens: number;
   outputTokens: number;
 };
-

@@ -14,6 +14,11 @@ export type ServiceSessionDetail = {
   edit_churn_count: number;
   ended_at: string | null;
   ended_with_role: string;
+  enrich_error: string;
+  enrich_model: string;
+  enrich_status: string;
+  enriched_at: string;
+  enriched_msg_count: number;
   file_device?: number;
   file_hash?: string;
   file_inode?: number;
@@ -28,10 +33,14 @@ export type ServiceSessionDetail = {
   health_grade?: string;
   health_penalties?: Record<string, number>;
   health_score?: number;
-  health_score_basis?: any[] | null;
+  health_score_basis?: Array<string> | null;
   id: string;
   is_automated: boolean;
   is_truncated?: boolean;
+  llm_embedding_dim: number;
+  llm_keywords: string;
+  llm_summary: string;
+  llm_title: string;
   local_modified_at?: string;
   machine: string;
   message_count: number;
@@ -54,4 +63,3 @@ export type ServiceSessionDetail = {
   total_output_tokens: number;
   user_message_count: number;
 };
-

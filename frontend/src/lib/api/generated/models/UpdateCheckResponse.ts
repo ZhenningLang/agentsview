@@ -8,4 +8,3 @@ export type UpdateCheckResponse = {
   latest_version?: string;
   update_available: boolean;
 };
-

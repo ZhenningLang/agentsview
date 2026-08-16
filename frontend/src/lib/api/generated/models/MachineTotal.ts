@@ -2,16 +2,11 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export type PairwiseUsageMetrics = {
+export type MachineTotal = {
   cacheCreationTokens: number;
   cacheReadTokens: number;
-  costPerSession?: number;
-  hasCost: boolean;
+  cost: number;
   inputTokens: number;
+  machine: string;
   outputTokens: number;
-  sessionCount: number;
-  tokensPerSession?: number;
-  totalCost: number;
-  totalTokens: number;
-  unpricedModels?: Array<string> | null;
 };

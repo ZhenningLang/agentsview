@@ -9,4 +9,3 @@ export type DbSignalsProjectRow = {
   project: string;
   session_count: number;
 };
-

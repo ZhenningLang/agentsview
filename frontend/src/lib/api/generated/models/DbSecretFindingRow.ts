@@ -18,4 +18,3 @@ export type DbSecretFindingRow = {
   rules_version: string;
   session_id: string;
 };
-

@@ -10,4 +10,3 @@ export type DbProjectBreakdown = {
   outputTokens: number;
   project: string;
 };
-

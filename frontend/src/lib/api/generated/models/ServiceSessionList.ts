@@ -2,9 +2,9 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbSession } from './DbSession';
 export type ServiceSessionList = {
   next_cursor?: string;
-  sessions: any[] | null;
+  sessions: Array<DbSession> | null;
   total: number;
 };
-

@@ -3,6 +3,8 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { SearchResponse } from '../models/SearchResponse';
+import type { SearchSemanticResponse } from '../models/SearchSemanticResponse';
+import type { SearchStatusResponse } from '../models/SearchStatusResponse';
 import type { ServiceContentSearchResult } from '../models/ServiceContentSearchResult';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
@@ -194,6 +196,75 @@ export class SearchService {
         404: `Not Found`,
         409: `Conflict`,
         422: `Unprocessable Entity`,
+        500: `Internal Server Error`,
+        501: `Not Implemented`,
+        502: `Bad Gateway`,
+        503: `Service Unavailable`,
+        504: `Gateway Timeout`,
+      },
+    });
+  }
+  /**
+   * Semantic search sessions
+   * @returns SearchSemanticResponse OK
+   * @throws ApiError
+   */
+  public static getApiV1SearchSemantic({
+    q,
+    project,
+    k,
+  }: {
+    /**
+     * Semantic search query
+     */
+    q: string,
+    /**
+     * Filter by project
+     */
+    project?: string,
+    /**
+     * Maximum number of results
+     */
+    k?: number,
+  }): CancelablePromise<SearchSemanticResponse> {
+    return __request(OpenAPI, {
+      method: 'GET',
+      url: '/api/v1/search/semantic',
+      query: {
+        'q': q,
+        'project': project,
+        'k': k,
+      },
+      errors: {
+        400: `Bad Request`,
+        401: `Unauthorized`,
+        403: `Forbidden`,
+        404: `Not Found`,
+        409: `Conflict`,
+        422: `Unprocessable Entity`,
+        500: `Internal Server Error`,
+        501: `Not Implemented`,
+        502: `Bad Gateway`,
+        503: `Service Unavailable`,
+        504: `Gateway Timeout`,
+      },
+    });
+  }
+  /**
+   * Get semantic search status
+   * @returns SearchStatusResponse OK
+   * @throws ApiError
+   */
+  public static getApiV1SearchSemanticStatus(): CancelablePromise<SearchStatusResponse> {
+    return __request(OpenAPI, {
+      method: 'GET',
+      url: '/api/v1/search/semantic/status',
+      errors: {
+        400: `Bad Request`,
+        401: `Unauthorized`,
+        403: `Forbidden`,
+        404: `Not Found`,
+        409: `Conflict`,
         500: `Internal Server Error`,
         501: `Not Implemented`,
         502: `Bad Gateway`,

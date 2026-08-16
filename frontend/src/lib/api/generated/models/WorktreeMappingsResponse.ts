@@ -2,8 +2,8 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbWorktreeProjectMapping } from './DbWorktreeProjectMapping';
 export type WorktreeMappingsResponse = {
   machine: string;
-  mappings: any[] | null;
+  mappings: Array<DbWorktreeProjectMapping> | null;
 };
-

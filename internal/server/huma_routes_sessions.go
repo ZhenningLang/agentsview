@@ -949,6 +949,9 @@ func (s *Server) humaResumeSession(
 	ctx context.Context,
 	in *resumeSessionInput,
 ) (*jsonOutput[resumeResponse], error) {
+	if host, _ := parser.StripHostPrefix(in.ID); host != "" {
+		return nil, apiError(http.StatusBadRequest, "cannot resume remote session")
+	}
 	session, err := s.db.GetSessionFull(ctx, in.ID)
 	if err != nil {
 		return nil, internalError("resume: session lookup failed", err)
@@ -956,15 +959,15 @@ func (s *Server) humaResumeSession(
 	if session == nil || session.DeletedAt != nil {
 		return nil, apiError(http.StatusNotFound, "session not found")
 	}
-	if host, _ := parser.StripHostPrefix(in.ID); host != "" {
-		return nil, apiError(http.StatusBadRequest, "cannot resume remote session")
-	}
 	tmpl, ok := resumeAgents[string(session.Agent)]
 	if !ok {
 		return nil, apiError(http.StatusBadRequest,
 			fmt.Sprintf("agent %q does not support resume", session.Agent))
 	}
 	req := in.Body
+	if req.FromOrdinal != nil {
+		return s.humaResumeClaudeMessagePoint(ctx, session, req)
+	}
 	prefix := string(session.Agent) + ":"
 	rawID := strings.TrimPrefix(in.ID, prefix)
 	var cmd string
@@ -1025,6 +1028,128 @@ func (s *Server) humaResumeSession(
 		)
 	}
 	termBin, termArgs, termName, termErr := detectTerminal(cmd, detectCwd, termCfg)
+	if termErr != nil {
+		log.Printf("resume: terminal detection failed: %v", termErr)
+		return &jsonOutput[resumeResponse]{
+			Body: resumeResponse{
+				Launched: false,
+				Command:  responseCmd,
+				Cwd:      launchDir,
+				Error:    "no_terminal_found",
+			},
+		}, nil
+	}
+	proc := exec.Command(termBin, termArgs...)
+	proc.Stdout = nil
+	proc.Stderr = nil
+	proc.Stdin = nil
+	if detectCwd != "" {
+		proc.Dir = detectCwd
+	}
+	if err := proc.Start(); err != nil {
+		log.Printf("resume: terminal start failed: %v", err)
+		return &jsonOutput[resumeResponse]{
+			Body: resumeResponse{
+				Launched: false,
+				Command:  responseCmd,
+				Cwd:      launchDir,
+				Error:    "terminal_launch_failed",
+			},
+		}, nil
+	}
+	go func() { _ = proc.Wait() }()
+	return &jsonOutput[resumeResponse]{
+		Body: resumeResponse{
+			Launched: true,
+			Terminal: termName,
+			Command:  responseCmd,
+			Cwd:      launchDir,
+		},
+	}, nil
+}
+
+func (s *Server) humaResumeClaudeMessagePoint(
+	ctx context.Context,
+	session *db.Session,
+	req resumeRequest,
+) (*jsonOutput[resumeResponse], error) {
+	if string(session.Agent) != "claude" {
+		return nil, apiError(http.StatusBadRequest,
+			"message-point fork is only available for Claude sessions")
+	}
+	if !req.ForkSession {
+		return nil, apiError(http.StatusBadRequest,
+			"message-point fork requires fork_session")
+	}
+	if req.OpenerID != "" {
+		return nil, apiError(http.StatusBadRequest,
+			"message-point fork does not support opener_id")
+	}
+	if *req.FromOrdinal < 0 {
+		return nil, apiError(http.StatusBadRequest,
+			"from_ordinal must be non-negative")
+	}
+	msgs, err := s.db.GetAllMessages(ctx, session.ID)
+	if err != nil {
+		return nil, internalError("resume: message lookup failed", err)
+	}
+	messageIdx := -1
+	for i := range msgs {
+		if msgs[i].Ordinal == *req.FromOrdinal {
+			messageIdx = i
+			break
+		}
+	}
+	if messageIdx < 0 {
+		return nil, apiError(http.StatusNotFound, "message not found")
+	}
+	if !req.CommandOnly && (s.db.ReadOnly() || s.engine == nil) {
+		return nil, apiError(http.StatusNotImplemented,
+			"session launch not available in remote mode")
+	}
+	promptPath, err := writeClaudeMessagePointPrompt(
+		session, msgs[:messageIdx+1], *req.FromOrdinal,
+	)
+	if err != nil {
+		return nil, internalError("resume: prompt render failed", err)
+	}
+	launchDir, _ := resolveResumePaths(session)
+	launchCmd := claudeMessagePointLaunchCommand(
+		promptPath, req.SkipPermissions,
+	)
+	responseCmd := claudeMessagePointResponseCommand(
+		promptPath, req.SkipPermissions, launchDir, runtime.GOOS,
+	)
+	if req.CommandOnly {
+		return &jsonOutput[resumeResponse]{
+			Body: resumeResponse{
+				Launched: false,
+				Command:  responseCmd,
+				Cwd:      launchDir,
+			},
+		}, nil
+	}
+	s.mu.RLock()
+	termCfg := s.cfg.Terminal
+	s.mu.RUnlock()
+	if termCfg.Mode == string(terminalModeClipboard) {
+		return &jsonOutput[resumeResponse]{
+			Body: resumeResponse{
+				Launched: false,
+				Command:  responseCmd,
+				Cwd:      launchDir,
+			},
+		}, nil
+	}
+	detectCwd := launchDir
+	if termCfg.Mode == string(terminalModeAuto) {
+		detectCwd = resumeLaunchCwd(
+			string(session.Agent), "auto", runtime.GOOS, launchDir,
+		)
+	}
+	termBin, termArgs, termName, termErr := detectTerminal(
+		launchCmd, detectCwd, termCfg,
+	)
 	if termErr != nil {
 		log.Printf("resume: terminal detection failed: %v", termErr)
 		return &jsonOutput[resumeResponse]{

@@ -2,7 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbPinnedMessage } from './DbPinnedMessage';
 export type PinsResponse = {
-  pins: any[] | null;
+  pins: Array<DbPinnedMessage> | null;
 };
-

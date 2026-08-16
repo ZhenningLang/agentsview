@@ -6,4 +6,3 @@ export type DbProjectInfo = {
   name: string;
   session_count: number;
 };
-

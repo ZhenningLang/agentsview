@@ -2,9 +2,9 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbToolCategoryCount } from './DbToolCategoryCount';
 export type DbToolAgentBreakdown = {
   agent: string;
-  categories: any[] | null;
+  categories: Array<DbToolCategoryCount> | null;
   total: number;
 };
-

@@ -10,6 +10,7 @@ export type DbSidebarSessionIndexRow = {
   id: string;
   is_automated: boolean;
   is_teammate: boolean;
+  llm_title: string;
   machine: string;
   message_count: number;
   parent_session_id?: string;
@@ -19,4 +20,3 @@ export type DbSidebarSessionIndexRow = {
   termination_status?: string;
   user_message_count: number;
 };
-

@@ -8,4 +8,3 @@ export type Comparison = {
   priorTo: string;
   priorTotalCost: number;
 };
-

@@ -6,4 +6,3 @@ export type ServiceSyncInput = {
   id?: string;
   path?: string;
 };
-

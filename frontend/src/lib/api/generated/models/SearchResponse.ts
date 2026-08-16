@@ -2,10 +2,10 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbSearchResult } from './DbSearchResult';
 export type SearchResponse = {
   count: number;
   next: number;
   query: string;
-  results: any[] | null;
+  results: Array<DbSearchResult> | null;
 };
-

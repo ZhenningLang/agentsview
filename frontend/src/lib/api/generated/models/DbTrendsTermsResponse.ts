@@ -2,12 +2,13 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbTrendBucket } from './DbTrendBucket';
+import type { DbTrendSeries } from './DbTrendSeries';
 export type DbTrendsTermsResponse = {
-  buckets: any[] | null;
+  buckets: Array<DbTrendBucket> | null;
   from: string;
   granularity: string;
   message_count: number;
-  series: any[] | null;
+  series: Array<DbTrendSeries> | null;
   to: string;
 };
-
