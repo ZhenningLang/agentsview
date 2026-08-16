@@ -157,9 +157,11 @@ func (c *usageProbeConn) QueryContext(
 				"cost_usd",
 				"claude_message_id",
 				"claude_request_id",
+				"source_uuid",
 				"usage_dedup_key",
 				"project",
 				"agent",
+				"machine",
 			},
 			values: [][]driver.Value{
 				usageProbeUsageRow("s-parent", "proj-a", "claude", ts),
@@ -188,8 +190,10 @@ func usageProbeUsageRow(
 		"msg-dup",
 		"req-dup",
 		"",
+		"",
 		project,
 		agent,
+		"host-a",
 	}
 }
 
@@ -244,7 +248,7 @@ func TestPGUsageRowQueryPushesDateBoundsIntoUnion(t *testing.T) {
 	assert.NotContains(t, normalized, "user_message_count")
 	assert.NotContains(t, normalized, "session_activity_at")
 	assert.NotContains(t, normalized, " as started_at")
-	assert.NotContains(t, normalized, "u.machine")
+	assert.Contains(t, normalized, "u.machine")
 	assert.Contains(t, normalized, "message_timestamp_rows as materialized")
 	assert.Contains(t, normalized, "usage_event_timestamp_rows as materialized")
 	assert.Contains(t, normalized, "from message_timestamp_rows m\njoin sessions s")

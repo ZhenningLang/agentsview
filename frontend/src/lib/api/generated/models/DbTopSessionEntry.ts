@@ -6,9 +6,10 @@ export type DbTopSessionEntry = {
   agent: string;
   cost: number;
   displayName: string;
+  hasCost: boolean;
   project: string;
   sessionId: string;
   startedAt: string;
   totalTokens: number;
+  unpricedModels?: Array<string> | null;
 };
-

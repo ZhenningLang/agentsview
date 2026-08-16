@@ -1,11 +1,11 @@
 <script lang="ts">
   import { usage } from "../../stores/usage.svelte.js";
   import { router } from "../../stores/router.svelte.js";
-  import { formatTokenCount } from "../../utils/format.js";
+  import { formatCost, formatTokenCount } from "../../utils/format.js";
   import { formatAgentName, truncate } from "../../utils/format.js";
 
-  function fmtCost(v: number): string {
-    return `$${v.toFixed(2)}`;
+  function costLabel(row: { cost: number; hasCost?: boolean }): string {
+    return row.hasCost === false ? `${formatCost(row.cost)} partial` : formatCost(row.cost);
   }
 
   function handleRowClick(sessionId: string) {
@@ -51,7 +51,7 @@
             {formatTokenCount(row.totalTokens)}
           </span>
           <span class="session-cost">
-            {fmtCost(row.cost)}
+            {costLabel(row)}
           </span>
         </div>
       {/each}

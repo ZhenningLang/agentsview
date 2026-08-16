@@ -43,17 +43,21 @@ func TestHandleSessionUsage_PricedSession(t *testing.T) {
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	assert.Equal(t, map[string]any{
-		"session_id":          "codex:usage-priced",
-		"agent":               "codex",
-		"project":             "my-project",
-		"total_output_tokens": float64(1234),
-		"peak_context_tokens": float64(56789),
-		"has_token_data":      true,
-		"cost_usd":            0.01134,
-		"has_cost":            true,
-		"models":              []any{"gpt-5.1"},
-		"unpriced_models":     []any{},
-		"server_running":      true,
+		"session_id":            "codex:usage-priced",
+		"agent":                 "codex",
+		"project":               "my-project",
+		"total_output_tokens":   float64(1234),
+		"peak_context_tokens":   float64(56789),
+		"has_token_data":        true,
+		"cost_usd":              0.01134,
+		"has_cost":              true,
+		"models":                []any{"gpt-5.1"},
+		"unpriced_models":       []any{},
+		"breakdown_count":       float64(1),
+		"breakdown":             []any{},
+		"has_rollup_cost":       false,
+		"rollup_subagent_count": float64(0),
+		"server_running":        true,
 	}, got)
 }
 
@@ -70,18 +74,64 @@ func TestHandleSessionUsage_NoTokenOrCostData(t *testing.T) {
 	var got map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
 	assert.Equal(t, map[string]any{
-		"session_id":          "codex:usage-empty",
-		"agent":               "codex",
-		"project":             "quiet-project",
-		"total_output_tokens": float64(0),
-		"peak_context_tokens": float64(0),
-		"has_token_data":      false,
-		"cost_usd":            float64(0),
-		"has_cost":            false,
-		"models":              []any{},
-		"unpriced_models":     []any{},
-		"server_running":      true,
+		"session_id":            "codex:usage-empty",
+		"agent":                 "codex",
+		"project":               "quiet-project",
+		"total_output_tokens":   float64(0),
+		"peak_context_tokens":   float64(0),
+		"has_token_data":        false,
+		"cost_usd":              float64(0),
+		"has_cost":              false,
+		"models":                []any{},
+		"unpriced_models":       []any{},
+		"breakdown_count":       float64(0),
+		"breakdown":             []any{},
+		"has_rollup_cost":       false,
+		"rollup_subagent_count": float64(0),
+		"server_running":        true,
 	}, got)
+}
+
+func TestPhase17HandleSessionUsageBreakdownAndRollup(t *testing.T) {
+	te := setup(t)
+	seedSessionUsagePricing(t, te.db)
+	te.seedSession(t, "codex:rollup-root", "my-project", 1,
+		func(s *db.Session) {
+			s.Agent = "codex"
+			s.StartedAt = new("2026-05-20T10:00:00Z")
+		})
+	te.seedSession(t, "codex:rollup-child", "my-project", 1,
+		func(s *db.Session) {
+			s.Agent = "codex"
+			s.ParentSessionID = new("codex:rollup-root")
+			s.RelationshipType = "subagent"
+			s.StartedAt = new("2026-05-20T10:01:00Z")
+		})
+	te.seedMessages(t, "codex:rollup-root", 1,
+		func(_ int, m *db.Message) {
+			m.Role = "assistant"
+			m.Timestamp = "2026-05-20T10:30:00Z"
+			m.Model = "gpt-5.1"
+			m.TokenUsage = json.RawMessage(`{"input_tokens":1000,"output_tokens":500}`)
+		})
+	te.seedMessages(t, "codex:rollup-child", 1,
+		func(_ int, m *db.Message) {
+			m.Role = "assistant"
+			m.Timestamp = "2026-05-20T10:31:00Z"
+			m.Model = "gpt-5.1"
+			m.TokenUsage = json.RawMessage(`{"input_tokens":100,"output_tokens":50}`)
+		})
+
+	w := te.get(t, "/api/v1/sessions/codex:rollup-root/usage?breakdown=true&rollup=true")
+	assertStatus(t, w, http.StatusOK)
+
+	var got map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, float64(1), got["breakdown_count"])
+	require.Len(t, got["breakdown"], 1)
+	assert.Equal(t, true, got["has_rollup_cost"])
+	assert.Equal(t, float64(1), got["rollup_subagent_count"])
+	assert.Greater(t, got["rollup_cost_usd"].(float64), got["cost_usd"].(float64))
 }
 
 func TestHandleSessionUsage_NotFound(t *testing.T) {

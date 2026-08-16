@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/timeutil"
 )
 
@@ -14,6 +16,7 @@ func (s *Server) registerUsageRoutes() {
 
 	get(s, group, "/summary", "Get usage summary", s.humaUsageSummary)
 	get(s, group, "/comparison", "Get usage comparison", s.humaUsageComparison)
+	get(s, group, "/pairwise-comparison", "Get pairwise usage comparison", s.humaUsagePairwiseComparison)
 	get(s, group, "/top-sessions", "Get top usage sessions", s.humaUsageTopSessions)
 }
 
@@ -43,6 +46,14 @@ type usageTopSessionsInput struct {
 type usageComparisonInput struct {
 	UsageFilterInput
 	CurrentCost float64 `query:"current_cost" required:"true" doc:"Current period total cost"`
+}
+
+type usagePairwiseComparisonInput struct {
+	UsageFilterInput
+	LeftDimension  string `query:"left_dimension" required:"true" enum:"model,project" doc:"Left comparison dimension"`
+	LeftValue      string `query:"left_value" required:"true" doc:"Left comparison value"`
+	RightDimension string `query:"right_dimension" required:"true" enum:"model,project" doc:"Right comparison dimension"`
+	RightValue     string `query:"right_value" required:"true" doc:"Right comparison value"`
 }
 
 func usageFilterFromInput(in UsageFilterInput) (db.UsageFilter, error) {
@@ -108,10 +119,107 @@ func (s *Server) humaUsageSummary(
 		ProjectTotals: foldProjectTotals(result.Daily),
 		ModelTotals:   foldModelTotals(result.Daily),
 		AgentTotals:   foldAgentTotals(result.Daily),
+		MachineTotals: foldMachineTotals(result.Daily),
 		SessionCounts: result.SessionCounts,
 		CacheStats:    computeCacheStats(result.Totals),
 	}
 	return &jsonOutput[UsageSummaryResponse]{Body: resp}, nil
+}
+
+func (s *Server) humaUsagePairwiseComparison(
+	ctx context.Context,
+	in *usagePairwiseComparisonInput,
+) (*jsonOutput[PairwiseComparisonResponse], error) {
+	f, err := usageFilterFromInput(in.UsageFilterInput)
+	if err != nil {
+		return nil, err
+	}
+	leftDim, err := parsePairwiseDimension(in.LeftDimension)
+	if err != nil {
+		return nil, err
+	}
+	rightDim, err := parsePairwiseDimension(in.RightDimension)
+	if err != nil {
+		return nil, err
+	}
+	f.Breakdowns = false
+	leftFilter, leftEmpty := pairwiseFilter(f, leftDim, in.LeftValue)
+	rightFilter, rightEmpty := pairwiseFilter(f, rightDim, in.RightValue)
+	leftResult, err := s.pairwiseDailyUsage(ctx, leftFilter, leftEmpty, in.NoCache)
+	if err != nil {
+		if handled := handleHumaContextError(err); handled != nil {
+			return nil, handled
+		}
+		if handled := handleHumaReadOnly(err); handled != nil {
+			return nil, handled
+		}
+		return nil, internalError("usage pairwise left error", err)
+	}
+	rightResult, err := s.pairwiseDailyUsage(ctx, rightFilter, rightEmpty, in.NoCache)
+	if err != nil {
+		if handled := handleHumaContextError(err); handled != nil {
+			return nil, handled
+		}
+		if handled := handleHumaReadOnly(err); handled != nil {
+			return nil, handled
+		}
+		return nil, internalError("usage pairwise right error", err)
+	}
+	resp := service.BuildPairwiseComparison(
+		PairwiseSide{Dimension: leftDim, Value: in.LeftValue, Empty: leftEmpty}, leftResult,
+		PairwiseSide{Dimension: rightDim, Value: in.RightValue, Empty: rightEmpty}, rightResult,
+	)
+	return &jsonOutput[PairwiseComparisonResponse]{Body: resp}, nil
+}
+
+func parsePairwiseDimension(raw string) (PairwiseDimension, error) {
+	switch PairwiseDimension(raw) {
+	case PairwiseDimensionModel:
+		return PairwiseDimensionModel, nil
+	case PairwiseDimensionProject:
+		return PairwiseDimensionProject, nil
+	default:
+		return "", apiError(http.StatusBadRequest, "invalid pairwise dimension: "+raw)
+	}
+}
+
+func (s *Server) pairwiseDailyUsage(
+	ctx context.Context, f db.UsageFilter, empty bool, noCache bool,
+) (db.DailyUsageResult, error) {
+	if empty {
+		return db.DailyUsageResult{
+			Daily: []db.DailyUsageEntry{},
+			SessionCounts: db.UsageSessionCounts{
+				ByProject: map[string]int{},
+				ByAgent:   map[string]int{},
+			},
+		}, nil
+	}
+	return s.cachedDailyUsage(ctx, f, noCache)
+}
+
+func pairwiseFilter(f db.UsageFilter, dim PairwiseDimension, value string) (db.UsageFilter, bool) {
+	f.Breakdowns = false
+	var empty bool
+	switch dim {
+	case PairwiseDimensionModel:
+		f.Model, empty = intersectCSV(f.Model, value)
+	case PairwiseDimensionProject:
+		f.Project, empty = intersectCSV(f.Project, value)
+	}
+	return f, empty
+}
+
+func intersectCSV(base, value string) (string, bool) {
+	if base == "" {
+		return value, false
+	}
+	for part := range strings.SplitSeq(base, ",") {
+		if strings.TrimSpace(part) == value {
+			return value, false
+		}
+	}
+	return "", true
 }
 
 func (s *Server) humaUsageComparison(

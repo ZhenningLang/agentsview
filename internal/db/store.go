@@ -94,7 +94,7 @@ type Store interface {
 	GetDailyUsage(ctx context.Context, f UsageFilter) (DailyUsageResult, error)
 	GetTopSessionsByCost(ctx context.Context, f UsageFilter, limit int) ([]TopSessionEntry, error)
 	GetUsageSessionCounts(ctx context.Context, f UsageFilter) (UsageSessionCounts, error)
-	GetSessionUsage(ctx context.Context, sessionID string) (*SessionUsage, error)
+	GetSessionUsage(ctx context.Context, sessionID string, opts ...SessionUsageOptions) (*SessionUsage, error)
 
 	// Stars.
 	StarSession(sessionID string) (bool, error)

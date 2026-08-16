@@ -80,16 +80,19 @@ func TestSessionUsageJSONSchemaIncludesCostContract(t *testing.T) {
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(data, &raw))
 	assert.Equal(t, map[string]any{
-		"session_id":          "codex:abc",
-		"agent":               "codex",
-		"project":             "my-project",
-		"total_output_tokens": float64(123),
-		"peak_context_tokens": float64(456),
-		"has_token_data":      true,
-		"cost_usd":            0.42,
-		"has_cost":            true,
-		"models":              []any{"gpt-5.1"},
-		"unpriced_models":     []any{"local-model"},
-		"server_running":      true,
+		"session_id":            "codex:abc",
+		"agent":                 "codex",
+		"project":               "my-project",
+		"total_output_tokens":   float64(123),
+		"peak_context_tokens":   float64(456),
+		"has_token_data":        true,
+		"cost_usd":              0.42,
+		"has_cost":              true,
+		"models":                []any{"gpt-5.1"},
+		"unpriced_models":       []any{"local-model"},
+		"breakdown_count":       float64(0),
+		"has_rollup_cost":       false,
+		"rollup_subagent_count": float64(0),
+		"server_running":        true,
 	}, raw)
 }

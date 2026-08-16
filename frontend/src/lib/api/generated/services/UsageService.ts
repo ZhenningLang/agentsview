@@ -3,6 +3,7 @@
 /* tslint:disable */
 /* eslint-disable */
 import type { Comparison } from '../models/Comparison';
+import type { PairwiseComparisonResponse } from '../models/PairwiseComparisonResponse';
 import type { UsageSummaryResponse } from '../models/UsageSummaryResponse';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
@@ -116,6 +117,136 @@ export class UsageService {
         'include_automated': includeAutomated,
         'no_cache': noCache,
         'current_cost': currentCost,
+      },
+      errors: {
+        400: `Bad Request`,
+        401: `Unauthorized`,
+        403: `Forbidden`,
+        404: `Not Found`,
+        409: `Conflict`,
+        422: `Unprocessable Entity`,
+        500: `Internal Server Error`,
+        501: `Not Implemented`,
+        502: `Bad Gateway`,
+        503: `Service Unavailable`,
+        504: `Gateway Timeout`,
+      },
+    });
+  }
+  /**
+   * Get pairwise usage comparison
+   * @returns PairwiseComparisonResponse OK
+   * @throws ApiError
+   */
+  public static getApiV1UsagePairwiseComparison({
+    leftDimension,
+    leftValue,
+    rightDimension,
+    rightValue,
+    from,
+    to,
+    timezone,
+    agent,
+    project,
+    machine,
+    excludeProject,
+    excludeAgent,
+    excludeModel,
+    model,
+    minUserMessages,
+    activeSince,
+    includeOneShot = true,
+    includeAutomated,
+    noCache,
+  }: {
+    leftDimension: 'model' | 'project',
+    leftValue: string,
+    rightDimension: 'model' | 'project',
+    rightValue: string,
+    /**
+     * Range start date
+     */
+    from?: string,
+    /**
+     * Range end date
+     */
+    to?: string,
+    /**
+     * IANA timezone name
+     */
+    timezone?: string,
+    /**
+     * Filter by agent
+     */
+    agent?: string,
+    /**
+     * Filter by project
+     */
+    project?: string,
+    /**
+     * Filter by machine
+     */
+    machine?: string,
+    /**
+     * Exclude a project
+     */
+    excludeProject?: string,
+    /**
+     * Exclude an agent
+     */
+    excludeAgent?: string,
+    /**
+     * Exclude a model
+     */
+    excludeModel?: string,
+    /**
+     * Filter by model
+     */
+    model?: string,
+    /**
+     * Minimum user message count
+     */
+    minUserMessages?: number,
+    /**
+     * Filter sessions active since this RFC3339 timestamp
+     */
+    activeSince?: string,
+    /**
+     * Include one-shot sessions
+     */
+    includeOneShot?: boolean,
+    /**
+     * Include automated sessions
+     */
+    includeAutomated?: boolean,
+    /**
+     * Bypass the server-side usage cache and recompute
+     */
+    noCache?: boolean,
+  }): CancelablePromise<PairwiseComparisonResponse> {
+    return __request(OpenAPI, {
+      method: 'GET',
+      url: '/api/v1/usage/pairwise-comparison',
+      query: {
+        'from': from,
+        'to': to,
+        'timezone': timezone,
+        'agent': agent,
+        'project': project,
+        'machine': machine,
+        'exclude_project': excludeProject,
+        'exclude_agent': excludeAgent,
+        'exclude_model': excludeModel,
+        'model': model,
+        'min_user_messages': minUserMessages,
+        'active_since': activeSince,
+        'include_one_shot': includeOneShot,
+        'include_automated': includeAutomated,
+        'no_cache': noCache,
+        'left_dimension': leftDimension,
+        'left_value': leftValue,
+        'right_dimension': rightDimension,
+        'right_value': rightValue,
       },
       errors: {
         400: `Bad Request`,

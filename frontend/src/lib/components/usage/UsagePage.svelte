@@ -24,6 +24,11 @@
   import SessionActiveFilters from "../filters/SessionActiveFilters.svelte";
   import FilterDropdown from "./FilterDropdown.svelte";
   import { RefreshCwIcon } from "../../icons.js";
+  import { formatCost, formatTokenCount } from "../../utils/format.js";
+
+  function costLabel(cost: number, complete?: boolean): string {
+    return complete === false ? `${formatCost(cost)} partial` : formatCost(cost);
+  }
 
   const REFRESH_MS = 5 * 60 * 1000;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -343,6 +348,54 @@
       <AttributionPanel />
     </div>
 
+    {#if usage.pairwise}
+      <div class="chart-panel pairwise-panel">
+        <div class="pairwise-head">
+          <div>
+            <div class="panel-label">Pairwise comparison</div>
+            <h3>
+              {usage.pairwise.left.value}
+              <span>vs</span>
+              {usage.pairwise.right.value}
+            </h3>
+          </div>
+          <div class="pairwise-delta">
+            {costLabel(Math.abs(usage.pairwise.deltas.totalCost), usage.pairwise.deltas.hasCost)}
+            <span>
+              {usage.pairwise.deltas.totalCost >= 0 ? "higher" : "lower"}
+              {#if usage.pairwise.deltas.unpricedModels?.length}
+                · unknown {usage.pairwise.deltas.unpricedModels.join(", ")}
+              {/if}
+            </span>
+          </div>
+        </div>
+        <div class="pairwise-grid">
+          <div class="pairwise-side">
+            <strong>{usage.pairwise.left.value}</strong>
+            <span>{costLabel(usage.pairwise.leftMetrics.totalCost, usage.pairwise.leftMetrics.hasCost)}</span>
+            <small>
+              {formatTokenCount(usage.pairwise.leftMetrics.totalTokens)} tokens
+              {#if usage.pairwise.left.empty} · no matching data{/if}
+              {#if usage.pairwise.leftMetrics.unpricedModels?.length}
+                · unknown {usage.pairwise.leftMetrics.unpricedModels.join(", ")}
+              {/if}
+            </small>
+          </div>
+          <div class="pairwise-side">
+            <strong>{usage.pairwise.right.value}</strong>
+            <span>{costLabel(usage.pairwise.rightMetrics.totalCost, usage.pairwise.rightMetrics.hasCost)}</span>
+            <small>
+              {formatTokenCount(usage.pairwise.rightMetrics.totalTokens)} tokens
+              {#if usage.pairwise.right.empty} · no matching data{/if}
+              {#if usage.pairwise.rightMetrics.unpricedModels?.length}
+                · unknown {usage.pairwise.rightMetrics.unpricedModels.join(", ")}
+              {/if}
+            </small>
+          </div>
+        </div>
+      </div>
+    {/if}
+
     <div class="bottom-grid">
       <div class="chart-panel">
         <TopSessionsTable />
@@ -463,6 +516,67 @@
     width: 100%;
   }
 
+  .pairwise-panel {
+    display: grid;
+    gap: 12px;
+  }
+
+  .pairwise-head,
+  .pairwise-grid {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .panel-label {
+    color: var(--text-muted);
+    font-size: 11px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  .pairwise-head h3 {
+    margin: 2px 0 0;
+    font-size: 15px;
+    font-weight: 600;
+  }
+
+  .pairwise-head h3 span {
+    color: var(--text-muted);
+    font-weight: 400;
+    margin: 0 6px;
+  }
+
+  .pairwise-delta {
+    display: grid;
+    justify-items: end;
+    font-weight: 600;
+  }
+
+  .pairwise-delta span,
+  .pairwise-side small {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 400;
+  }
+
+  .pairwise-side {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    gap: 3px;
+    padding: 10px;
+    border-radius: var(--radius-sm);
+    background: var(--bg-surface-hover);
+  }
+
+  .pairwise-side strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .bottom-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -472,6 +586,16 @@
   @media (max-width: 800px) {
     .bottom-grid {
       grid-template-columns: 1fr;
+    }
+
+    .pairwise-head,
+    .pairwise-grid {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .pairwise-delta {
+      justify-items: start;
     }
   }
 

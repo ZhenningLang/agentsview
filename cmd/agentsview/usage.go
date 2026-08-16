@@ -117,7 +117,9 @@ type UsageStatuslineConfig struct {
 type usageStatuslineOutput struct {
 	Date string `json:"date"`
 	Cost struct {
-		Microdollars int64 `json:"microdollars"`
+		Microdollars   int64    `json:"microdollars"`
+		HasCost        *bool    `json:"has_cost,omitempty"`
+		UnpricedModels []string `json:"unpriced_models,omitempty"`
 	} `json:"cost"`
 	Agent string `json:"agent,omitempty"`
 }
@@ -167,6 +169,9 @@ func usageStatuslineReport(date string, totals db.UsageTotals, agent string) usa
 	var out usageStatuslineOutput
 	out.Date = date
 	out.Cost.Microdollars = int64(math.Round(totals.TotalCost * 1_000_000))
+	complete := totals.HasCost || len(totals.UnpricedModels) == 0
+	out.Cost.HasCost = &complete
+	out.Cost.UnpricedModels = totals.UnpricedModels
 	out.Agent = agent
 	return out
 }
@@ -177,11 +182,15 @@ func printUsageStatuslineJSON(w io.Writer, report usageStatuslineOutput) error {
 
 func printUsageStatuslineHuman(w io.Writer, report usageStatuslineOutput) error {
 	cost := float64(report.Cost.Microdollars) / 1_000_000
+	label := fmtCost(cost)
+	if report.Cost.HasCost != nil && !*report.Cost.HasCost {
+		label += " partial"
+	}
 	if report.Agent != "" {
-		_, err := fmt.Fprintf(w, "%s today (%s)\n", fmtCost(cost), report.Agent)
+		_, err := fmt.Fprintf(w, "%s today (%s)\n", label, report.Agent)
 		return err
 	}
-	_, err := fmt.Fprintf(w, "%s today\n", fmtCost(cost))
+	_, err := fmt.Fprintf(w, "%s today\n", label)
 	return err
 }
 
@@ -489,13 +498,17 @@ func printDailyTable(
 
 	for _, day := range result.Daily {
 		models := joinModels(day.ModelsUsed)
+		costLabel := fmtCost(day.TotalCost)
+		if !day.HasCost {
+			costLabel += " partial"
+		}
 		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%d\t%s\t%s\n",
 			day.Date,
 			day.InputTokens,
 			day.OutputTokens,
 			day.CacheCreationTokens,
 			day.CacheReadTokens,
-			fmtCost(day.TotalCost),
+			costLabel,
 			models,
 		)
 
@@ -516,12 +529,16 @@ func printDailyTable(
 
 	fmt.Fprintln(w,
 		"----\t-----\t------\t--------\t--------\t----\t------")
+	totalCost := fmtCost(result.Totals.TotalCost)
+	if !result.Totals.HasCost {
+		totalCost += " partial"
+	}
 	fmt.Fprintf(w, "TOTAL\t%d\t%d\t%d\t%d\t%s\t\n",
 		result.Totals.InputTokens,
 		result.Totals.OutputTokens,
 		result.Totals.CacheCreationTokens,
 		result.Totals.CacheReadTokens,
-		fmtCost(result.Totals.TotalCost),
+		totalCost,
 	)
 
 	w.Flush()

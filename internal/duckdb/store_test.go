@@ -2212,6 +2212,120 @@ func TestDailyUsageBreakdownsAndCacheSavings(t *testing.T) {
 	require.Len(t, day.AgentBreakdowns, 1)
 	assert.Equal(t, "alpha", day.ProjectBreakdowns[0].Project)
 	assert.Equal(t, "claude", day.AgentBreakdowns[0].Agent)
+	require.Len(t, day.MachineBreakdowns, 1)
+	assert.Equal(t, "test-machine", day.MachineBreakdowns[0].Machine)
+	assert.InDelta(t, 0.00001, got.Totals.CacheSavings, 0.000001)
+}
+
+func TestPhase17DuckDBSessionUsageBreakdownRows(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+	require.NoError(t, local.UpsertModelPricing([]db.ModelPricing{{
+		ModelPattern: "claude-test", InputPerMTok: 3,
+		OutputPerMTok: 15, CacheCreationPerMTok: 1,
+		CacheReadPerMTok: 0.5,
+	}}))
+	sessionID := "duck-phase17-breakdown"
+	ord := 1
+	cost := 0.02
+	_, err := local.WriteSessionBatchAtomic([]db.SessionBatchWrite{{
+		Session: syncSession(sessionID, "alpha", "usage first", "2026-01-17T00:00:00.000Z", 1),
+		Messages: []db.Message{{
+			SessionID: sessionID, Ordinal: 0, Role: "assistant",
+			Content: "usage first", Timestamp: "2026-01-17T00:00:00.000Z",
+			Model:      "claude-test",
+			TokenUsage: json.RawMessage(`{"input_tokens":10,"output_tokens":5}`),
+		}},
+		UsageEvents: []db.UsageEvent{{
+			MessageOrdinal: &ord, Source: "hermes", Model: "claude-test",
+			InputTokens: 7, OutputTokens: 3, CostUSD: &cost,
+			OccurredAt: "2026-01-17T00:01:00.000Z", DedupKey: "breakdown",
+		}},
+		DataVersion:     1,
+		ReplaceMessages: true,
+	}})
+	require.NoError(t, err)
+	syncer := newTestSync(t, filepath.Join(t.TempDir(), "phase17-breakdown.duckdb"), local, SyncOptions{})
+	_, err = syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	store := NewStoreFromDB(syncer.DB())
+
+	shallow, err := store.GetSessionUsage(ctx, sessionID)
+	require.NoError(t, err)
+	require.NotNil(t, shallow)
+	assert.Equal(t, 2, shallow.BreakdownCount)
+	assert.Empty(t, shallow.Breakdown)
+	full, err := store.GetSessionUsage(ctx, sessionID, db.SessionUsageOptions{IncludeBreakdown: true})
+	require.NoError(t, err)
+	require.Len(t, full.Breakdown, 2)
+	assert.Equal(t, "Prompt 1", full.Breakdown[0].Label)
+	assert.Equal(t, "Step 2", full.Breakdown[1].Label)
+}
+
+func TestPhase17DuckDBRollupIgnoresNonSubagentBranches(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+	require.NoError(t, local.UpsertModelPricing([]db.ModelPricing{{
+		ModelPattern: "claude-test", InputPerMTok: 3, OutputPerMTok: 15,
+	}}))
+	root := syncSession("duck-phase17-root", "alpha", "root", "2026-01-17T00:00:00.000Z", 1)
+	fork := syncSession("duck-phase17-fork", "alpha", "fork", "2026-01-17T00:01:00.000Z", 1)
+	grandchild := syncSession("duck-phase17-grandchild", "alpha", "grandchild", "2026-01-17T00:02:00.000Z", 1)
+	fork.ParentSessionID = &root.ID
+	fork.RelationshipType = "fork"
+	grandchild.ParentSessionID = &fork.ID
+	grandchild.RelationshipType = "subagent"
+	_, err := local.WriteSessionBatchAtomic([]db.SessionBatchWrite{
+		{Session: root, Messages: []db.Message{syncMessage(root.ID, 0, "assistant", "root", "2026-01-17T00:00:00.000Z")}, DataVersion: 1, ReplaceMessages: true},
+		{Session: fork, Messages: []db.Message{syncMessage(fork.ID, 0, "assistant", "fork", "2026-01-17T00:01:00.000Z")}, DataVersion: 1, ReplaceMessages: true},
+		{Session: grandchild, Messages: []db.Message{syncMessage(grandchild.ID, 0, "assistant", "grandchild", "2026-01-17T00:02:00.000Z")}, DataVersion: 1, ReplaceMessages: true},
+	})
+	require.NoError(t, err)
+	syncer := newTestSync(t, filepath.Join(t.TempDir(), "phase17-rollup.duckdb"), local, SyncOptions{})
+	_, err = syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	store := NewStoreFromDB(syncer.DB())
+
+	usage, err := store.GetSessionUsage(ctx, root.ID, db.SessionUsageOptions{Rollup: true})
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	assert.Zero(t, usage.RollupSubagentCount)
+	assert.False(t, usage.HasRollupCost)
+}
+
+func TestPhase17DuckDBCostUSDRowsKeepCacheSavings(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+	require.NoError(t, local.UpsertModelPricing([]db.ModelPricing{{
+		ModelPattern: "claude-test", InputPerMTok: 3,
+		OutputPerMTok: 15, CacheCreationPerMTok: 1,
+		CacheReadPerMTok: 0.5,
+	}}))
+	sessionID := "duck-phase17-explicit-cost"
+	cost := 0.02
+	_, err := local.WriteSessionBatchAtomic([]db.SessionBatchWrite{{
+		Session: syncSession(sessionID, "alpha", "usage first", "2026-01-17T00:00:00.000Z", 1),
+		Messages: []db.Message{{
+			SessionID: sessionID, Ordinal: 0, Role: "user",
+			Content: "usage first", Timestamp: "2026-01-17T00:00:00.000Z",
+		}},
+		UsageEvents: []db.UsageEvent{{
+			Source: "hermes", Model: "claude-test", InputTokens: 10,
+			OutputTokens: 5, CacheReadInputTokens: 4, CostUSD: &cost,
+			OccurredAt: "2026-01-17T00:01:00.000Z", DedupKey: "explicit-cost",
+		}},
+		DataVersion:     1,
+		ReplaceMessages: true,
+	}})
+	require.NoError(t, err)
+	syncer := newTestSync(t, filepath.Join(t.TempDir(), "phase17-explicit-cost.duckdb"), local, SyncOptions{})
+	_, err = syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	store := NewStoreFromDB(syncer.DB())
+
+	got, err := store.GetDailyUsage(ctx, db.UsageFilter{From: "2026-01-17", To: "2026-01-17", Timezone: "UTC"})
+	require.NoError(t, err)
+	assert.InDelta(t, 0.02, got.Totals.TotalCost, 1e-9)
 	assert.InDelta(t, 0.00001, got.Totals.CacheSavings, 0.000001)
 }
 

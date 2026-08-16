@@ -157,6 +157,7 @@ SELECT
 	'' AS cost_source,
 	m.claude_message_id,
 	m.claude_request_id,
+	m.source_uuid,
 	'' AS usage_dedup_key,
 	s.project,
 	s.agent,
@@ -189,6 +190,7 @@ SELECT
 	ue.cost_source,
 	'' AS claude_message_id,
 	'' AS claude_request_id,
+	'' AS source_uuid,
 	CASE
 		WHEN ue.dedup_key != '' THEN ue.session_id || ':' || ue.source || ':' || ue.dedup_key
 		ELSE ue.session_id || ':' || ue.source || ':id:' || ue.id
@@ -230,9 +232,11 @@ SELECT
 	NULL::double precision AS cost_usd,
 	m.claude_message_id,
 	m.claude_request_id,
+	m.source_uuid,
 	'' AS usage_dedup_key,
 	s.project,
-	s.agent
+	s.agent,
+	s.machine
 FROM messages m
 JOIN sessions s ON m.session_id = s.id
 WHERE %s
@@ -253,12 +257,14 @@ SELECT
 	ue.cost_usd,
 	'' AS claude_message_id,
 	'' AS claude_request_id,
+	'' AS source_uuid,
 	CASE
 		WHEN ue.dedup_key != '' THEN ue.session_id || ':' || ue.source || ':' || ue.dedup_key
 		ELSE ue.session_id || ':' || ue.source || ':id:' || ue.id
 	END AS usage_dedup_key,
 	s.project,
-	s.agent
+	s.agent,
+	s.machine
 FROM usage_events ue
 JOIN sessions s ON s.id = ue.session_id
 WHERE %s`
@@ -278,9 +284,11 @@ SELECT
 	NULL::double precision AS cost_usd,
 	m.claude_message_id,
 	m.claude_request_id,
+	m.source_uuid,
 	'' AS usage_dedup_key,
 	s.project,
-	s.agent
+	s.agent,
+	s.machine
 FROM %s m
 JOIN sessions s ON m.session_id = s.id
 WHERE %s`
@@ -300,12 +308,14 @@ SELECT
 	ue.cost_usd,
 	'' AS claude_message_id,
 	'' AS claude_request_id,
+	'' AS source_uuid,
 	CASE
 		WHEN ue.dedup_key != '' THEN ue.session_id || ':' || ue.source || ':' || ue.dedup_key
 		ELSE ue.session_id || ':' || ue.source || ':id:' || ue.id
 	END AS usage_dedup_key,
 	s.project,
-	s.agent
+	s.agent,
+	s.machine
 FROM %s ue
 JOIN sessions s ON s.id = ue.session_id
 WHERE %s`
@@ -335,7 +345,8 @@ message_timestamp_rows AS MATERIALIZED (
 		m.model,
 		m.token_usage,
 		m.claude_message_id,
-		m.claude_request_id
+		m.claude_request_id,
+		m.source_uuid
 	FROM messages m
 	WHERE ` + messageTimestampWhere + `
 ),
@@ -404,6 +415,7 @@ type pgUsageScanRow struct {
 	costSource               string
 	claudeMessageID          string
 	claudeRequestID          string
+	sourceUUID               string
 	usageDedupKey            string
 	project                  string
 	agent                    string
@@ -429,9 +441,11 @@ type pgDailyUsageScanRow struct {
 	costUSD                  sql.NullFloat64
 	claudeMessageID          string
 	claudeRequestID          string
+	sourceUUID               string
 	usageDedupKey            string
 	project                  string
 	agent                    string
+	machine                  string
 }
 
 type pgTopSessionMetadata struct {
@@ -460,6 +474,7 @@ SELECT
 	u.cost_source,
 	u.claude_message_id,
 	u.claude_request_id,
+	u.source_uuid,
 	u.usage_dedup_key,
 	u.project,
 	u.agent,
@@ -480,7 +495,11 @@ func pgUsageRowSelect() string {
 	))
 }
 
-func pgDailyUsageRowSelectFromRows(rowsSQL string) string {
+func pgDailyUsageRowSelectFromRows(rowsSQL string, includeMachine bool) string {
+	machineCol := "'' AS machine"
+	if includeMachine {
+		machineCol = "u.machine"
+	}
 	return `
 SELECT
 	u.session_id,
@@ -496,9 +515,11 @@ SELECT
 	u.cost_usd,
 	u.claude_message_id,
 	u.claude_request_id,
+	u.source_uuid,
 	u.usage_dedup_key,
 	u.project,
-	u.agent
+	u.agent,
+` + machineCol + `
 FROM (` + rowsSQL + `) u
 WHERE 1=1`
 }
@@ -596,11 +617,14 @@ func pgUsageRowQuery(pb *paramBuilder, f db.UsageFilter) string {
 	bounds := pgUsageBoundsForFilter(pb, f)
 	return pgDailyUsageRowSelectFromRows(pgDailyUsageRowsSQLForBounds(
 		pb, f, bounds,
-	))
+	), true)
 }
 
 func pgTopSessionsUsageRowQuery(pb *paramBuilder, f db.UsageFilter) string {
-	return pgUsageRowQuery(pb, f)
+	bounds := pgUsageBoundsForFilter(pb, f)
+	return pgDailyUsageRowSelectFromRows(pgDailyUsageRowsSQLForBounds(
+		pb, f, bounds,
+	), false)
 }
 
 func scanPGUsageRow(rows *sql.Rows) (pgUsageScanRow, error) {
@@ -622,6 +646,7 @@ func scanPGUsageRow(rows *sql.Rows) (pgUsageScanRow, error) {
 		&r.costSource,
 		&r.claudeMessageID,
 		&r.claudeRequestID,
+		&r.sourceUUID,
 		&r.usageDedupKey,
 		&r.project,
 		&r.agent,
@@ -651,27 +676,54 @@ func scanPGDailyUsageRow(rows *sql.Rows) (pgDailyUsageScanRow, error) {
 		&r.costUSD,
 		&r.claudeMessageID,
 		&r.claudeRequestID,
+		&r.sourceUUID,
 		&r.usageDedupKey,
 		&r.project,
 		&r.agent,
+		&r.machine,
 	)
 	return r, err
 }
 
 func pgDailyUsageAmounts(
 	r pgDailyUsageScanRow, pricing map[string]modelRates,
-) (inputTok, outputTok, cacheCrTok, cacheRdTok int, cost, savings float64) {
+) (inputTok, outputTok, cacheCrTok, cacheRdTok int, cost, savings float64, priced bool, contributes bool) {
 	inputTok, outputTok, cacheCrTok, cacheRdTok = pgUsageRowTokens(r)
 
-	rates, _ := lookupModelRates(pricing, r.model)
+	if inputTok == 0 && outputTok == 0 && cacheCrTok == 0 && cacheRdTok == 0 {
+		if r.costUSD.Valid {
+			cost = r.costUSD.Float64
+			priced = true
+			contributes = true
+			return
+		}
+		priced = true
+		return
+	}
+	rates, ok := lookupModelRates(pricing, r.model)
 	if r.costUSD.Valid {
 		cost = r.costUSD.Float64
-	} else {
-		cost = (float64(inputTok)*rates.input +
-			float64(outputTok)*rates.output +
-			float64(cacheCrTok)*rates.cacheCreation +
-			float64(cacheRdTok)*rates.cacheRead) / 1_000_000
+		priced = true
+		contributes = true
+		if ok {
+			readDelta := float64(cacheRdTok) *
+				(rates.input - rates.cacheRead) / 1_000_000
+			createDelta := float64(cacheCrTok) *
+				(rates.input - rates.cacheCreation) / 1_000_000
+			savings = readDelta + createDelta
+		}
+		return
 	}
+	if !ok {
+		contributes = true
+		return
+	}
+	cost = (float64(inputTok)*rates.input +
+		float64(outputTok)*rates.output +
+		float64(cacheCrTok)*rates.cacheCreation +
+		float64(cacheRdTok)*rates.cacheRead) / 1_000_000
+	priced = true
+	contributes = true
 	readDelta := float64(cacheRdTok) *
 		(rates.input - rates.cacheRead) / 1_000_000
 	createDelta := float64(cacheCrTok) *
@@ -688,6 +740,45 @@ func pgUsageRowTokens(
 		r.inputTokens, r.outputTokens,
 		r.cacheCreationInputTokens, r.cacheReadInputTokens,
 	)
+}
+
+func pgUsageIdentityKey(agent, msgID, reqID, sourceUUID, usageKey string) string {
+	if msgID != "" && reqID != "" {
+		return "claude:" + msgID + ":" + reqID
+	}
+	if sourceUUID != "" {
+		return "source:" + agent + ":" + sourceUUID
+	}
+	if usageKey != "" {
+		return "usage:" + usageKey
+	}
+	return ""
+}
+
+func pgDailyUsageIdentityKey(r pgDailyUsageScanRow) string {
+	return pgUsageIdentityKey(r.agent, r.claudeMessageID, r.claudeRequestID, r.sourceUUID, r.usageDedupKey)
+}
+
+func pgSessionUsageIdentityKey(r pgUsageScanRow) string {
+	return pgUsageIdentityKey(r.agent, r.claudeMessageID, r.claudeRequestID, r.sourceUUID, r.usageDedupKey)
+}
+
+func pgSessionOrderExpr(sessionIDs []string) string {
+	if len(sessionIDs) == 0 {
+		return "0"
+	}
+	var b strings.Builder
+	b.WriteString("CASE u.session_id")
+	for i, id := range sessionIDs {
+		b.WriteString(" WHEN '")
+		b.WriteString(strings.ReplaceAll(id, "'", "''"))
+		b.WriteString("' THEN ")
+		fmt.Fprint(&b, i)
+	}
+	b.WriteString(" ELSE ")
+	fmt.Fprint(&b, len(sessionIDs))
+	b.WriteString(" END")
+	return b.String()
 }
 
 func pgSessionRowCost(
@@ -785,8 +876,13 @@ WHERE id IN (` + strings.Join(placeholders, ",") + `)`
 // GetSessionUsage returns one session's token totals and cost
 // estimate from the PostgreSQL session store.
 func (s *Store) GetSessionUsage(
-	ctx context.Context, sessionID string,
+	ctx context.Context, sessionID string, opts ...db.SessionUsageOptions,
 ) (*db.SessionUsage, error) {
+	opt := db.SessionUsageOptions{}
+	for _, candidate := range opts {
+		opt.IncludeBreakdown = opt.IncludeBreakdown || candidate.IncludeBreakdown
+		opt.Rollup = opt.Rollup || candidate.Rollup
+	}
 	sess, err := s.GetSession(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -815,12 +911,10 @@ func (s *Store) GetSessionUsage(
 	allPriced := true
 	modelsSet := make(map[string]struct{})
 	unpricedSet := make(map[string]struct{})
+	var breakdown []db.SessionUsageBreakdownEntry
+	breakdownCount := 0
 
-	type dedupKey struct {
-		msgID string
-		reqID string
-	}
-	seen := make(map[dedupKey]struct{})
+	seen := make(map[string]struct{})
 
 	for rows.Next() {
 		r, scanErr := scanPGUsageRow(rows)
@@ -828,20 +922,7 @@ func (s *Store) GetSessionUsage(
 			return nil,
 				fmt.Errorf("scanning pg session usage row: %w", scanErr)
 		}
-		if r.claudeMessageID != "" && r.claudeRequestID != "" {
-			key := dedupKey{
-				msgID: r.claudeMessageID,
-				reqID: r.claudeRequestID,
-			}
-			if _, dup := seen[key]; dup {
-				continue
-			}
-			seen[key] = struct{}{}
-		} else if r.usageDedupKey != "" {
-			key := dedupKey{
-				msgID: "usage",
-				reqID: r.usageDedupKey,
-			}
+		if key := pgSessionUsageIdentityKey(r); key != "" {
 			if _, dup := seen[key]; dup {
 				continue
 			}
@@ -852,6 +933,7 @@ func (s *Store) GetSessionUsage(
 		if !contributes {
 			continue
 		}
+		breakdownCount++
 		contributing = true
 		modelsSet[r.model] = struct{}{}
 		if priced {
@@ -859,6 +941,9 @@ func (s *Store) GetSessionUsage(
 		} else {
 			allPriced = false
 			unpricedSet[r.model] = struct{}{}
+		}
+		if opt.IncludeBreakdown {
+			breakdown = append(breakdown, pgSessionUsageBreakdownEntry(r, breakdownCount, c, priced))
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -873,8 +958,9 @@ func (s *Store) GetSessionUsage(
 		PeakContextTokens: sess.PeakContextTokens,
 		HasTokenData: sess.HasTotalOutputTokens ||
 			sess.HasPeakContextTokens,
-		Models:  sortedStringSetKeys(modelsSet),
-		HasCost: contributing && allPriced,
+		Models:         sortedStringSetKeys(modelsSet),
+		HasCost:        contributing && allPriced,
+		BreakdownCount: breakdownCount,
 	}
 	if out.HasCost {
 		out.CostUSD = cost
@@ -882,7 +968,188 @@ func (s *Store) GetSessionUsage(
 	if len(unpricedSet) > 0 {
 		out.UnpricedModels = sortedStringSetKeys(unpricedSet)
 	}
+	if opt.IncludeBreakdown {
+		out.Breakdown = breakdown
+	}
+	if opt.Rollup {
+		if err := s.addSessionUsageRollup(ctx, out, pricing); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
+}
+
+func pgSessionUsageBreakdownEntry(
+	r pgUsageScanRow, ordinal int, cost float64, priced bool,
+) db.SessionUsageBreakdownEntry {
+	var msgOrdinal *int
+	if r.messageOrdinal.Valid {
+		v := int(r.messageOrdinal.Int64)
+		msgOrdinal = &v
+	}
+	return db.SessionUsageBreakdownEntry{
+		Ordinal:                  ordinal,
+		MessageOrdinal:           msgOrdinal,
+		Source:                   r.usageSource,
+		Label:                    pgSessionUsageBreakdownLabel(r),
+		Timestamp:                startedAtString(r.ts),
+		Model:                    r.model,
+		InputTokens:              pgUsageScanRowInputTokens(r),
+		OutputTokens:             pgUsageScanRowOutputTokens(r),
+		CacheCreationInputTokens: pgUsageScanRowCacheCreationTokens(r),
+		CacheReadInputTokens:     pgUsageScanRowCacheReadTokens(r),
+		CostUSD:                  cost,
+		HasCost:                  priced,
+	}
+}
+
+func pgUsageScanRowInputTokens(r pgUsageScanRow) int {
+	in, _, _, _ := pgUsageScanRowTokens(r)
+	return in
+}
+
+func pgUsageScanRowOutputTokens(r pgUsageScanRow) int {
+	_, out, _, _ := pgUsageScanRowTokens(r)
+	return out
+}
+
+func pgUsageScanRowCacheCreationTokens(r pgUsageScanRow) int {
+	_, _, cr, _ := pgUsageScanRowTokens(r)
+	return cr
+}
+
+func pgUsageScanRowCacheReadTokens(r pgUsageScanRow) int {
+	_, _, _, rd := pgUsageScanRowTokens(r)
+	return rd
+}
+
+func pgUsageScanRowTokens(r pgUsageScanRow) (int, int, int, int) {
+	return db.UsageTokenValues(
+		r.usageSource, r.tokenJSON,
+		r.inputTokens, r.outputTokens,
+		r.cacheCreationInputTokens, r.cacheReadInputTokens,
+	)
+}
+
+func pgSessionUsageBreakdownLabel(r pgUsageScanRow) string {
+	if r.usageSource == "message" && r.messageOrdinal.Valid {
+		return fmt.Sprintf("Prompt %d", r.messageOrdinal.Int64+1)
+	}
+	if r.messageOrdinal.Valid {
+		return fmt.Sprintf("Step %d", r.messageOrdinal.Int64+1)
+	}
+	if r.usageSource != "" {
+		return r.usageSource
+	}
+	return "usage"
+}
+
+func (s *Store) addSessionUsageRollup(
+	ctx context.Context, out *db.SessionUsage, pricing map[string]modelRates,
+) error {
+	ids, subagentCount, err := s.rollupUsageSessionIDs(ctx, out.SessionID)
+	if err != nil {
+		return err
+	}
+	out.RollupSubagentCount = subagentCount
+	if subagentCount == 0 {
+		return nil
+	}
+	cost, contributing, allPriced, err := s.rollupUsageCost(ctx, ids, pricing)
+	if err != nil {
+		return err
+	}
+	out.HasRollupCost = contributing && allPriced
+	if out.HasRollupCost {
+		out.RollupCostUSD = cost
+	}
+	return nil
+}
+
+func (s *Store) rollupUsageSessionIDs(
+	ctx context.Context, rootID string,
+) ([]string, int, error) {
+	ids := []string{rootID}
+	queue := []string{rootID}
+	visited := map[string]struct{}{rootID: {}}
+	subagentCount := 0
+	for len(queue) > 0 {
+		parent := queue[0]
+		queue = queue[1:]
+		children, err := s.GetChildSessions(ctx, parent)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, child := range children {
+			if _, ok := visited[child.ID]; ok {
+				continue
+			}
+			visited[child.ID] = struct{}{}
+			if child.RelationshipType == "subagent" {
+				ids = append(ids, child.ID)
+				queue = append(queue, child.ID)
+				subagentCount++
+			}
+		}
+	}
+	return ids, subagentCount, nil
+}
+
+func (s *Store) rollupUsageCost(
+	ctx context.Context, sessionIDs []string, pricing map[string]modelRates,
+) (cost float64, contributing, allPriced bool, err error) {
+	allPriced = true
+	if len(sessionIDs) == 0 {
+		return 0, false, true, nil
+	}
+	pb := &paramBuilder{}
+	placeholders := make([]string, len(sessionIDs))
+	for i, id := range sessionIDs {
+		placeholders[i] = pb.add(id)
+	}
+	query := pgUsageRowSelect() + ` AND u.session_id IN (` + strings.Join(placeholders, ",") + `)
+		ORDER BY u.ts ASC, ` + pgSessionOrderExpr(sessionIDs) + ` ASC,
+		COALESCE(u.message_ordinal, -1) ASC`
+	rows, err := s.pg.QueryContext(ctx, query, pb.args...)
+	if err != nil {
+		return 0, false, true, fmt.Errorf("querying pg session usage rollup: %w", err)
+	}
+	defer rows.Close()
+	seen := make(map[string]struct{})
+	subagentIDs := make(map[string]struct{}, len(sessionIDs))
+	for _, id := range sessionIDs[1:] {
+		subagentIDs[id] = struct{}{}
+	}
+	subagentContributing := false
+	for rows.Next() {
+		r, scanErr := scanPGUsageRow(rows)
+		if scanErr != nil {
+			return 0, false, true, fmt.Errorf("scanning pg session usage rollup row: %w", scanErr)
+		}
+		if key := pgSessionUsageIdentityKey(r); key != "" {
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		c, priced, contributes := pgSessionRowCost(r, pricing)
+		if !contributes {
+			continue
+		}
+		contributing = true
+		if _, ok := subagentIDs[r.sessionID]; ok {
+			subagentContributing = true
+		}
+		if priced {
+			cost += c
+		} else {
+			allPriced = false
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false, true, fmt.Errorf("iterating pg session usage rollup rows: %w", err)
+	}
+	return cost, contributing && subagentContributing, allPriced, nil
 }
 
 func sortedStringSetKeys(set map[string]struct{}) []string {
@@ -922,6 +1189,7 @@ func (s *Store) GetDailyUsage(
 		date    string
 		project string
 		agent   string
+		machine string
 		model   string
 	}
 	type bucket struct {
@@ -931,15 +1199,14 @@ func (s *Store) GetDailyUsage(
 		cacheRd   int
 		cost      float64
 	}
-	type dedupKey struct {
-		msgID string
-		reqID string
-	}
-
 	accum := make(map[accumKey]*bucket)
-	seen := make(map[dedupKey]struct{})
+	seen := make(map[string]struct{})
 	seenSessions := make(map[string]db.UsageSessionInfo)
 	var totalSavings float64
+	contributing := false
+	allPriced := true
+	unpricedSet := make(map[string]struct{})
+	dayUnpriced := make(map[string]map[string]struct{})
 
 	for rows.Next() {
 		r, scanErr := scanPGDailyUsageRow(rows)
@@ -956,14 +1223,7 @@ func (s *Store) GetDailyUsage(
 			continue
 		}
 
-		if r.claudeMessageID != "" && r.claudeRequestID != "" {
-			key := dedupKey{msgID: r.claudeMessageID, reqID: r.claudeRequestID}
-			if _, dup := seen[key]; dup {
-				continue
-			}
-			seen[key] = struct{}{}
-		} else if r.usageDedupKey != "" {
-			key := dedupKey{msgID: "usage", reqID: r.usageDedupKey}
+		if key := pgDailyUsageIdentityKey(r); key != "" {
 			if _, dup := seen[key]; dup {
 				continue
 			}
@@ -977,13 +1237,24 @@ func (s *Store) GetDailyUsage(
 			}
 		}
 
-		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, savings :=
+		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, savings, priced, contributes :=
 			pgDailyUsageAmounts(r, pricing)
 		totalSavings += savings
+		if contributes {
+			contributing = true
+			if !priced {
+				allPriced = false
+				unpricedSet[r.model] = struct{}{}
+				if dayUnpriced[date] == nil {
+					dayUnpriced[date] = make(map[string]struct{})
+				}
+				dayUnpriced[date][r.model] = struct{}{}
+			}
+		}
 
 		key := accumKey{
 			date: date, project: r.project,
-			agent: r.agent, model: r.model,
+			agent: r.agent, machine: r.machine, model: r.model,
 		}
 		b, ok := accum[key]
 		if !ok {
@@ -1071,6 +1342,8 @@ func (s *Store) GetDailyUsage(
 				return modelNames[i] < modelNames[j]
 			})
 			entry.ModelsUsed = modelNames
+			entry.HasCost = len(dayUnpriced[date]) == 0
+			entry.UnpricedModels = sortedStringSetKeys(dayUnpriced[date])
 			mbd := make([]db.ModelBreakdown, 0, len(modelNames))
 			for _, m := range modelNames {
 				ma := dd.models[m]
@@ -1104,6 +1377,10 @@ func (s *Store) GetDailyUsage(
 			daily = []db.DailyUsageEntry{}
 		}
 		totals.CacheSavings = totalSavings
+		totals.HasCost = contributing && allPriced
+		if len(unpricedSet) > 0 {
+			totals.UnpricedModels = sortedStringSetKeys(unpricedSet)
+		}
 		sessionCounts := db.NewUsageSessionCounts(seenSessions)
 		return db.DailyUsageResult{
 			Daily:         daily,
@@ -1116,6 +1393,7 @@ func (s *Store) GetDailyUsage(
 		models   map[string]bucket
 		projects map[string]bucket
 		agents   map[string]bucket
+		machines map[string]bucket
 	}
 	days := make(map[string]*dayMaps, 64)
 	for key, b := range accum {
@@ -1125,6 +1403,7 @@ func (s *Store) GetDailyUsage(
 				models:   make(map[string]bucket, 4),
 				projects: make(map[string]bucket, 8),
 				agents:   make(map[string]bucket, 4),
+				machines: make(map[string]bucket, 4),
 			}
 			days[key.date] = dm
 		}
@@ -1151,6 +1430,14 @@ func (s *Store) GetDailyUsage(
 		cur.cacheRd += b.cacheRd
 		cur.cost += b.cost
 		dm.agents[key.agent] = cur
+
+		cur = dm.machines[key.machine]
+		cur.inputTok += b.inputTok
+		cur.outputTok += b.outputTok
+		cur.cacheCr += b.cacheCr
+		cur.cacheRd += b.cacheRd
+		cur.cost += b.cost
+		dm.machines[key.machine] = cur
 	}
 
 	dateKeys := make([]string, 0, len(days))
@@ -1182,6 +1469,8 @@ func (s *Store) GetDailyUsage(
 			return modelNames[i] < modelNames[j]
 		})
 		entry.ModelsUsed = modelNames
+		entry.HasCost = len(dayUnpriced[date]) == 0
+		entry.UnpricedModels = sortedStringSetKeys(dayUnpriced[date])
 		mbd := make([]db.ModelBreakdown, 0, len(modelNames))
 		for _, m := range modelNames {
 			b := dm.models[m]
@@ -1239,6 +1528,25 @@ func (s *Store) GetDailyUsage(
 		})
 		entry.AgentBreakdowns = abd
 
+		machBD := make([]db.MachineBreakdown, 0, len(dm.machines))
+		for m, b := range dm.machines {
+			machBD = append(machBD, db.MachineBreakdown{
+				Machine:             m,
+				InputTokens:         b.inputTok,
+				OutputTokens:        b.outputTok,
+				CacheCreationTokens: b.cacheCr,
+				CacheReadTokens:     b.cacheRd,
+				Cost:                b.cost,
+			})
+		}
+		sort.Slice(machBD, func(i, j int) bool {
+			if machBD[i].Cost != machBD[j].Cost {
+				return machBD[i].Cost > machBD[j].Cost
+			}
+			return machBD[i].Machine < machBD[j].Machine
+		})
+		entry.MachineBreakdowns = machBD
+
 		daily = append(daily, entry)
 		totals.InputTokens += entry.InputTokens
 		totals.OutputTokens += entry.OutputTokens
@@ -1251,6 +1559,10 @@ func (s *Store) GetDailyUsage(
 		daily = []db.DailyUsageEntry{}
 	}
 	totals.CacheSavings = totalSavings
+	totals.HasCost = contributing && allPriced
+	if len(unpricedSet) > 0 {
+		totals.UnpricedModels = sortedStringSetKeys(unpricedSet)
+	}
 	sessionCounts := db.NewUsageSessionCounts(seenSessions)
 	return db.DailyUsageResult{
 		Daily:         daily,
@@ -1290,15 +1602,13 @@ func (s *Store) GetTopSessionsByCost(
 	type sessAccum struct {
 		totalTokens int
 		cost        float64
-	}
-	type dedupKey struct {
-		msgID string
-		reqID string
+		priced      bool
+		unpriced    map[string]struct{}
 	}
 
 	accum := make(map[string]*sessAccum)
 	var order []string
-	seen := make(map[dedupKey]struct{})
+	seen := make(map[string]struct{})
 
 	for rows.Next() {
 		r, err := scanPGDailyUsageRow(rows)
@@ -1315,31 +1625,31 @@ func (s *Store) GetTopSessionsByCost(
 			continue
 		}
 
-		if r.claudeMessageID != "" && r.claudeRequestID != "" {
-			key := dedupKey{msgID: r.claudeMessageID, reqID: r.claudeRequestID}
-			if _, dup := seen[key]; dup {
-				continue
-			}
-			seen[key] = struct{}{}
-		} else if r.usageDedupKey != "" {
-			key := dedupKey{msgID: "usage", reqID: r.usageDedupKey}
+		if key := pgDailyUsageIdentityKey(r); key != "" {
 			if _, dup := seen[key]; dup {
 				continue
 			}
 			seen[key] = struct{}{}
 		}
 
-		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, _ :=
+		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, _, priced, contributes :=
 			pgDailyUsageAmounts(r, pricing)
 
 		sa, ok := accum[r.sessionID]
 		if !ok {
-			sa = &sessAccum{}
+			sa = &sessAccum{priced: true}
 			accum[r.sessionID] = sa
 			order = append(order, r.sessionID)
 		}
 		sa.totalTokens += inputTok + outputTok + cacheCrTok + cacheRdTok
 		sa.cost += cost
+		if contributes && !priced {
+			sa.priced = false
+			if sa.unpriced == nil {
+				sa.unpriced = make(map[string]struct{})
+			}
+			sa.unpriced[r.model] = struct{}{}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil,
@@ -1353,10 +1663,12 @@ func (s *Store) GetTopSessionsByCost(
 			continue
 		}
 		result = append(result, db.TopSessionEntry{
-			SessionID:   id,
-			DisplayName: id,
-			TotalTokens: sa.totalTokens,
-			Cost:        sa.cost,
+			SessionID:      id,
+			DisplayName:    id,
+			TotalTokens:    sa.totalTokens,
+			Cost:           sa.cost,
+			HasCost:        sa.priced,
+			UnpricedModels: sortedStringSetKeys(sa.unpriced),
 		})
 	}
 
@@ -1410,13 +1722,8 @@ func (s *Store) GetUsageSessionCounts(
 		project string
 		agent   string
 	}
-	type dedupKey struct {
-		msgID string
-		reqID string
-	}
-
 	seen := make(map[string]sessInfo)
-	dedup := make(map[dedupKey]struct{})
+	dedup := make(map[string]struct{})
 
 	for rows.Next() {
 		r, err := scanPGDailyUsageRow(rows)
@@ -1433,14 +1740,7 @@ func (s *Store) GetUsageSessionCounts(
 			continue
 		}
 
-		if r.claudeMessageID != "" && r.claudeRequestID != "" {
-			key := dedupKey{msgID: r.claudeMessageID, reqID: r.claudeRequestID}
-			if _, dup := dedup[key]; dup {
-				continue
-			}
-			dedup[key] = struct{}{}
-		} else if r.usageDedupKey != "" {
-			key := dedupKey{msgID: "usage", reqID: r.usageDedupKey}
+		if key := pgDailyUsageIdentityKey(r); key != "" {
 			if _, dup := dedup[key]; dup {
 				continue
 			}

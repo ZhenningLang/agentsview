@@ -164,7 +164,7 @@ func TestPrintUsageStatuslineJSON(t *testing.T) {
 	report := usageStatuslineReport("2026-08-13", db.UsageTotals{TotalCost: 25.000001}, "codex")
 	require.NoError(t, printUsageStatuslineJSON(&out, report))
 
-	assert.JSONEq(t, `{"date":"2026-08-13","cost":{"microdollars":25000001},"agent":"codex"}`,
+	assert.JSONEq(t, `{"date":"2026-08-13","cost":{"microdollars":25000001,"has_cost":true},"agent":"codex"}`,
 		out.String())
 }
 
@@ -179,7 +179,18 @@ func TestPrintUsageStatuslineJSONOmitAgentAndKeepZeroCost(t *testing.T) {
 	report := usageStatuslineReport("2026-08-13", db.UsageTotals{TotalCost: 0}, "")
 	require.NoError(t, printUsageStatuslineJSON(&out, report))
 
-	assert.JSONEq(t, `{"date":"2026-08-13","cost":{"microdollars":0}}`, out.String())
+	assert.JSONEq(t, `{"date":"2026-08-13","cost":{"microdollars":0,"has_cost":true}}`, out.String())
+}
+
+func TestUsageStatuslineReportsPartialCost(t *testing.T) {
+	var out bytes.Buffer
+	report := usageStatuslineReport("2026-08-13", db.UsageTotals{
+		TotalCost:      0.42,
+		HasCost:        false,
+		UnpricedModels: []string{"local-model"},
+	}, "claude")
+	require.NoError(t, printUsageStatuslineHuman(&out, report))
+	assert.Equal(t, "$0.42 partial today (claude)\n", out.String())
 }
 
 func TestUsageStatuslineMicrodollarRounding(t *testing.T) {

@@ -7,9 +7,10 @@
   import { projectColor } from "../../utils/projectColor.js";
   import Treemap from "./Treemap.svelte";
 
-  function fmtCost(v: number): string {
+  function fmtCost(v: number, complete = true): string {
     if (v >= 100) return `$${v.toFixed(0)}`;
-    return `$${v.toFixed(2)}`;
+    const cost = `$${v.toFixed(2)}`;
+    return complete ? cost : `${cost} partial`;
   }
 
   function fmtPct(v: number, total: number): string {
@@ -69,6 +70,13 @@
       pct: total > 0 ? d.cost / total : 0,
     }));
   });
+
+  const costComplete = $derived(usage.summary?.totals.hasCost !== false);
+  const partialNote = $derived(
+    usage.summary?.totals.unpricedModels?.length
+      ? `Cost excludes unknown ${usage.summary.totals.unpricedModels.join(", ")}`
+      : "Cost may be partial",
+  );
 
   const treemapItems = $derived(
     rows.map((r) => ({
@@ -161,6 +169,9 @@
           />
         </div>
         <div class="side-rail">
+          {#if !costComplete}
+            <div class="partial-note">{partialNote}</div>
+          {/if}
           {#each rows as row, i (row.id)}
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -175,7 +186,7 @@
                 style="background: {row.color}"
               ></span>
               <span class="rail-label">{row.label}</span>
-              <span class="rail-cost">{fmtCost(row.cost)}</span>
+              <span class="rail-cost">{fmtCost(row.cost, costComplete)}</span>
             </div>
           {/each}
         </div>
@@ -208,7 +219,7 @@
             <span class="list-pct">
               {(row.pct * 100).toFixed(1)}%
             </span>
-            <span class="list-cost">{fmtCost(row.cost)}</span>
+            <span class="list-cost">{fmtCost(row.cost, costComplete)}</span>
           </div>
         {/each}
       </div>
@@ -433,6 +444,12 @@
     color: var(--text-muted);
     margin-bottom: 6px;
     font-style: italic;
+  }
+
+  .partial-note {
+    color: var(--text-muted);
+    font-size: 10px;
+    margin-bottom: 4px;
   }
 
   @media (max-width: 600px) {

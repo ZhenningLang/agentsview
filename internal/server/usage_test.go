@@ -98,6 +98,13 @@ func TestParseUsageFilterInvalidDate(t *testing.T) {
 // usage endpoint testing.
 func seedUsageEnv(t *testing.T, te *testEnv) {
 	t.Helper()
+	require.NoError(t, te.db.UpsertModelPricing([]db.ModelPricing{{
+		ModelPattern:         "claude-sonnet-4-20250514",
+		InputPerMTok:         3,
+		OutputPerMTok:        15,
+		CacheCreationPerMTok: 3.75,
+		CacheReadPerMTok:     0.3,
+	}}))
 
 	type entry struct {
 		id, project, agent, started string
@@ -148,7 +155,7 @@ func TestHandleUsageSummaryJSONShape(t *testing.T) {
 
 	required := []string{
 		"from", "to", "totals", "daily",
-		"projectTotals", "modelTotals", "agentTotals",
+		"projectTotals", "modelTotals", "agentTotals", "machineTotals",
 		"sessionCounts", "cacheStats",
 	}
 	for _, key := range required {
@@ -160,6 +167,97 @@ func TestHandleUsageSummaryJSONShape(t *testing.T) {
 	assert.NotEmpty(t, resp.ProjectTotals)
 	assert.NotEmpty(t, resp.ModelTotals)
 	assert.NotEmpty(t, resp.AgentTotals)
+	assert.NotEmpty(t, resp.MachineTotals)
+}
+
+func TestPhase17UsagePairwiseComparison(t *testing.T) {
+	te := setup(t)
+	seedUsageEnv(t, te)
+
+	w := te.get(t, buildPathURL("/api/v1/usage/pairwise-comparison",
+		map[string]string{
+			"from":            "2024-06-01",
+			"to":              "2024-06-03",
+			"timezone":        "UTC",
+			"left_dimension":  "project",
+			"left_value":      "alpha",
+			"right_dimension": "project",
+			"right_value":     "beta",
+		}))
+	assertStatus(t, w, http.StatusOK)
+
+	var got server.PairwiseComparisonResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.Equal(t, server.PairwiseSide{Dimension: "project", Value: "alpha"}, got.Left)
+	assert.Equal(t, server.PairwiseSide{Dimension: "project", Value: "beta"}, got.Right)
+	assert.Greater(t, got.LeftMetrics.TotalTokens, 0)
+	assert.Greater(t, got.RightMetrics.TotalTokens, 0)
+	assert.Equal(t, got.RightMetrics.TotalTokens-got.LeftMetrics.TotalTokens, got.Deltas.TotalTokens)
+	assert.True(t, got.LeftMetrics.HasCost)
+	assert.True(t, got.RightMetrics.HasCost)
+	assert.True(t, got.Deltas.HasCost)
+}
+
+func TestPhase17UsagePairwiseComparisonEmptyIntersection(t *testing.T) {
+	te := setup(t)
+	seedUsageEnv(t, te)
+
+	w := te.get(t, buildPathURL("/api/v1/usage/pairwise-comparison",
+		map[string]string{
+			"from":            "2024-06-01",
+			"to":              "2024-06-03",
+			"timezone":        "UTC",
+			"project":         "alpha",
+			"left_dimension":  "project",
+			"left_value":      "beta",
+			"right_dimension": "project",
+			"right_value":     "alpha",
+		}))
+	assertStatus(t, w, http.StatusOK)
+
+	var got server.PairwiseComparisonResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.True(t, got.Left.Empty)
+	assert.False(t, got.Right.Empty)
+	assert.Zero(t, got.LeftMetrics.TotalTokens)
+	assert.Zero(t, got.LeftMetrics.SessionCount)
+	assert.Greater(t, got.RightMetrics.TotalTokens, 0)
+}
+
+func TestPhase17UsagePairwiseComparisonCarriesIncompleteCost(t *testing.T) {
+	te := setup(t)
+	seedUsageEnv(t, te)
+	te.seedSession(t, "usage-unpriced", "beta", 1, func(s *db.Session) {
+		s.Agent = "claude-code"
+		started := "2024-06-02T10:00:00Z"
+		s.StartedAt = &started
+	})
+	te.seedMessages(t, "usage-unpriced", 1, func(_ int, m *db.Message) {
+		m.Role = "assistant"
+		m.Timestamp = "2024-06-02T10:01:00Z"
+		m.Model = "phase17-unpriced-model"
+		m.TokenUsage = json.RawMessage(`{"input_tokens":100,"output_tokens":50}`)
+	})
+
+	w := te.get(t, buildPathURL("/api/v1/usage/pairwise-comparison",
+		map[string]string{
+			"from":            "2024-06-01",
+			"to":              "2024-06-03",
+			"timezone":        "UTC",
+			"left_dimension":  "project",
+			"left_value":      "alpha",
+			"right_dimension": "project",
+			"right_value":     "beta",
+		}))
+	assertStatus(t, w, http.StatusOK)
+
+	var got server.PairwiseComparisonResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+	assert.True(t, got.LeftMetrics.HasCost)
+	assert.False(t, got.RightMetrics.HasCost)
+	assert.False(t, got.Deltas.HasCost)
+	assert.Contains(t, got.RightMetrics.UnpricedModels, "phase17-unpriced-model")
+	assert.Contains(t, got.Deltas.UnpricedModels, "phase17-unpriced-model")
 }
 
 func TestHandleUsageTopSessionsEmpty(t *testing.T) {
@@ -219,6 +317,7 @@ func TestUsageRoutesRegistered(t *testing.T) {
 
 	endpoints := []string{
 		"/api/v1/usage/summary",
+		"/api/v1/usage/pairwise-comparison?left_dimension=model&left_value=a&right_dimension=model&right_value=b",
 		"/api/v1/usage/top-sessions",
 	}
 	for _, ep := range endpoints {

@@ -39,12 +39,20 @@ const usageServiceMocks = vi.hoisted(() => ({
       hitRate: 0,
       savingsVsUncached: 0,
     },
+    machineTotals: [],
   }),
   getApiV1UsageComparison: vi.fn().mockResolvedValue({
     priorFrom: "2023-12-01",
     priorTo: "2023-12-31",
     priorTotalCost: 1,
     deltaPct: 0.5,
+  }),
+  getApiV1UsagePairwiseComparison: vi.fn().mockResolvedValue({
+    left: { dimension: "model", value: "claude-3-sonnet" },
+    right: { dimension: "model", value: "claude-3-haiku" },
+    leftMetrics: { totalCost: 1, hasCost: true, totalTokens: 100, sessionCount: 1 },
+    rightMetrics: { totalCost: 2, hasCost: true, totalTokens: 200, sessionCount: 2 },
+    deltas: { totalCost: 1, hasCost: true, totalTokens: 100, sessionCount: 1 },
   }),
   getApiV1UsageTopSessions: vi.fn().mockResolvedValue([]),
 }));
@@ -62,6 +70,8 @@ vi.mock("../api/generated/index", () => ({
     getApiV1UsageSummary: usageServiceMocks.getApiV1UsageSummary,
     getApiV1UsageComparison:
       usageServiceMocks.getApiV1UsageComparison,
+    getApiV1UsagePairwiseComparison:
+      usageServiceMocks.getApiV1UsagePairwiseComparison,
     getApiV1UsageTopSessions: usageServiceMocks.getApiV1UsageTopSessions,
   },
 }));
@@ -123,6 +133,7 @@ function usageSummary(totalCost = 0): UsageSummaryResponse {
       hitRate: 0,
       savingsVsUncached: 0,
     },
+    machineTotals: [],
   };
 }
 
@@ -348,6 +359,7 @@ describe("UsageStore session filter params", () => {
         hitRate: 0,
         savingsVsUncached: 0,
       },
+      machineTotals: [],
     });
     await fetch;
     await Promise.resolve();
@@ -365,6 +377,70 @@ describe("UsageStore session filter params", () => {
     ).toHaveBeenCalledWith(
       expect.objectContaining({ currentCost: 0 }),
     );
+  });
+
+  it("requests pairwise comparison from summary defaults", async () => {
+    usageServiceMocks.getApiV1UsagePairwiseComparison.mockResolvedValueOnce({
+      left: { dimension: "model", value: "model-a" },
+      right: { dimension: "model", value: "model-b" },
+      leftMetrics: { totalCost: 1, totalTokens: 100, sessionCount: 1 },
+      rightMetrics: { totalCost: 2, totalTokens: 200, sessionCount: 2 },
+      deltas: { totalCost: 1, totalTokens: 100, sessionCount: 1 },
+    });
+    usageServiceMocks.getApiV1UsageSummary.mockResolvedValueOnce({
+      ...usageSummary(3),
+      modelTotals: [
+        { model: "model-a", inputTokens: 10, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, cost: 1 },
+        { model: "model-b", inputTokens: 20, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, cost: 2 },
+      ],
+    });
+
+    const { usage } = await loadStore();
+    await usage.fetchAll();
+    await vi.waitFor(() => expect(usage.pairwise).not.toBeNull());
+
+    expect(
+      usageServiceMocks.getApiV1UsagePairwiseComparison,
+    ).toHaveBeenCalledWith(expect.objectContaining({
+      leftDimension: "model",
+      leftValue: "model-a",
+      rightDimension: "model",
+      rightValue: "model-b",
+    }));
+    expect(usage.pairwise?.deltas.totalCost).toBe(1);
+  });
+
+  it("keeps pairwise incomplete-cost metadata from the API", async () => {
+    usageServiceMocks.getApiV1UsagePairwiseComparison.mockResolvedValueOnce({
+      left: { dimension: "project", value: "alpha", empty: false },
+      right: { dimension: "project", value: "beta", empty: true },
+      leftMetrics: { totalCost: 1, hasCost: true, totalTokens: 100, sessionCount: 1 },
+      rightMetrics: {
+        totalCost: 0.5, hasCost: false,
+        unpricedModels: ["local-model"], totalTokens: 50, sessionCount: 1,
+      },
+      deltas: {
+        totalCost: -0.5, hasCost: false,
+        unpricedModels: ["local-model"], totalTokens: -50, sessionCount: 0,
+      },
+    });
+    usageServiceMocks.getApiV1UsageSummary.mockResolvedValueOnce({
+      ...usageSummary(3),
+      modelTotals: [],
+      projectTotals: [
+        { project: "alpha", inputTokens: 10, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, cost: 1 },
+        { project: "beta", inputTokens: 20, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, cost: 2 },
+      ],
+    });
+
+    const { usage } = await loadStore();
+    await usage.fetchAll();
+    await vi.waitFor(() => expect(usage.pairwise).not.toBeNull());
+
+    expect(usage.pairwise?.right.empty).toBe(true);
+    expect(usage.pairwise?.rightMetrics.hasCost).toBe(false);
+    expect(usage.pairwise?.rightMetrics.unpricedModels).toEqual(["local-model"]);
+    expect(usage.pairwise?.deltas.hasCost).toBe(false);
   });
 
   it("tracks cached usage refetches as querying without first-load skeletons", async () => {
@@ -490,7 +566,7 @@ describe("UsageStore session filter params", () => {
       fetchComparison: (
         summaryVersion: number,
         summary: UsageSummaryResponse,
-        params: typeof loadedSummary.params,
+        params: unknown,
       ) => Promise<void>;
     };
 
@@ -541,7 +617,7 @@ describe("UsageStore session filter params", () => {
       fetchComparison: (
         summaryVersion: number,
         summary: UsageSummaryResponse,
-        params: typeof loadedSummary.params,
+        params: unknown,
       ) => Promise<void>;
     };
     void compare.fetchComparison(
@@ -561,6 +637,52 @@ describe("UsageStore session filter params", () => {
     await Promise.resolve();
 
     expect(comparisonSignal?.aborted).toBe(true);
+  });
+
+  it("aborts active pairwise comparison when a newer summary starts", async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+    apiRuntimeMocks.callGenerated.mockImplementation(
+      (request: () => Promise<unknown>, signal?: AbortSignal) => {
+        signals.push(signal);
+        return request();
+      },
+    );
+    usageServiceMocks.getApiV1UsagePairwiseComparison.mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+
+    const { usage } = await loadStore();
+    const loaded = await usage.fetchSummary({ loadComparison: false });
+    expect(loaded).not.toBeNull();
+    if (!loaded) return;
+    const loadedSummary = {
+      ...loaded.summary,
+      modelTotals: [
+        { model: "model-a", inputTokens: 10, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, cost: 1 },
+        { model: "model-b", inputTokens: 20, outputTokens: 0, cacheCreationTokens: 0, cacheReadTokens: 0, cost: 2 },
+      ],
+    };
+
+    const pairwise = usage as unknown as {
+      fetchPairwise: (
+        summaryVersion: number,
+        summary: UsageSummaryResponse,
+        params: unknown,
+      ) => Promise<void>;
+    };
+    void pairwise.fetchPairwise(loaded.version, loadedSummary, loaded.params);
+    await Promise.resolve();
+    const pairwiseSignal = signals[1];
+    expect(pairwiseSignal).toBeDefined();
+    expect(pairwiseSignal?.aborted).toBe(false);
+
+    usageServiceMocks.getApiV1UsageSummary.mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+    void usage.fetchSummary({ loadComparison: false });
+    await Promise.resolve();
+
+    expect(pairwiseSignal?.aborted).toBe(true);
   });
 
   it("refreshes comparison when summary is refreshed directly", async () => {
@@ -607,6 +729,7 @@ describe("UsageStore session filter params", () => {
         projectTotals: [],
         modelTotals: [],
         agentTotals: [],
+        machineTotals: [],
         sessionCounts: {
           total: 0,
           byProject: {},

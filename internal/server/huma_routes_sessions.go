@@ -277,17 +277,28 @@ func (s *Server) humaSessionTiming(
 }
 
 type sessionUsageResponse struct {
-	SessionID         string   `json:"session_id"`
-	Agent             string   `json:"agent"`
-	Project           string   `json:"project"`
-	TotalOutputTokens int      `json:"total_output_tokens"`
-	PeakContextTokens int      `json:"peak_context_tokens"`
-	HasTokenData      bool     `json:"has_token_data"`
-	CostUSD           float64  `json:"cost_usd"`
-	HasCost           bool     `json:"has_cost"`
-	Models            []string `json:"models"`
-	UnpricedModels    []string `json:"unpriced_models"`
-	ServerRunning     bool     `json:"server_running"`
+	SessionID           string                          `json:"session_id"`
+	Agent               string                          `json:"agent"`
+	Project             string                          `json:"project"`
+	TotalOutputTokens   int                             `json:"total_output_tokens"`
+	PeakContextTokens   int                             `json:"peak_context_tokens"`
+	HasTokenData        bool                            `json:"has_token_data"`
+	CostUSD             float64                         `json:"cost_usd"`
+	HasCost             bool                            `json:"has_cost"`
+	Models              []string                        `json:"models"`
+	UnpricedModels      []string                        `json:"unpriced_models"`
+	BreakdownCount      int                             `json:"breakdown_count"`
+	Breakdown           []db.SessionUsageBreakdownEntry `json:"breakdown"`
+	RollupCostUSD       float64                         `json:"rollup_cost_usd,omitempty"`
+	HasRollupCost       bool                            `json:"has_rollup_cost"`
+	RollupSubagentCount int                             `json:"rollup_subagent_count"`
+	ServerRunning       bool                            `json:"server_running"`
+}
+
+type sessionUsageInput struct {
+	ID        string `path:"id" required:"true" doc:"Session ID"`
+	Breakdown bool   `query:"breakdown" doc:"Include per-row usage breakdown"`
+	Rollup    bool   `query:"rollup" doc:"Roll up subagent usage into this session"`
 }
 
 type sessionUsageErrorBody struct {
@@ -314,25 +325,42 @@ func newSessionUsageHumaResponse(usage *db.SessionUsage) sessionUsageResponse {
 		unpricedModels = []string{}
 	}
 	return sessionUsageResponse{
-		SessionID:         usage.SessionID,
-		Agent:             usage.Agent,
-		Project:           usage.Project,
-		TotalOutputTokens: usage.TotalOutputTokens,
-		PeakContextTokens: usage.PeakContextTokens,
-		HasTokenData:      usage.HasTokenData,
-		CostUSD:           usage.CostUSD,
-		HasCost:           usage.HasCost,
-		Models:            usage.Models,
-		UnpricedModels:    unpricedModels,
-		ServerRunning:     true,
+		SessionID:           usage.SessionID,
+		Agent:               usage.Agent,
+		Project:             usage.Project,
+		TotalOutputTokens:   usage.TotalOutputTokens,
+		PeakContextTokens:   usage.PeakContextTokens,
+		HasTokenData:        usage.HasTokenData,
+		CostUSD:             usage.CostUSD,
+		HasCost:             usage.HasCost,
+		Models:              usage.Models,
+		UnpricedModels:      unpricedModels,
+		BreakdownCount:      usage.BreakdownCount,
+		Breakdown:           nonNilSessionUsageBreakdown(usage.Breakdown),
+		RollupCostUSD:       usage.RollupCostUSD,
+		HasRollupCost:       usage.HasRollupCost,
+		RollupSubagentCount: usage.RollupSubagentCount,
+		ServerRunning:       true,
 	}
+}
+
+func nonNilSessionUsageBreakdown(
+	breakdown []db.SessionUsageBreakdownEntry,
+) []db.SessionUsageBreakdownEntry {
+	if breakdown == nil {
+		return []db.SessionUsageBreakdownEntry{}
+	}
+	return breakdown
 }
 
 func (s *Server) humaSessionUsage(
 	ctx context.Context,
-	in *idPathInput,
+	in *sessionUsageInput,
 ) (*jsonOutput[sessionUsageResponse], error) {
-	usage, err := s.db.GetSessionUsage(ctx, in.ID)
+	usage, err := s.db.GetSessionUsage(ctx, in.ID, db.SessionUsageOptions{
+		IncludeBreakdown: in.Breakdown,
+		Rollup:           in.Rollup,
+	})
 	if err != nil {
 		if handled := handleHumaContextError(err); handled != nil {
 			return nil, handled

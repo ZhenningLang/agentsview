@@ -6,8 +6,9 @@ export type DbUsageTotals = {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   cacheSavings: number;
+  hasCost: boolean;
   inputTokens: number;
   outputTokens: number;
   totalCost: number;
+  unpricedModels?: Array<string> | null;
 };
-

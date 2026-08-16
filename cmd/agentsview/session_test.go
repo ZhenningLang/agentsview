@@ -602,7 +602,7 @@ func TestSessionUsage_Server(t *testing.T) {
 	out, stderr, code := runSessionUsageForTest(t, "bare-id", "json", srv.URL)
 	require.Equalf(t, tokenUseExitOK, code, "stdout=%q stderr=%q", out, stderr)
 	assert.Empty(t, stderr)
-	assert.JSONEq(t, `{"session_id":"codex:bare-id","agent":"codex","project":"p","total_output_tokens":10,"peak_context_tokens":20,"has_token_data":true,"cost_usd":0.42,"has_cost":true,"models":["gpt"],"server_running":true}`, out)
+	assert.JSONEq(t, `{"session_id":"codex:bare-id","agent":"codex","project":"p","total_output_tokens":10,"peak_context_tokens":20,"has_token_data":true,"cost_usd":0.42,"has_cost":true,"models":["gpt"],"breakdown_count":0,"has_rollup_cost":false,"rollup_subagent_count":0,"server_running":true}`, out)
 	assert.Contains(t, paths, "/api/v1/sessions/codex:bare-id")
 	assert.Contains(t, paths, "/api/v1/sessions/codex:bare-id/usage")
 }
@@ -624,7 +624,7 @@ func TestSessionUsageServerExitSemantics(t *testing.T) {
 			name:     "no data",
 			usage:    `{"session_id":"codex:bare-id","agent":"codex"}`,
 			wantCode: tokenUseExitNoTokenData,
-			wantOut:  `{"session_id":"codex:bare-id","agent":"codex","project":"","total_output_tokens":0,"peak_context_tokens":0,"has_token_data":false,"cost_usd":0,"has_cost":false,"models":null,"server_running":true}`,
+			wantOut:  `{"session_id":"codex:bare-id","agent":"codex","project":"","total_output_tokens":0,"peak_context_tokens":0,"has_token_data":false,"cost_usd":0,"has_cost":false,"models":null,"breakdown_count":0,"has_rollup_cost":false,"rollup_subagent_count":0,"server_running":true}`,
 		},
 	}
 	for _, tt := range tests {

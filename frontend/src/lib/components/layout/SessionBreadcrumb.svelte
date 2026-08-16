@@ -110,6 +110,7 @@
   });
 
   let sessionCost = $state<number | null>(null);
+  let sessionCostIsRollup = $state(false);
   // Key of the last successful usage fetch. Cost depends on more
   // than output tokens (input/cache tokens and explicit usage-event
   // costs), so the key includes every cost-affecting field present
@@ -123,6 +124,7 @@
   $effect(() => {
     if (!session) {
       sessionCost = null;
+      sessionCostIsRollup = false;
       costFetchKey = null;
       costSessionId = null;
       costRequestSeq++;
@@ -144,17 +146,24 @@
       // the early return below while another session's request is
       // still in flight.
       sessionCost = null;
+      sessionCostIsRollup = false;
       costFetchKey = null;
     }
     if (key === costFetchKey) return;
     costSessionId = id;
     const seq = ++costRequestSeq;
     configureGeneratedClient();
-    SessionsService.getApiV1SessionsIdUsage({ id })
+    SessionsService.getApiV1SessionsIdUsage({ id, rollup: true })
       .then((res) => {
         if (seq !== costRequestSeq) return;
         costFetchKey = key;
-        sessionCost = res.has_cost ? res.cost_usd : null;
+        if (res.has_rollup_cost) {
+          sessionCost = res.rollup_cost_usd ?? 0;
+          sessionCostIsRollup = true;
+        } else {
+          sessionCost = res.has_cost ? res.cost_usd : null;
+          sessionCostIsRollup = false;
+        }
       })
       .catch(() => {
         // Leave the fetch key unset so the next
@@ -164,6 +173,11 @@
 
   let sessionCostLabel = $derived(
     sessionCost !== null ? formatCost(sessionCost) : null,
+  );
+  let sessionCostTitle = $derived(
+    sessionCostIsRollup
+      ? "Estimated session cost including subagents"
+      : "Estimated session cost",
   );
 
   let sessionContextTokens = $derived(session?.peak_context_tokens ?? 0);
@@ -683,8 +697,9 @@
         </span>
       {/if}
       {#if sessionCostLabel}
-        <span class="cost-badge" title="Estimated session cost">
+        <span class="cost-badge" title={sessionCostTitle}>
           {sessionCostLabel}
+          {#if sessionCostIsRollup}<small> total</small>{/if}
         </span>
       {/if}
       {#if mainModel}
@@ -1009,6 +1024,11 @@
     background: var(--bg-tertiary);
     white-space: nowrap;
     flex-shrink: 0;
+  }
+
+  .cost-badge small {
+    font-size: 9px;
+    margin-left: 2px;
   }
 
   .model-badge {
