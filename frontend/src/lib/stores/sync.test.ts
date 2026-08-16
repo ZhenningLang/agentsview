@@ -216,12 +216,111 @@ describe("SyncStore.loadStats", () => {
   });
 });
 
+describe("SyncStore.loadStatus", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const s = sync as unknown as Record<string, unknown>;
+    s.syncing = false;
+    s.backendSyncing = false;
+    s.localProgress = null;
+    s.backendProgress = null;
+    s.lastSync = null;
+    s.lastSyncStats = null;
+    s.statusHydrated = false;
+    s.pendingHydration = false;
+    s.syncCompleteListeners = [];
+  });
+
+  it("adopts and clears Phase 22 transient status progress", async () => {
+    vi.mocked(api.getSyncStatus)
+      .mockResolvedValueOnce({
+        last_sync: "",
+        stats: null,
+        progress: {
+          phase: "rebuilding_search",
+          detail: "Rebuilding search index",
+          hint: "Rebuilding the search index may take a while on large archives.",
+          resync: true,
+          projects_total: 0,
+          projects_done: 0,
+          sessions_total: 1,
+          sessions_done: 0,
+          messages_indexed: 0,
+        },
+      })
+      .mockResolvedValueOnce({
+        last_sync: "2024-01-01T00:00:00Z",
+        stats: MOCK_STATS,
+      });
+
+    await sync.loadStatus();
+
+    expect(sync.syncing).toBe(false);
+    expect(sync.backendSyncing).toBe(true);
+    expect(sync.progress).toEqual(expect.objectContaining({
+      phase: "rebuilding_search",
+      detail: "Rebuilding search index",
+      resync: true,
+    }));
+
+    await sync.loadStatus();
+
+    expect(sync.syncing).toBe(false);
+    expect(sync.backendSyncing).toBe(false);
+    expect(sync.progress).toBeNull();
+  });
+
+  it("does not clear local SSE progress when status polling is idle", async () => {
+    let onProgress: ((p: import("../api/types.js").SyncProgress) => void) | undefined;
+    let resolveDone: ((s: SyncStats) => void) | undefined;
+    vi.mocked(api.triggerResync).mockReturnValue({
+      abort: vi.fn(),
+      done: new Promise((resolve) => {
+        resolveDone = resolve;
+      }),
+    });
+    vi.mocked(api.getSyncStatus).mockResolvedValue({
+      last_sync: "",
+      stats: null,
+    });
+
+    const started = sync.triggerResync();
+    expect(started).toBe(true);
+    onProgress = vi.mocked(api.triggerResync).mock.calls[0]?.[0];
+    onProgress?.({
+      phase: "parse",
+      current_project: "proj",
+      projects_total: 1,
+      projects_done: 0,
+      sessions_total: 10,
+      sessions_done: 2,
+      messages_indexed: 20,
+    });
+
+    await sync.loadStatus();
+
+    expect(sync.syncing).toBe(true);
+    expect(sync.backendSyncing).toBe(false);
+    expect(sync.progress).toEqual(expect.objectContaining({
+      phase: "parse",
+      sessions_done: 2,
+    }));
+
+    resolveDone?.(MOCK_STATS);
+    await vi.waitFor(() => {
+      expect(sync.syncing).toBe(false);
+    });
+  });
+});
+
 describe("SyncStore.triggerSync", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     const s = sync as unknown as Record<string, unknown>;
     s.syncing = false;
-    s.progress = null;
+    s.backendSyncing = false;
+    s.localProgress = null;
+    s.backendProgress = null;
     s.lastSync = null;
     s.lastSyncStats = null;
     s.serverVersion = null;
@@ -276,7 +375,9 @@ describe("SyncStore.triggerResync", () => {
     // Reset singleton state between tests.
     const s = sync as unknown as Record<string, unknown>;
     s.syncing = false;
-    s.progress = null;
+    s.backendSyncing = false;
+    s.localProgress = null;
+    s.backendProgress = null;
     s.serverVersion = null;
     s.syncCompleteListeners = [];
   });
@@ -320,6 +421,38 @@ describe("SyncStore.triggerResync", () => {
       expect.objectContaining({ message: "Sync failed" }),
     );
     expect(sync.syncing).toBe(false);
+  });
+
+  it("resets syncing and allows retry after AbortError", async () => {
+    let onProgress: ((p: import("../api/types.js").SyncProgress) => void) | undefined;
+    vi.mocked(api.triggerResync).mockReturnValue({
+      abort: vi.fn(),
+      done: Promise.reject(new DOMException("aborted", "AbortError")),
+    });
+
+    const onError = vi.fn();
+    const started = sync.triggerResync(undefined, onError);
+    expect(started).toBe(true);
+    onProgress = vi.mocked(api.triggerResync).mock.calls[0]?.[0];
+    onProgress?.({
+      phase: "parse",
+      current_project: "proj",
+      projects_total: 1,
+      projects_done: 0,
+      sessions_total: 10,
+      sessions_done: 2,
+      messages_indexed: 20,
+    });
+
+    await vi.waitFor(() => {
+      expect(sync.syncing).toBe(false);
+    });
+    expect(sync.progress).toBeNull();
+    expect(onError).not.toHaveBeenCalled();
+
+    mockResyncSuccess();
+    const retried = sync.triggerResync();
+    expect(retried).toBe(true);
   });
 
   it("allows retry after error", async () => {

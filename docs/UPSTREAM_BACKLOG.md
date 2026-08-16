@@ -79,3 +79,51 @@ Source ledger: `docs/UPSTREAM_AUDIT.md`. This file contains only records whose l
 - **Priority:** `P1`
 - **Proposed acceptance:** before B tier is scheduled, re-read the upstream diff for every record that B tier draws from and correct its `Recommendation` / `Reason` in place; re-sample at least 20 untouched records afterwards and record the new error rate in the ledger metadata. A record may not enter a batch on the strength of its ledger row alone.
 - **Review after:** `2026-09-13`
+
+## Phase 22 移出项（依赖本地不存在的子系统）
+
+### `800c19b6` — fix(sync): centralize parser-output validation before persistence
+
+**状态**：already-satisfied，不是 backlog implementation item。
+
+**依据**：本 fork 在 Phase 22 之前已具备该意图的本地实现。`internal/db/validate.go`
+集中定义 parser-output validation/sanitize policy；Phase 22 前的 `internal/sync/engine.go`
+已经在 full session、incremental messages、usage event conversion 这些持久化前 seam 调用
+`db.ValidateAndSanitize`。
+
+**为什么不移植**：上游新增的 `internal/sync/validate.go` 在本 fork 里只会把既有
+`db.ValidateAndSanitize` 调用包一层同构别名，没有行为变化，且会制造重复策略入口。
+
+**重新评估的条件**：不需要重新评估。后续只有在新增 parser-output persistence seam 且绕过
+`internal/db/validate.go` 时，才按普通 correctness bug 处理。
+
+### `6c3317ad` — feat(remotesync): prune forbidden roots nested inside allowed archive roots
+
+**依赖缺口**：本地无 `internal/remotesync` 包（缺 `archive.go` / `manifest.go` /
+`paths.go` / `resolve.go` / `types.go`），parser registry 无 `RemoteSyncExcluded`
+字段，无 Trae provider。8 个非测试文件缺 5 个。
+
+**为什么不做部分移植**：本地可以实现一个 "SSH forbidden-root seam"，但那不是移植上游
+语义，而是在缺三个前置结构的情况下自创一套本地语义。Phase 16 已经证明半套语义的代价
+——CWD 过滤逻辑移植到位而配套会计口径没有，产出两条 P0（归档行被静默删除、resync 永久
+卡死）。该功能面向远程 SSH 同步的嵌套禁止根剪枝，价值不足以承担这个风险。
+
+**重新评估的条件**：本 fork 引入 `internal/remotesync` 之后。
+
+### `f0942ab1` — feat(sync): add machine-labeled session sources
+
+**依赖缺口**：47 文件 / +3972 行，坐在上游 **parser provider 架构 + reconciliation
+spool** 之上（`provider_process_test.go`、`provider_sync_semantics_test.go`、
+`reconciliation_spool.go`）。22 个非测试文件本地缺 12 个，本地无 `source_machine` 概念。
+它在 reconciliation spool 的临时表 `candidates` 里加 `machine` 字段，用于 lost-event /
+source-missing 判定——本地没有该 spool。
+
+**为什么不做**：parser provider 重构在本轮开工时已明确判定不吸收。移植本条等于先搬地基。
+本地 PG/DuckDB mirror 也没有独立的 uploader-owner 字段或 state contract。
+
+**重新评估的条件**：本 fork 采纳 parser provider 架构之后。
+
+---
+
+两条与 `7ee9e4e1`（parse-diff incremental-append skew）同类：**依赖本地根本不存在的
+子系统**。判定依据是文件存在性实测，不是主观取舍。

@@ -113,6 +113,7 @@ export type { SetGithubConfigResponse } from './models/SetGithubConfigResponse';
 export type { SettingsResponse } from './models/SettingsResponse';
 export type { SettingsUpdateRequest } from './models/SettingsUpdateRequest';
 export type { StarredResponse } from './models/StarredResponse';
+export type { SyncProgress } from './models/SyncProgress';
 export type { SyncStatusResponse } from './models/SyncStatusResponse';
 export type { SyncSyncStats } from './models/SyncSyncStats';
 export { TerminalConfigBody } from './models/TerminalConfigBody';

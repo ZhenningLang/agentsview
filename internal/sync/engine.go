@@ -103,10 +103,11 @@ type Engine struct {
 	// idPrefix and pathRewriter support remote sync:
 	// prefix all session IDs to avoid collisions, rewrite
 	// temp paths to "host:/remote/path" form.
-	ephemeral    bool
-	idPrefix     string
-	pathRewriter func(string) string
-	emitter      Emitter
+	ephemeral       bool
+	idPrefix        string
+	pathRewriter    func(string) string
+	emitter         Emitter
+	currentProgress *Progress
 
 	// phaseStats accumulates per-phase wall-clock time inside the bulk
 	// write path. Exposed via PhaseStats() so a CLI driver can log the
@@ -261,6 +262,31 @@ func (e *Engine) LastSyncStats() SyncStats {
 	return e.lastSyncStats
 }
 
+// CurrentProgress returns the latest in-flight sync progress snapshot.
+func (e *Engine) CurrentProgress() (Progress, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.currentProgress == nil {
+		return Progress{}, false
+	}
+	return *e.currentProgress, true
+}
+
+func (e *Engine) reportProgress(onProgress ProgressFunc, p Progress) {
+	e.mu.Lock()
+	e.currentProgress = &p
+	e.mu.Unlock()
+	if onProgress != nil {
+		onProgress(p)
+	}
+}
+
+func (e *Engine) clearCurrentProgress() {
+	e.mu.Lock()
+	e.currentProgress = nil
+	e.mu.Unlock()
+}
+
 // Machine returns the machine name this engine writes on sessions.
 func (e *Engine) Machine() string {
 	if e == nil {
@@ -284,6 +310,7 @@ func (e *Engine) SyncPaths(paths []string) {
 		e.syncMu.Lock()
 		e.phaseStats.Reset()
 		e.anomalies.reset()
+		e.clearCurrentProgress()
 		e.mu.Lock()
 		e.lastSyncStats = SyncStats{}
 		e.mu.Unlock()
@@ -305,11 +332,12 @@ func (e *Engine) SyncPaths(paths []string) {
 		}
 	}()
 	defer e.syncMu.Unlock()
+	defer e.clearCurrentProgress()
 
 	results := e.startWorkers(context.Background(), files, true)
 	stats = e.collectAndBatch(
 		context.Background(), results, len(files), len(files), nil,
-		syncWriteDefault,
+		nil, syncWriteDefault,
 	)
 	e.anomalies.applyTo(&stats)
 	e.persistSkipCache()
@@ -1587,10 +1615,36 @@ func (e *Engine) ResyncAll(
 		}
 	}()
 	defer e.syncMu.Unlock()
+	defer e.clearCurrentProgress()
+
+	markResyncProgress := func(p Progress) Progress {
+		p.Resync = true
+		if p.Phase == PhaseSyncing && p.Detail == "" {
+			p.Detail = "Syncing sessions into rebuilt database"
+		}
+		return p
+	}
+	reportResyncProgress := func(p Progress) {
+		p = markResyncProgress(p)
+		e.reportProgress(onProgress, p)
+	}
+	reportResyncPhase := func(phase Phase, detail, hint string) {
+		p := Progress{Phase: phase, Detail: detail, Hint: hint}
+		if current, ok := e.CurrentProgress(); ok {
+			p.CurrentProject = current.CurrentProject
+			p.ProjectsTotal = current.ProjectsTotal
+			p.ProjectsDone = current.ProjectsDone
+			p.SessionsTotal = current.SessionsTotal
+			p.SessionsDone = current.SessionsDone
+			p.MessagesIndexed = current.MessagesIndexed
+		}
+		reportResyncProgress(p)
+	}
 
 	origDB := e.db
 	origPath := origDB.Path()
 	tempPath := origPath + resyncTempSuffix
+	reportResyncPhase(PhasePreparingResync, "Preparing full resync", "")
 
 	// Snapshot old non-OpenCode file-backed session count to
 	// detect empty-discovery. OpenCode is excluded entirely
@@ -1631,6 +1685,7 @@ func (e *Engine) ResyncAll(
 	}
 
 	// 2. Open a fresh DB at the temp path.
+	reportResyncPhase(PhasePreparingResync, "Opening temporary database", "")
 	newDB, err := db.Open(tempPath)
 	if err != nil {
 		log.Printf("resync: open temp db: %v", err)
@@ -1650,6 +1705,11 @@ func (e *Engine) ResyncAll(
 	// 2b. Copy excluded session IDs from the old DB so that
 	// UpsertSession skips permanently deleted sessions during
 	// the sync. This must happen before syncAllLocked.
+	reportResyncPhase(
+		PhasePreparingResync,
+		"Copying deletion state into temporary database",
+		"",
+	)
 	if err := newDB.CopyExcludedSessionsFrom(origPath); err != nil {
 		log.Printf("resync: pre-sync copy excluded sessions: %v", err)
 		// Non-fatal: worst case, deleted sessions reappear.
@@ -1680,6 +1740,11 @@ func (e *Engine) ResyncAll(
 	ftsDropped := false
 	if newDB.HasFTS() {
 		tFTS := time.Now()
+		reportResyncPhase(
+			PhasePreparingResync,
+			"Disabling temporary search index updates",
+			"",
+		)
 		if err := newDB.DropFTS(); err != nil {
 			log.Printf("resync: drop temp fts: %v", err)
 			newDB.Close()
@@ -1707,8 +1772,8 @@ func (e *Engine) ResyncAll(
 	// 3. Point engine at newDB and sync into it.
 	e.resyncArchiveStore = origDB
 	e.db = newDB
-	stats = e.syncAllLocked(
-		ctx, onProgress, time.Time{}, syncWriteBulk, true,
+	stats = e.syncAllLockedWithProgress(
+		ctx, onProgress, markResyncProgress, time.Time{}, syncWriteBulk, true,
 	)
 	e.db = origDB // restore immediately
 	e.resyncArchiveStore = nil
@@ -1770,6 +1835,11 @@ func (e *Engine) ResyncAll(
 	// then copy insights into newDB (which is still open).
 	// This ensures no insight writes land in the old DB
 	// after the copy.
+	reportResyncPhase(
+		PhaseCopyingMetadata,
+		"Closing current database before final copy",
+		"",
+	)
 	if err := origDB.CloseConnections(); err != nil {
 		log.Printf("resync: close orig db: %v", err)
 		stats.Aborted = true
@@ -1795,6 +1865,7 @@ func (e *Engine) ResyncAll(
 	// the sync window (between the pre-sync copy and now).
 	// Also purge any sessions that were synced into newDB
 	// before the exclusion was recorded.
+	reportResyncPhase(PhaseCopyingMetadata, "Copying sync metadata", "")
 	if err := newDB.CopyExcludedSessionsFrom(origPath); err != nil {
 		log.Printf("resync: post-sync copy excluded sessions: %v", err)
 	}
@@ -1804,6 +1875,7 @@ func (e *Engine) ResyncAll(
 
 	// Copy insights into newDB from the quiesced old DB file.
 	tInsights := time.Now()
+	reportResyncPhase(PhaseCopyingMetadata, "Copying cached insights", "")
 	if err := newDB.CopyInsightsFrom(origPath); err != nil {
 		log.Printf("resync: copy insights: %v", err)
 		stats.Aborted = true
@@ -1830,6 +1902,7 @@ func (e *Engine) ResyncAll(
 	// Copy orphaned sessions (source files gone) from the
 	// old DB so archived data is preserved. Failure aborts
 	// the swap to avoid losing archived sessions.
+	reportResyncPhase(PhaseCopyingOrphans, "Copying archived sessions", "")
 	orphaned, err := newDB.CopyOrphanedDataFromExcluding(
 		origPath, stats.parserExcludedIDs,
 	)
@@ -1856,6 +1929,11 @@ func (e *Engine) ResyncAll(
 	// Re-link subagent sessions after orphan copy so copied
 	// tool_calls.subagent_session_id references are resolved.
 	if orphaned > 0 {
+		reportResyncPhase(
+			PhaseCopyingOrphans,
+			"Relinking archived subagent sessions",
+			"",
+		)
 		if err := newDB.LinkSubagentSessions(); err != nil {
 			log.Printf("resync: relink subagent sessions: %v", err)
 		}
@@ -1864,6 +1942,11 @@ func (e *Engine) ResyncAll(
 	// Merge user-managed data (display_name, deleted_at,
 	// starred_sessions, pinned_messages) from the old DB
 	// so renames, soft-deletes, stars, and pins survive.
+	reportResyncPhase(
+		PhaseCopyingMetadata,
+		"Copying user-managed session metadata",
+		"",
+	)
 	if err := newDB.CopySessionMetadataFrom(origPath); err != nil {
 		log.Printf("resync: copy session metadata: %v", err)
 		// Non-fatal: worst case, renames/soft-deletes are lost.
@@ -1881,12 +1964,18 @@ func (e *Engine) ResyncAll(
 	// this pass those rows would be permanently stuck with stale
 	// flags. Non-fatal: worst case, some sessions keep their
 	// pre-resync classification until the next algorithm bump.
+	reportResyncPhase(PhaseReclassifying, "Reclassifying sessions", "")
 	if err := newDB.ForceBackfillIsAutomated(); err != nil {
 		log.Printf("resync: reclassify is_automated: %v", err)
 	}
 
 	if ftsDropped {
 		tFTS := time.Now()
+		reportResyncPhase(
+			PhaseRebuildingSearch,
+			"Rebuilding search index",
+			"Rebuilding the search index may take a while on large archives.",
+		)
 		if err := newDB.RebuildFTS(); err != nil {
 			log.Printf("resync: rebuild fts: %v", err)
 			stats.Aborted = true
@@ -1912,6 +2001,11 @@ func (e *Engine) ResyncAll(
 	}
 
 	// 5. Close newDB and swap files, then reopen origDB.
+	reportResyncPhase(
+		PhaseSwappingDatabase,
+		"Swapping rebuilt database into place",
+		"",
+	)
 	newDB.Close()
 
 	removeWAL(origPath)
@@ -2055,6 +2149,7 @@ func (e *Engine) SyncAll(
 		}
 	}()
 	defer e.syncMu.Unlock()
+	defer e.clearCurrentProgress()
 	stats = e.syncAllLocked(
 		ctx, onProgress, time.Time{}, syncWriteDefault, true,
 	)
@@ -2074,6 +2169,7 @@ func (e *Engine) SyncAllStatOnly(
 		}
 	}()
 	defer e.syncMu.Unlock()
+	defer e.clearCurrentProgress()
 	stats = e.syncAllLocked(
 		ctx, onProgress, time.Time{}, syncWriteDefault, false,
 	)
@@ -2097,6 +2193,7 @@ func (e *Engine) SyncAllSince(
 		}
 	}()
 	defer e.syncMu.Unlock()
+	defer e.clearCurrentProgress()
 	stats = e.syncAllLocked(
 		ctx, onProgress, since, syncWriteDefault, true,
 	)
@@ -2107,6 +2204,23 @@ func (e *Engine) syncAllLocked(
 	ctx context.Context, onProgress ProgressFunc, since time.Time,
 	writeMode syncWriteMode, auditSameStat bool,
 ) (stats SyncStats) {
+	return e.syncAllLockedWithProgress(
+		ctx, onProgress, nil, since, writeMode, auditSameStat,
+	)
+}
+
+func (e *Engine) syncAllLockedWithProgress(
+	ctx context.Context, onProgress ProgressFunc,
+	wrapProgress func(Progress) Progress, since time.Time,
+	writeMode syncWriteMode, auditSameStat bool,
+) (stats SyncStats) {
+	reportProgress := func(p Progress) {
+		if wrapProgress != nil {
+			p = wrapProgress(p)
+		}
+		e.reportProgress(onProgress, p)
+	}
+
 	if ctx.Err() != nil {
 		return SyncStats{Aborted: true}
 	}
@@ -2161,19 +2275,17 @@ func (e *Engine) syncAllLocked(
 		)
 	}
 
-	progressTotal := len(all)
-	if onProgress != nil {
-		progressTotal += e.countDBBackedSessions(ctx)
-		onProgress(Progress{
-			Phase:         PhaseSyncing,
-			SessionsTotal: progressTotal,
-		})
-	}
+	progressTotal := len(all) + e.countDBBackedSessions(ctx)
+	reportProgress(Progress{
+		Phase:         PhaseSyncing,
+		SessionsTotal: progressTotal,
+	})
 
 	tWorkers := time.Now()
 	results := e.startWorkers(ctx, all, auditSameStat)
 	stats = e.collectAndBatch(
-		ctx, results, len(all), progressTotal, onProgress, writeMode,
+		ctx, results, len(all), progressTotal, onProgress,
+		wrapProgress, writeMode,
 	)
 	if verbose {
 		log.Printf(
@@ -2202,7 +2314,7 @@ func (e *Engine) syncAllLocked(
 	}
 
 	advanceDBProgress := func(total int, pending []pendingWrite) {
-		if onProgress == nil || total == 0 {
+		if total == 0 {
 			return
 		}
 		dbProgress.SessionsDone += total
@@ -2210,7 +2322,7 @@ func (e *Engine) syncAllLocked(
 			dbProgress.MessagesIndexed += len(pw.msgs)
 		}
 		stats.messagesIndexed = dbProgress.MessagesIndexed
-		onProgress(dbProgress)
+		reportProgress(dbProgress)
 	}
 
 	// Sync current Kiro CLI sessions (SQLite-backed).
@@ -2594,14 +2706,12 @@ func (e *Engine) syncAllLocked(
 		)
 	}
 
-	if onProgress != nil {
-		onProgress(Progress{
-			Phase:           PhaseDone,
-			SessionsTotal:   progressTotal,
-			SessionsDone:    progressTotal,
-			MessagesIndexed: stats.messagesIndexed,
-		})
-	}
+	reportProgress(Progress{
+		Phase:           PhaseDone,
+		SessionsTotal:   progressTotal,
+		SessionsDone:    progressTotal,
+		MessagesIndexed: stats.messagesIndexed,
+	})
 
 	e.mu.Lock()
 	e.lastSync = time.Now()
@@ -3208,8 +3318,16 @@ func (e *Engine) collectAndBatch(
 	ctx context.Context,
 	results <-chan syncJob, total int, progressTotal int,
 	onProgress ProgressFunc,
+	wrapProgress func(Progress) Progress,
 	writeMode syncWriteMode,
 ) SyncStats {
+	reportProgress := func(p Progress) {
+		if wrapProgress != nil {
+			p = wrapProgress(p)
+		}
+		e.reportProgress(onProgress, p)
+	}
+
 	var stats SyncStats
 	stats.TotalSessions = total
 	stats.filesDiscovered = total
@@ -3257,9 +3375,7 @@ func (e *Engine) collectAndBatch(
 				stats.cwdExcludedSessions += r.cwdExcluded
 			}
 			progress.SessionsDone++
-			if onProgress != nil {
-				onProgress(progress)
-			}
+			reportProgress(progress)
 			continue
 		}
 		excludedSessionIDs := e.applyIDPrefixToSessionIDs(
@@ -3294,9 +3410,7 @@ func (e *Engine) collectAndBatch(
 				e.cacheSkip(r.path, r.mtime)
 			}
 			progress.SessionsDone++
-			if onProgress != nil {
-				onProgress(progress)
-			}
+			reportProgress(progress)
 			continue
 		}
 		if r.cacheSkip {
@@ -3393,9 +3507,7 @@ func (e *Engine) collectAndBatch(
 		}
 
 		progress.SessionsDone++
-		if onProgress != nil {
-			onProgress(progress)
-		}
+		reportProgress(progress)
 	}
 
 flush:

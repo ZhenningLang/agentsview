@@ -15,8 +15,9 @@
   let relativeTimeTick = $state(0);
 
   let progressText = $derived.by(() => {
-    if (!sync.syncing || !sync.progress) return null;
+    if (!(sync.syncing || sync.backendSyncing) || !sync.progress) return null;
     const p = sync.progress;
+    if (p.detail) return p.detail;
     if (p.phase === "scan") {
       return `Scanning ${p.current_project || ""}...`;
     }
@@ -129,7 +130,7 @@
     {/if}
     {#if progressText}
       {#if sync.versionMismatch}<span class="sep">&middot;</span>{/if}
-      <span class="sync-progress">{progressText}</span>
+      <span class="sync-progress" title={sync.progress?.hint ?? undefined}>{progressText}</span>
     {:else if lastSyncText}
       {#if sync.versionMismatch}<span class="sep">&middot;</span>{/if}
       <span title={lastSyncTimestamp ?? undefined}>

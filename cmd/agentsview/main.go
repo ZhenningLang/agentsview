@@ -594,13 +594,37 @@ func sanitizeBreakdownLines(s sync.SanitizeStats) []string {
 }
 
 func printSyncProgress(p sync.Progress) {
+	text := syncProgressLine(p)
+	if text == "" {
+		return
+	}
+	fmt.Print("\r  " + text)
+}
+
+func syncProgressLine(p sync.Progress) string {
+	counters := syncProgressCountersLine(p)
+	if p.Detail != "" {
+		detail := p.Detail
+		if p.Hint != "" {
+			detail += " - " + p.Hint
+		}
+		if counters != "" {
+			return detail + " · " + counters
+		}
+		return detail
+	}
+	return counters
+}
+
+func syncProgressCountersLine(p sync.Progress) string {
 	if p.SessionsTotal > 0 {
-		fmt.Printf(
-			"\r  %d/%d sessions (%.0f%%) · %d messages",
+		return fmt.Sprintf(
+			"%d/%d sessions (%.0f%%) · %d messages",
 			p.SessionsDone, p.SessionsTotal,
 			p.Percent(), p.MessagesIndexed,
 		)
 	}
+	return ""
 }
 
 func startFileWatcher(

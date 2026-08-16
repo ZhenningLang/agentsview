@@ -926,6 +926,7 @@ type projectListResponse struct {
 type syncStatusResponse struct {
 	LastSync string          `json:"last_sync"`
 	Stats    *sync.SyncStats `json:"stats"`
+	Progress *sync.Progress  `json:"progress,omitempty"`
 }
 
 type githubConfigResponse struct {
@@ -1824,6 +1825,47 @@ func TestSyncStatusReportsAnomalies(t *testing.T) {
 	require.NotNil(t, resp.Stats)
 	assert.Equal(t, 1, resp.Stats.Anomalies.MalformedLinesTotal)
 	assert.Equal(t, 1, resp.Stats.Anomalies.MalformedLinesByAgent["claude"])
+}
+
+func TestPhase22SyncStatusProgressContract(t *testing.T) {
+	te := setup(t)
+
+	w := te.get(t, "/api/v1/sync/status")
+	assertStatus(t, w, http.StatusOK)
+	resp := decode[syncStatusResponse](t, w)
+	assert.Nil(t, resp.Progress, "idle status should omit progress")
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		blocked := false
+		te.engine.ResyncAll(context.Background(), func(sync.Progress) {
+			if blocked {
+				return
+			}
+			blocked = true
+			close(entered)
+			<-release
+		})
+	}()
+	<-entered
+
+	w = te.get(t, "/api/v1/sync/status")
+	assertStatus(t, w, http.StatusOK)
+	resp = decode[syncStatusResponse](t, w)
+	require.NotNil(t, resp.Progress, "active status should expose progress")
+	assert.True(t, resp.Progress.Resync)
+	assert.Equal(t, sync.PhasePreparingResync, resp.Progress.Phase)
+	assert.NotEmpty(t, resp.Progress.Detail)
+
+	close(release)
+	<-done
+	w = te.get(t, "/api/v1/sync/status")
+	assertStatus(t, w, http.StatusOK)
+	resp = decode[syncStatusResponse](t, w)
+	assert.Nil(t, resp.Progress, "finished status should clear progress")
 }
 
 func TestCORSHeaders(t *testing.T) {

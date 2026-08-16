@@ -72,6 +72,41 @@ func TestMustLoadConfig(t *testing.T) {
 	}
 }
 
+func TestPhase22SyncProgressLineShowsDetailAndHint(t *testing.T) {
+	line := syncProgressLine(sync.Progress{
+		Phase:  sync.PhaseRebuildingSearch,
+		Detail: "Rebuilding search index",
+		Hint:   "This may take a while.",
+	})
+
+	assert.Equal(t, "Rebuilding search index - This may take a while.", line)
+}
+
+func TestPhase22SyncProgressLineFallsBackToCounters(t *testing.T) {
+	line := syncProgressLine(sync.Progress{
+		SessionsTotal:   4,
+		SessionsDone:    2,
+		MessagesIndexed: 10,
+	})
+
+	assert.Equal(t, "2/4 sessions (50%) · 10 messages", line)
+}
+
+func TestPhase22SyncProgressLineShowsResyncDetailAndCounters(t *testing.T) {
+	line := syncProgressLine(sync.Progress{
+		Phase:           sync.PhaseSyncing,
+		Detail:          "Syncing sessions into rebuilt database",
+		Resync:          true,
+		SessionsTotal:   4,
+		SessionsDone:    2,
+		MessagesIndexed: 10,
+	})
+
+	assert.Contains(t, line, "Syncing sessions into rebuilt database")
+	assert.Contains(t, line, "2/4 sessions (50%)")
+	assert.Contains(t, line, "10 messages")
+}
+
 func TestPrepareServeRuntimeConfigPortZeroUsesAssignedPort(t *testing.T) {
 	cfg := config.Config{
 		Host: "127.0.0.1",
