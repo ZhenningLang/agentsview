@@ -324,7 +324,10 @@ func sessionUsageData(sessionID string) (*sessionUsageOutput, int, error) {
 		}
 	}
 
-	u, err := database.GetSessionUsage(ctx, resolvedID)
+	u, err := database.GetSessionUsage(ctx, resolvedID, db.SessionUsageOptions{
+		IncludeBreakdown: true,
+		Rollup:           true,
+	})
 	if err != nil {
 		return nil, tokenUseExitErr,
 			fmt.Errorf("querying session usage: %w", err)
@@ -348,9 +351,10 @@ func sessionUsageData(sessionID string) (*sessionUsageOutput, int, error) {
 			fmt.Fprintf(os.Stderr,
 				"warning: pricing refresh failed: %v\n", refErr)
 		} else if refreshed {
-			if u2, e := database.GetSessionUsage(
-				ctx, resolvedID,
-			); e == nil && u2 != nil {
+			if u2, e := database.GetSessionUsage(ctx, resolvedID, db.SessionUsageOptions{
+				IncludeBreakdown: true,
+				Rollup:           true,
+			}); e == nil && u2 != nil {
 				u = u2
 			}
 		}

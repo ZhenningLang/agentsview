@@ -1,4 +1,5 @@
 import type {
+  PairwiseComparisonResponse,
   UsageComparison,
   UsageSummaryResponse,
   TopUsageSessionsResponse,
@@ -11,7 +12,7 @@ import {
 import { sessions } from "./sessions.svelte.js";
 
 type UsageParams = Parameters<typeof UsageService.getApiV1UsageSummary>[0];
-type UsagePanel = "summary" | "comparison" | "topSessions";
+type UsagePanel = "summary" | "comparison" | "pairwise" | "topSessions";
 type LoadedUsageSummary = {
   version: number;
   summary: UsageSummaryResponse;
@@ -188,12 +189,14 @@ class UsageStore {
   }
 
   summary = $state<UsageSummaryResponse | null>(null);
+  pairwise = $state<PairwiseComparisonResponse | null>(null);
   topSessions = $state<TopUsageSessionsResponse | null>(null);
 
   loading = $state({ summary: false, topSessions: false });
   querying = $state<Record<UsagePanel, boolean>>({
     summary: false,
     comparison: false,
+    pairwise: false,
     topSessions: false,
   });
   errors = $state<Record<Endpoint, string | null>>({
@@ -417,7 +420,7 @@ class UsageStore {
     });
   }
 
-  // fetchAll loads summary, then top-sessions, then comparison.
+  // fetchAll loads summary, then top-sessions, then comparison panels.
   //
   // Background refreshes (live sync events, the periodic timer) pass
   // { background: true }. When such a refresh arrives while an identical
@@ -460,6 +463,11 @@ class UsageStore {
         loadedSummary.summary,
         loadedSummary.params,
       );
+      void this.fetchPairwise(
+        loadedSummary.version,
+        loadedSummary.summary,
+        loadedSummary.params,
+      );
     } finally {
       // Only the most recent fetchAll owns the in-flight state; a newer
       // call (user action) has already taken it over.
@@ -479,6 +487,7 @@ class UsageStore {
     const loadComparison = options.loadComparison ?? true;
     const v = ++this.versions.summary;
     this.abortPanel("comparison");
+    this.abortPanel("pairwise");
     const signal = this.nextAbortSignal("summary");
     // Only show the skeleton when we don't already have data to
     // display. Refetches triggered by live events or filter changes
@@ -556,6 +565,56 @@ class UsageStore {
     } finally {
       this.clearAbortSignal("comparison", signal);
     }
+  }
+
+  private async fetchPairwise(
+    summaryVersion: number,
+    summary: UsageSummaryResponse,
+    params: UsageParams,
+  ) {
+    if (this.versions.summary !== summaryVersion) return;
+    const [left, right] = this.defaultPairwise(summary);
+    if (!left || !right) {
+      this.pairwise = null;
+      return;
+    }
+    const signal = this.nextAbortSignal("pairwise");
+    try {
+      const data = await callGenerated(() =>
+        UsageService.getApiV1UsagePairwiseComparison({
+          ...params,
+          leftDimension: left.dimension,
+          leftValue: left.value,
+          rightDimension: right.dimension,
+          rightValue: right.value,
+        }),
+        signal,
+      ) as unknown as PairwiseComparisonResponse;
+      if (this.versions.summary === summaryVersion) {
+        this.pairwise = data;
+      }
+    } catch (e) {
+      if (isAbortError(e)) return;
+      if (this.versions.summary === summaryVersion) {
+        console.warn("usage.fetchPairwise failed:", e);
+      }
+    } finally {
+      this.clearAbortSignal("pairwise", signal);
+    }
+  }
+
+  private defaultPairwise(summary: UsageSummaryResponse) {
+    const models = summary.modelTotals.slice(0, 2).map((m) => ({
+      dimension: "model" as const,
+      value: m.model,
+    }));
+    if (models.length >= 2) return [models[0], models[1]];
+    const projects = summary.projectTotals.slice(0, 2).map((p) => ({
+      dimension: "project" as const,
+      value: p.project,
+    }));
+    if (projects.length >= 2) return [projects[0], projects[1]];
+    return [null, null];
   }
 
   async fetchTopSessions(params: UsageParams | null = null) {

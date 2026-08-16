@@ -94,6 +94,9 @@ interface SessionUsage {
   has_token_data: boolean;
   cost_usd: number;
   has_cost: boolean;
+  rollup_cost_usd?: number;
+  has_rollup_cost: boolean;
+  rollup_subagent_count: number;
   models: string[];
   unpriced_models: string[];
   server_running: boolean;
@@ -111,6 +114,8 @@ function makeUsage(
     has_token_data: false,
     cost_usd: 0,
     has_cost: false,
+    has_rollup_cost: false,
+    rollup_subagent_count: 0,
     models: [],
     unpriced_models: [],
     server_running: true,
@@ -384,6 +389,37 @@ describe("SessionBreadcrumb", () => {
       await vi.waitFor(() => {
         const badge = document.querySelector(".cost-badge");
         expect(badge?.textContent?.trim()).toBe("$1.23");
+      });
+      expect(
+        sessionsService.getApiV1SessionsIdUsage,
+      ).toHaveBeenCalledWith({ id: "run:123456789abcdef", rollup: true });
+
+      unmount(component);
+    });
+
+    it("renders rolled-up subagent cost when usage reports one", async () => {
+      sessionsService.getApiV1SessionsIdUsage.mockResolvedValue(
+        makeUsage({
+          has_cost: true,
+          cost_usd: 1.23,
+          has_rollup_cost: true,
+          rollup_cost_usd: 4.56,
+          rollup_subagent_count: 2,
+        }),
+      );
+
+      const component = mount(SessionBreadcrumb, {
+        target: document.body,
+        props: {
+          session: makeSession("claude"),
+          onBack: () => {},
+        },
+      });
+
+      await vi.waitFor(() => {
+        const badge = document.querySelector(".cost-badge");
+        expect(badge?.textContent?.replace(/\s+/g, " ").trim()).toBe("$4.56 total");
+        expect(badge?.getAttribute("title")).toBe("Estimated session cost including subagents");
       });
 
       unmount(component);

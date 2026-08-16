@@ -204,6 +204,7 @@ SELECT
 	'' AS cost_source,
 	m.claude_message_id,
 	m.claude_request_id,
+	m.source_uuid,
 	'' AS usage_dedup_key,
 	s.project,
 	s.agent,
@@ -236,6 +237,7 @@ SELECT
 	ue.cost_source,
 	'' AS claude_message_id,
 	'' AS claude_request_id,
+	'' AS source_uuid,
 	CASE
 		WHEN ue.dedup_key != '' THEN ue.session_id || ':' || ue.source || ':' || ue.dedup_key
 		ELSE ue.session_id || ':' || ue.source || ':id:' || ue.id
@@ -277,9 +279,11 @@ SELECT
 	NULL AS cost_usd,
 	m.claude_message_id,
 	m.claude_request_id,
+	m.source_uuid,
 	'' AS usage_dedup_key,
 	s.project,
-	s.agent
+	s.agent,
+	s.machine
 FROM messages m
 JOIN sessions s ON m.session_id = s.id
 WHERE %s
@@ -300,12 +304,14 @@ SELECT
 	ue.cost_usd,
 	'' AS claude_message_id,
 	'' AS claude_request_id,
+	'' AS source_uuid,
 	CASE
 		WHEN ue.dedup_key != '' THEN ue.session_id || ':' || ue.source || ':' || ue.dedup_key
 		ELSE ue.session_id || ':' || ue.source || ':id:' || ue.id
 	END AS usage_dedup_key,
 	s.project,
-	s.agent
+	s.agent,
+	s.machine
 FROM usage_events ue
 JOIN sessions s ON s.id = ue.session_id
 WHERE %s`
@@ -325,9 +331,11 @@ SELECT
 	NULL AS cost_usd,
 	m.claude_message_id,
 	m.claude_request_id,
+	m.source_uuid,
 	'' AS usage_dedup_key,
 	s.project,
-	s.agent
+	s.agent,
+	s.machine
 FROM %s m
 JOIN sessions s ON m.session_id = s.id
 WHERE %s`
@@ -347,12 +355,14 @@ SELECT
 	ue.cost_usd,
 	'' AS claude_message_id,
 	'' AS claude_request_id,
+	'' AS source_uuid,
 	CASE
 		WHEN ue.dedup_key != '' THEN ue.session_id || ':' || ue.source || ':' || ue.dedup_key
 		ELSE ue.session_id || ':' || ue.source || ':id:' || ue.id
 	END AS usage_dedup_key,
 	s.project,
-	s.agent
+	s.agent,
+	s.machine
 FROM %s ue
 JOIN sessions s ON s.id = ue.session_id
 WHERE %s`
@@ -382,7 +392,8 @@ message_timestamp_rows AS MATERIALIZED (
 		m.model,
 		m.token_usage,
 		m.claude_message_id,
-		m.claude_request_id
+		m.claude_request_id,
+		m.source_uuid
 	FROM messages m
 	WHERE ` + messageTimestampWhere + `
 ),
@@ -451,6 +462,7 @@ type usageScanRow struct {
 	costSource               string
 	claudeMessageID          string
 	claudeRequestID          string
+	sourceUUID               string
 	usageDedupKey            string
 	project                  string
 	agent                    string
@@ -476,9 +488,11 @@ type dailyUsageScanRow struct {
 	costUSD                  sql.NullFloat64
 	claudeMessageID          string
 	claudeRequestID          string
+	sourceUUID               string
 	usageDedupKey            string
 	project                  string
 	agent                    string
+	machine                  string
 }
 
 type topSessionMetadata struct {
@@ -507,6 +521,7 @@ SELECT
 	u.cost_source,
 	u.claude_message_id,
 	u.claude_request_id,
+	u.source_uuid,
 	u.usage_dedup_key,
 	u.project,
 	u.agent,
@@ -527,7 +542,11 @@ func usageRowSelect() string {
 	))
 }
 
-func dailyUsageRowSelectFromRows(rowsSQL string) string {
+func dailyUsageRowSelectFromRows(rowsSQL string, includeMachine bool) string {
+	machineCol := "'' AS machine"
+	if includeMachine {
+		machineCol = "u.machine"
+	}
 	return `
 SELECT
 	u.session_id,
@@ -543,9 +562,11 @@ SELECT
 	u.cost_usd,
 	u.claude_message_id,
 	u.claude_request_id,
+	u.source_uuid,
 	u.usage_dedup_key,
 	u.project,
-	u.agent
+	u.agent,
+` + machineCol + `
 FROM (` + rowsSQL + `) u
 WHERE 1=1`
 }
@@ -670,12 +691,13 @@ func dailyUsageRowsSQLForBounds(
 
 func usageRowQuery(f UsageFilter) (string, []any) {
 	rowsSQL, args := dailyUsageRowsSQLForBounds(f, usageBoundsForFilter(f))
-	query := dailyUsageRowSelectFromRows(rowsSQL)
+	query := dailyUsageRowSelectFromRows(rowsSQL, true)
 	return query, args
 }
 
 func topSessionsUsageRowQuery(f UsageFilter) (string, []any) {
-	return usageRowQuery(f)
+	rowsSQL, args := dailyUsageRowsSQLForBounds(f, usageBoundsForFilter(f))
+	return dailyUsageRowSelectFromRows(rowsSQL, false), args
 }
 
 func scanUsageRow(rows *sql.Rows) (usageScanRow, error) {
@@ -697,6 +719,7 @@ func scanUsageRow(rows *sql.Rows) (usageScanRow, error) {
 		&r.costSource,
 		&r.claudeMessageID,
 		&r.claudeRequestID,
+		&r.sourceUUID,
 		&r.usageDedupKey,
 		&r.project,
 		&r.agent,
@@ -726,27 +749,54 @@ func scanDailyUsageRow(rows *sql.Rows) (dailyUsageScanRow, error) {
 		&r.costUSD,
 		&r.claudeMessageID,
 		&r.claudeRequestID,
+		&r.sourceUUID,
 		&r.usageDedupKey,
 		&r.project,
 		&r.agent,
+		&r.machine,
 	)
 	return r, err
 }
 
 func dailyUsageAmounts(
 	r dailyUsageScanRow, pricing map[string]modelRates,
-) (inputTok, outputTok, cacheCrTok, cacheRdTok int, cost, savings float64) {
+) (inputTok, outputTok, cacheCrTok, cacheRdTok int, cost, savings float64, priced bool, contributes bool) {
 	inputTok, outputTok, cacheCrTok, cacheRdTok = usageRowTokens(r)
 
-	rates, _ := lookupModelRates(pricing, r.model)
+	if inputTok == 0 && outputTok == 0 && cacheCrTok == 0 && cacheRdTok == 0 {
+		if r.costUSD.Valid {
+			cost = r.costUSD.Float64
+			priced = true
+			contributes = true
+			return
+		}
+		priced = true
+		return
+	}
+	rates, ok := lookupModelRates(pricing, r.model)
 	if r.costUSD.Valid {
 		cost = r.costUSD.Float64
-	} else {
-		cost = (float64(inputTok)*rates.input +
-			float64(outputTok)*rates.output +
-			float64(cacheCrTok)*rates.cacheCreation +
-			float64(cacheRdTok)*rates.cacheRead) / 1_000_000
+		priced = true
+		contributes = true
+		if ok {
+			readDelta := float64(cacheRdTok) *
+				(rates.input - rates.cacheRead) / 1_000_000
+			crDelta := float64(cacheCrTok) *
+				(rates.input - rates.cacheCreation) / 1_000_000
+			savings = readDelta + crDelta
+		}
+		return
 	}
+	if !ok {
+		contributes = true
+		return
+	}
+	cost = (float64(inputTok)*rates.input +
+		float64(outputTok)*rates.output +
+		float64(cacheCrTok)*rates.cacheCreation +
+		float64(cacheRdTok)*rates.cacheRead) / 1_000_000
+	priced = true
+	contributes = true
 
 	readDelta := float64(cacheRdTok) *
 		(rates.input - rates.cacheRead) / 1_000_000
@@ -764,6 +814,45 @@ func usageRowTokens(
 		r.inputTokens, r.outputTokens,
 		r.cacheCreationInputTokens, r.cacheReadInputTokens,
 	)
+}
+
+func usageIdentityKey(agent, msgID, reqID, sourceUUID, usageKey string) string {
+	if msgID != "" && reqID != "" {
+		return "claude:" + msgID + ":" + reqID
+	}
+	if sourceUUID != "" {
+		return "source:" + agent + ":" + sourceUUID
+	}
+	if usageKey != "" {
+		return "usage:" + usageKey
+	}
+	return ""
+}
+
+func dailyUsageIdentityKey(r dailyUsageScanRow) string {
+	return usageIdentityKey(r.agent, r.claudeMessageID, r.claudeRequestID, r.sourceUUID, r.usageDedupKey)
+}
+
+func sessionUsageIdentityKey(r usageScanRow) string {
+	return usageIdentityKey(r.agent, r.claudeMessageID, r.claudeRequestID, r.sourceUUID, r.usageDedupKey)
+}
+
+func sqliteSessionOrderExpr(sessionIDs []string) string {
+	if len(sessionIDs) == 0 {
+		return "0"
+	}
+	var b strings.Builder
+	b.WriteString("CASE u.session_id")
+	for i, id := range sessionIDs {
+		b.WriteString(" WHEN '")
+		b.WriteString(strings.ReplaceAll(id, "'", "''"))
+		b.WriteString("' THEN ")
+		fmt.Fprint(&b, i)
+	}
+	b.WriteString(" ELSE ")
+	fmt.Fprint(&b, len(sessionIDs))
+	b.WriteString(" END")
+	return b.String()
 }
 
 func (db *DB) loadTopSessionMetadata(
@@ -824,10 +913,13 @@ type DailyUsageEntry struct {
 	CacheCreationTokens int                `json:"cacheCreationTokens"`
 	CacheReadTokens     int                `json:"cacheReadTokens"`
 	TotalCost           float64            `json:"totalCost"`
+	HasCost             bool               `json:"hasCost"`
+	UnpricedModels      []string           `json:"unpricedModels,omitempty"`
 	ModelsUsed          []string           `json:"modelsUsed"`
 	ModelBreakdowns     []ModelBreakdown   `json:"modelBreakdowns,omitempty"`
 	ProjectBreakdowns   []ProjectBreakdown `json:"projectBreakdowns,omitempty"`
 	AgentBreakdowns     []AgentBreakdown   `json:"agentBreakdowns,omitempty"`
+	MachineBreakdowns   []MachineBreakdown `json:"machineBreakdowns,omitempty"`
 }
 
 // ModelBreakdown holds per-model token and cost breakdown.
@@ -860,13 +952,25 @@ type AgentBreakdown struct {
 	Cost                float64 `json:"cost"`
 }
 
-// UsageTotals holds aggregate token and cost totals.
-type UsageTotals struct {
+// MachineBreakdown is the per-machine slice of a day's usage.
+type MachineBreakdown struct {
+	Machine             string  `json:"machine"`
 	InputTokens         int     `json:"inputTokens"`
 	OutputTokens        int     `json:"outputTokens"`
 	CacheCreationTokens int     `json:"cacheCreationTokens"`
 	CacheReadTokens     int     `json:"cacheReadTokens"`
-	TotalCost           float64 `json:"totalCost"`
+	Cost                float64 `json:"cost"`
+}
+
+// UsageTotals holds aggregate token and cost totals.
+type UsageTotals struct {
+	InputTokens         int      `json:"inputTokens"`
+	OutputTokens        int      `json:"outputTokens"`
+	CacheCreationTokens int      `json:"cacheCreationTokens"`
+	CacheReadTokens     int      `json:"cacheReadTokens"`
+	TotalCost           float64  `json:"totalCost"`
+	HasCost             bool     `json:"hasCost"`
+	UnpricedModels      []string `json:"unpricedModels,omitempty"`
 	// CacheSavings is the net dollar delta vs an uncached run:
 	// cache reads save (input_rate - cache_read_rate) per token,
 	// cache creations cost (input_rate - cache_creation_rate)
@@ -982,11 +1086,12 @@ func (db *DB) GetDailyUsage(
 	}
 	defer rows.Close()
 
-	// 4-tuple key for per-(date, project, agent, model) accumulation.
+	// 5-tuple key for per-(date, project, agent, machine, model) accumulation.
 	type accumKey struct {
 		date    string
 		project string
 		agent   string
+		machine string
 		model   string
 	}
 	type bucket struct {
@@ -995,14 +1100,22 @@ func (db *DB) GetDailyUsage(
 		cacheCr   int
 		cacheRd   int
 		cost      float64
+		priced    bool
+		models    map[string]struct{}
+	}
+	addBucketModel := func(b *bucket, model string, priced bool) {
+		if model == "" || priced {
+			return
+		}
+		if b.models == nil {
+			b.models = make(map[string]struct{})
+		}
+		b.models[model] = struct{}{}
 	}
 
 	accum := make(map[accumKey]*bucket)
 
-	type dedupKey struct {
-		msgID, reqID string
-	}
-	seen := make(map[dedupKey]struct{})
+	seen := make(map[string]struct{})
 	seenSessions := make(map[string]UsageSessionInfo)
 
 	// totalSavings is the running sum of per-message cache
@@ -1011,6 +1124,9 @@ func (db *DB) GetDailyUsage(
 	// later because the rate mix varies per workload and a
 	// single fallback rate would misreport mixed-model periods.
 	var totalSavings float64
+	contributing := false
+	allPriced := true
+	unpricedSet := make(map[string]struct{})
 
 	for rows.Next() {
 		r, scanErr := scanDailyUsageRow(rows)
@@ -1030,17 +1146,7 @@ func (db *DB) GetDailyUsage(
 		// Dedup AFTER the date filter so out-of-range rows
 		// (pulled in by the ±14h timezone padding) don't mark
 		// a key as seen and suppress the in-range duplicate.
-		if r.claudeMessageID != "" && r.claudeRequestID != "" {
-			key := dedupKey{
-				msgID: r.claudeMessageID,
-				reqID: r.claudeRequestID,
-			}
-			if _, dup := seen[key]; dup {
-				continue
-			}
-			seen[key] = struct{}{}
-		} else if r.usageDedupKey != "" {
-			key := dedupKey{msgID: "usage", reqID: r.usageDedupKey}
+		if key := dailyUsageIdentityKey(r); key != "" {
 			if _, dup := seen[key]; dup {
 				continue
 			}
@@ -1054,17 +1160,24 @@ func (db *DB) GetDailyUsage(
 			}
 		}
 
-		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, savings :=
+		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, savings, priced, contributes :=
 			dailyUsageAmounts(r, pricing)
 		totalSavings += savings
+		if contributes {
+			contributing = true
+			if !priced {
+				allPriced = false
+				unpricedSet[r.model] = struct{}{}
+			}
+		}
 
 		key := accumKey{
 			date: date, project: r.project,
-			agent: r.agent, model: r.model,
+			agent: r.agent, machine: r.machine, model: r.model,
 		}
 		b, ok := accum[key]
 		if !ok {
-			b = &bucket{}
+			b = &bucket{priced: true}
 			accum[key] = b
 		}
 		b.inputTok += inputTok
@@ -1072,6 +1185,8 @@ func (db *DB) GetDailyUsage(
 		b.cacheCr += cacheCrTok
 		b.cacheRd += cacheRdTok
 		b.cost += cost
+		b.priced = b.priced && (!contributes || priced)
+		addBucketModel(b, r.model, priced || !contributes)
 	}
 	if err := rows.Err(); err != nil {
 		return DailyUsageResult{},
@@ -1095,20 +1210,32 @@ func (db *DB) GetDailyUsage(
 			cacheCr   int
 			cacheRd   int
 			cost      float64
+			priced    bool
+			models    map[string]struct{}
+		}
+		mergeModelAccum := func(ma *modelAccum, b *bucket) {
+			ma.inputTok += b.inputTok
+			ma.outputTok += b.outputTok
+			ma.cacheCr += b.cacheCr
+			ma.cacheRd += b.cacheRd
+			ma.cost += b.cost
+			ma.priced = ma.priced && b.priced
+			for model := range b.models {
+				if ma.models == nil {
+					ma.models = make(map[string]struct{})
+				}
+				ma.models[model] = struct{}{}
+			}
 		}
 		dm := make(map[dateModelKey]*modelAccum)
 		for key, b := range accum {
 			dmk := dateModelKey{date: key.date, model: key.model}
 			ma, ok := dm[dmk]
 			if !ok {
-				ma = &modelAccum{}
+				ma = &modelAccum{priced: true}
 				dm[dmk] = ma
 			}
-			ma.inputTok += b.inputTok
-			ma.outputTok += b.outputTok
-			ma.cacheCr += b.cacheCr
-			ma.cacheRd += b.cacheRd
-			ma.cost += b.cost
+			mergeModelAccum(ma, b)
 		}
 
 		type dayData struct {
@@ -1161,6 +1288,7 @@ func (db *DB) GetDailyUsage(
 				return modelNames[i] < modelNames[j]
 			})
 			entry.ModelsUsed = modelNames
+			entry.HasCost = true
 			mbd := make(
 				[]ModelBreakdown, 0, len(modelNames),
 			)
@@ -1174,6 +1302,13 @@ func (db *DB) GetDailyUsage(
 				entry.CacheCreationTokens += ma.cacheCr
 				entry.CacheReadTokens += ma.cacheRd
 				entry.TotalCost += ma.cost
+				entry.HasCost = entry.HasCost && ma.priced
+				for model := range ma.models {
+					if entry.UnpricedModels == nil {
+						entry.UnpricedModels = []string{}
+					}
+					entry.UnpricedModels = append(entry.UnpricedModels, model)
+				}
 				mbd = append(mbd, ModelBreakdown{
 					ModelName:           m,
 					InputTokens:         ma.inputTok,
@@ -1183,6 +1318,7 @@ func (db *DB) GetDailyUsage(
 					Cost:                ma.cost,
 				})
 			}
+			sort.Strings(entry.UnpricedModels)
 			entry.ModelBreakdowns = mbd
 			daily = append(daily, entry)
 
@@ -1197,6 +1333,10 @@ func (db *DB) GetDailyUsage(
 			daily = []DailyUsageEntry{}
 		}
 		totals.CacheSavings = totalSavings
+		totals.HasCost = contributing && allPriced
+		if len(unpricedSet) > 0 {
+			totals.UnpricedModels = sortedSetKeys(unpricedSet)
+		}
 		sessionCounts := NewUsageSessionCounts(seenSessions)
 		return DailyUsageResult{
 			Daily:         daily,
@@ -1210,6 +1350,7 @@ func (db *DB) GetDailyUsage(
 		models   map[string]bucket
 		projects map[string]bucket
 		agents   map[string]bucket
+		machines map[string]bucket
 	}
 	days := make(map[string]*dayMaps, 64)
 	for key, b := range accum {
@@ -1219,6 +1360,7 @@ func (db *DB) GetDailyUsage(
 				models:   make(map[string]bucket, 4),
 				projects: make(map[string]bucket, 8),
 				agents:   make(map[string]bucket, 4),
+				machines: make(map[string]bucket, 4),
 			}
 			days[key.date] = dm
 		}
@@ -1228,6 +1370,12 @@ func (db *DB) GetDailyUsage(
 		cur.cacheCr += b.cacheCr
 		cur.cacheRd += b.cacheRd
 		cur.cost += b.cost
+		cur.priced = cur.priced || b.priced
+		if !b.priced {
+			for model := range b.models {
+				addBucketModel(&cur, model, false)
+			}
+		}
 		dm.models[key.model] = cur
 
 		cur = dm.projects[key.project]
@@ -1236,6 +1384,12 @@ func (db *DB) GetDailyUsage(
 		cur.cacheCr += b.cacheCr
 		cur.cacheRd += b.cacheRd
 		cur.cost += b.cost
+		cur.priced = cur.priced || b.priced
+		if !b.priced {
+			for model := range b.models {
+				addBucketModel(&cur, model, false)
+			}
+		}
 		dm.projects[key.project] = cur
 
 		cur = dm.agents[key.agent]
@@ -1244,7 +1398,27 @@ func (db *DB) GetDailyUsage(
 		cur.cacheCr += b.cacheCr
 		cur.cacheRd += b.cacheRd
 		cur.cost += b.cost
+		cur.priced = cur.priced || b.priced
+		if !b.priced {
+			for model := range b.models {
+				addBucketModel(&cur, model, false)
+			}
+		}
 		dm.agents[key.agent] = cur
+
+		cur = dm.machines[key.machine]
+		cur.inputTok += b.inputTok
+		cur.outputTok += b.outputTok
+		cur.cacheCr += b.cacheCr
+		cur.cacheRd += b.cacheRd
+		cur.cost += b.cost
+		cur.priced = cur.priced || b.priced
+		if !b.priced {
+			for model := range b.models {
+				addBucketModel(&cur, model, false)
+			}
+		}
+		dm.machines[key.machine] = cur
 	}
 
 	dateKeys := make([]string, 0, len(days))
@@ -1263,6 +1437,7 @@ func (db *DB) GetDailyUsage(
 		}
 		var entry DailyUsageEntry
 		entry.Date = date
+		entry.HasCost = true
 
 		modelNames := make([]string, 0, len(dm.models))
 		for m := range dm.models {
@@ -1292,6 +1467,10 @@ func (db *DB) GetDailyUsage(
 			entry.CacheCreationTokens += b.cacheCr
 			entry.CacheReadTokens += b.cacheRd
 			entry.TotalCost += b.cost
+			entry.HasCost = entry.HasCost && len(b.models) == 0
+			for model := range b.models {
+				entry.UnpricedModels = append(entry.UnpricedModels, model)
+			}
 			mbd = append(mbd, ModelBreakdown{
 				ModelName:           m,
 				InputTokens:         b.inputTok,
@@ -1301,6 +1480,7 @@ func (db *DB) GetDailyUsage(
 				Cost:                b.cost,
 			})
 		}
+		sort.Strings(entry.UnpricedModels)
 		entry.ModelBreakdowns = mbd
 
 		pbd := make(
@@ -1345,6 +1525,27 @@ func (db *DB) GetDailyUsage(
 		})
 		entry.AgentBreakdowns = abd
 
+		machBD := make(
+			[]MachineBreakdown, 0, len(dm.machines),
+		)
+		for m, b := range dm.machines {
+			machBD = append(machBD, MachineBreakdown{
+				Machine:             m,
+				InputTokens:         b.inputTok,
+				OutputTokens:        b.outputTok,
+				CacheCreationTokens: b.cacheCr,
+				CacheReadTokens:     b.cacheRd,
+				Cost:                b.cost,
+			})
+		}
+		sort.Slice(machBD, func(i, j int) bool {
+			if machBD[i].Cost != machBD[j].Cost {
+				return machBD[i].Cost > machBD[j].Cost
+			}
+			return machBD[i].Machine < machBD[j].Machine
+		})
+		entry.MachineBreakdowns = machBD
+
 		daily = append(daily, entry)
 
 		totals.InputTokens += entry.InputTokens
@@ -1359,6 +1560,10 @@ func (db *DB) GetDailyUsage(
 	}
 
 	totals.CacheSavings = totalSavings
+	totals.HasCost = contributing && allPriced
+	if len(unpricedSet) > 0 {
+		totals.UnpricedModels = sortedSetKeys(unpricedSet)
+	}
 	sessionCounts := NewUsageSessionCounts(seenSessions)
 	return DailyUsageResult{
 		Daily:         daily,
@@ -1369,13 +1574,15 @@ func (db *DB) GetDailyUsage(
 
 // TopSessionEntry is one row in the "top sessions by cost" result.
 type TopSessionEntry struct {
-	SessionID   string  `json:"sessionId"`
-	DisplayName string  `json:"displayName"`
-	Agent       string  `json:"agent"`
-	Project     string  `json:"project"`
-	StartedAt   string  `json:"startedAt"`
-	TotalTokens int     `json:"totalTokens"`
-	Cost        float64 `json:"cost"`
+	SessionID      string   `json:"sessionId"`
+	DisplayName    string   `json:"displayName"`
+	Agent          string   `json:"agent"`
+	Project        string   `json:"project"`
+	StartedAt      string   `json:"startedAt"`
+	TotalTokens    int      `json:"totalTokens"`
+	Cost           float64  `json:"cost"`
+	HasCost        bool     `json:"hasCost"`
+	UnpricedModels []string `json:"unpricedModels,omitempty"`
 }
 
 // GetTopSessionsByCost returns sessions ranked by total cost
@@ -1416,6 +1623,8 @@ func (db *DB) GetTopSessionsByCost(
 	type sessAccum struct {
 		totalTokens int
 		cost        float64
+		priced      bool
+		unpriced    map[string]struct{}
 	}
 
 	accum := make(map[string]*sessAccum)
@@ -1425,10 +1634,7 @@ func (db *DB) GetTopSessionsByCost(
 	// Dedup duplicate Claude messages across fork/subagent
 	// boundaries so per-session totals match the aggregate
 	// totals from GetDailyUsage. Same key and ordering rules.
-	type dedupKey struct {
-		msgID, reqID string
-	}
-	seen := make(map[dedupKey]struct{})
+	seen := make(map[string]struct{})
 
 	for rows.Next() {
 		r, err := scanDailyUsageRow(rows)
@@ -1449,35 +1655,32 @@ func (db *DB) GetTopSessionsByCost(
 		// Dedup AFTER the date filter, matching GetDailyUsage,
 		// so out-of-range rows pulled in by the ±14h padding
 		// don't claim a key and suppress the in-range duplicate.
-		if r.claudeMessageID != "" && r.claudeRequestID != "" {
-			key := dedupKey{
-				msgID: r.claudeMessageID,
-				reqID: r.claudeRequestID,
-			}
-			if _, dup := seen[key]; dup {
-				continue
-			}
-			seen[key] = struct{}{}
-		} else if r.usageDedupKey != "" {
-			key := dedupKey{msgID: "usage", reqID: r.usageDedupKey}
+		if key := dailyUsageIdentityKey(r); key != "" {
 			if _, dup := seen[key]; dup {
 				continue
 			}
 			seen[key] = struct{}{}
 		}
 
-		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, _ :=
+		inputTok, outputTok, cacheCrTok, cacheRdTok, cost, _, priced, contributes :=
 			dailyUsageAmounts(r, pricing)
 
 		sa, ok := accum[r.sessionID]
 		if !ok {
-			sa = &sessAccum{}
+			sa = &sessAccum{priced: true}
 			accum[r.sessionID] = sa
 			order = append(order, r.sessionID)
 		}
 		sa.totalTokens += inputTok + outputTok +
 			cacheCrTok + cacheRdTok
 		sa.cost += cost
+		if contributes && !priced {
+			sa.priced = false
+			if sa.unpriced == nil {
+				sa.unpriced = make(map[string]struct{})
+			}
+			sa.unpriced[r.model] = struct{}{}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil,
@@ -1491,10 +1694,12 @@ func (db *DB) GetTopSessionsByCost(
 			continue
 		}
 		result = append(result, TopSessionEntry{
-			SessionID:   id,
-			DisplayName: id,
-			TotalTokens: sa.totalTokens,
-			Cost:        sa.cost,
+			SessionID:      id,
+			DisplayName:    id,
+			TotalTokens:    sa.totalTokens,
+			Cost:           sa.cost,
+			HasCost:        sa.priced,
+			UnpricedModels: sortedSetKeys(sa.unpriced),
 		})
 	}
 
@@ -1535,16 +1740,41 @@ func (db *DB) GetTopSessionsByCost(
 // (usage_events.cost_usd). CostUSD is non-zero only when HasCost is
 // true; a partial total (some models unpriced) is never emitted.
 type SessionUsage struct {
-	SessionID         string   `json:"session_id"`
-	Agent             string   `json:"agent"`
-	Project           string   `json:"project"`
-	TotalOutputTokens int      `json:"total_output_tokens"`
-	PeakContextTokens int      `json:"peak_context_tokens"`
-	HasTokenData      bool     `json:"has_token_data"`
-	CostUSD           float64  `json:"cost_usd"`
-	HasCost           bool     `json:"has_cost"`
-	Models            []string `json:"models"`
-	UnpricedModels    []string `json:"unpriced_models,omitempty"`
+	SessionID           string                       `json:"session_id"`
+	Agent               string                       `json:"agent"`
+	Project             string                       `json:"project"`
+	TotalOutputTokens   int                          `json:"total_output_tokens"`
+	PeakContextTokens   int                          `json:"peak_context_tokens"`
+	HasTokenData        bool                         `json:"has_token_data"`
+	CostUSD             float64                      `json:"cost_usd"`
+	HasCost             bool                         `json:"has_cost"`
+	Models              []string                     `json:"models"`
+	UnpricedModels      []string                     `json:"unpriced_models,omitempty"`
+	BreakdownCount      int                          `json:"breakdown_count"`
+	Breakdown           []SessionUsageBreakdownEntry `json:"breakdown,omitempty"`
+	RollupCostUSD       float64                      `json:"rollup_cost_usd,omitempty"`
+	HasRollupCost       bool                         `json:"has_rollup_cost"`
+	RollupSubagentCount int                          `json:"rollup_subagent_count"`
+}
+
+type SessionUsageOptions struct {
+	IncludeBreakdown bool
+	Rollup           bool
+}
+
+type SessionUsageBreakdownEntry struct {
+	Ordinal                  int     `json:"ordinal"`
+	MessageOrdinal           *int    `json:"message_ordinal,omitempty"`
+	Source                   string  `json:"source"`
+	Label                    string  `json:"label"`
+	Timestamp                string  `json:"timestamp"`
+	Model                    string  `json:"model"`
+	InputTokens              int     `json:"input_tokens"`
+	OutputTokens             int     `json:"output_tokens"`
+	CacheCreationInputTokens int     `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int     `json:"cache_read_input_tokens"`
+	CostUSD                  float64 `json:"cost_usd"`
+	HasCost                  bool    `json:"has_cost"`
 }
 
 // sessionRowCost computes one usage row's cost and reports whether
@@ -1587,8 +1817,9 @@ func sessionRowCost(
 // credited total for fork/subagent sessions. Returns (nil, nil) when
 // the session does not exist.
 func (db *DB) GetSessionUsage(
-	ctx context.Context, sessionID string,
+	ctx context.Context, sessionID string, opts ...SessionUsageOptions,
 ) (*SessionUsage, error) {
+	opt := sessionUsageOptions(opts)
 	sess, err := db.GetSession(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -1616,23 +1847,17 @@ func (db *DB) GetSessionUsage(
 	allPriced := true
 	modelsSet := make(map[string]struct{})
 	unpricedSet := make(map[string]struct{})
+	var breakdown []SessionUsageBreakdownEntry
+	breakdownCount := 0
 
-	type dedupKey struct{ msgID, reqID string }
-	seen := make(map[dedupKey]struct{})
+	seen := make(map[string]struct{})
 
 	for rows.Next() {
 		r, scanErr := scanUsageRow(rows)
 		if scanErr != nil {
 			return nil, fmt.Errorf("scanning session usage row: %w", scanErr)
 		}
-		if r.claudeMessageID != "" && r.claudeRequestID != "" {
-			key := dedupKey{r.claudeMessageID, r.claudeRequestID}
-			if _, dup := seen[key]; dup {
-				continue
-			}
-			seen[key] = struct{}{}
-		} else if r.usageDedupKey != "" {
-			key := dedupKey{"usage", r.usageDedupKey}
+		if key := sessionUsageIdentityKey(r); key != "" {
 			if _, dup := seen[key]; dup {
 				continue
 			}
@@ -1643,6 +1868,7 @@ func (db *DB) GetSessionUsage(
 		if !contributes {
 			continue
 		}
+		breakdownCount++
 		contributing = true
 		modelsSet[r.model] = struct{}{}
 		if priced {
@@ -1650,6 +1876,9 @@ func (db *DB) GetSessionUsage(
 		} else {
 			allPriced = false
 			unpricedSet[r.model] = struct{}{}
+		}
+		if opt.IncludeBreakdown {
+			breakdown = append(breakdown, sessionUsageBreakdownEntry(r, breakdownCount, c, priced))
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1665,6 +1894,7 @@ func (db *DB) GetSessionUsage(
 		HasTokenData:      sess.HasTotalOutputTokens || sess.HasPeakContextTokens,
 		Models:            sortedSetKeys(modelsSet),
 		HasCost:           contributing && allPriced,
+		BreakdownCount:    breakdownCount,
 	}
 	if out.HasCost {
 		out.CostUSD = cost
@@ -1672,7 +1902,199 @@ func (db *DB) GetSessionUsage(
 	if len(unpricedSet) > 0 {
 		out.UnpricedModels = sortedSetKeys(unpricedSet)
 	}
+	if opt.IncludeBreakdown {
+		out.Breakdown = breakdown
+	}
+	if opt.Rollup {
+		if err := db.addSessionUsageRollup(ctx, out, pricing); err != nil {
+			return nil, err
+		}
+	}
 	return out, nil
+}
+
+func sessionUsageOptions(opts []SessionUsageOptions) SessionUsageOptions {
+	var out SessionUsageOptions
+	for _, opt := range opts {
+		out.IncludeBreakdown = out.IncludeBreakdown || opt.IncludeBreakdown
+		out.Rollup = out.Rollup || opt.Rollup
+	}
+	return out
+}
+
+func sessionUsageBreakdownEntry(
+	r usageScanRow, ordinal int, cost float64, priced bool,
+) SessionUsageBreakdownEntry {
+	var msgOrdinal *int
+	if r.messageOrdinal.Valid {
+		v := int(r.messageOrdinal.Int64)
+		msgOrdinal = &v
+	}
+	return SessionUsageBreakdownEntry{
+		Ordinal:                  ordinal,
+		MessageOrdinal:           msgOrdinal,
+		Source:                   r.usageSource,
+		Label:                    sessionUsageBreakdownLabel(r),
+		Timestamp:                r.ts,
+		Model:                    r.model,
+		InputTokens:              rowInputTokens(r),
+		OutputTokens:             rowOutputTokens(r),
+		CacheCreationInputTokens: rowCacheCreationTokens(r),
+		CacheReadInputTokens:     rowCacheReadTokens(r),
+		CostUSD:                  cost,
+		HasCost:                  priced,
+	}
+}
+
+func sessionUsageBreakdownLabel(r usageScanRow) string {
+	if r.usageSource == "message" && r.messageOrdinal.Valid {
+		return fmt.Sprintf("Prompt %d", r.messageOrdinal.Int64+1)
+	}
+	if r.messageOrdinal.Valid {
+		return fmt.Sprintf("Step %d", r.messageOrdinal.Int64+1)
+	}
+	if r.usageSource != "" {
+		return r.usageSource
+	}
+	return "usage"
+}
+
+func rowInputTokens(r usageScanRow) int {
+	in, _, _, _ := usageRowTokenValues(r)
+	return in
+}
+
+func rowOutputTokens(r usageScanRow) int {
+	_, out, _, _ := usageRowTokenValues(r)
+	return out
+}
+
+func rowCacheCreationTokens(r usageScanRow) int {
+	_, _, cr, _ := usageRowTokenValues(r)
+	return cr
+}
+
+func rowCacheReadTokens(r usageScanRow) int {
+	_, _, _, rd := usageRowTokenValues(r)
+	return rd
+}
+
+func usageRowTokenValues(r usageScanRow) (int, int, int, int) {
+	return UsageTokenValues(
+		r.usageSource, r.tokenJSON,
+		r.inputTokens, r.outputTokens,
+		r.cacheCreationInputTokens, r.cacheReadInputTokens,
+	)
+}
+
+func (db *DB) addSessionUsageRollup(
+	ctx context.Context, out *SessionUsage, pricing map[string]modelRates,
+) error {
+	ids, subagentCount, err := db.rollupUsageSessionIDs(ctx, out.SessionID)
+	if err != nil {
+		return err
+	}
+	out.RollupSubagentCount = subagentCount
+	if subagentCount == 0 {
+		return nil
+	}
+	cost, contributing, allPriced, err := db.rollupUsageCost(ctx, ids, pricing)
+	if err != nil {
+		return err
+	}
+	out.HasRollupCost = contributing && allPriced
+	if out.HasRollupCost {
+		out.RollupCostUSD = cost
+	}
+	return nil
+}
+
+func (db *DB) rollupUsageSessionIDs(
+	ctx context.Context, rootID string,
+) ([]string, int, error) {
+	ids := []string{rootID}
+	queue := []string{rootID}
+	visited := map[string]struct{}{rootID: {}}
+	subagentCount := 0
+	for len(queue) > 0 {
+		parent := queue[0]
+		queue = queue[1:]
+		children, err := db.GetChildSessions(ctx, parent)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, child := range children {
+			if _, ok := visited[child.ID]; ok {
+				continue
+			}
+			visited[child.ID] = struct{}{}
+			if child.RelationshipType == "subagent" {
+				ids = append(ids, child.ID)
+				queue = append(queue, child.ID)
+				subagentCount++
+			}
+		}
+	}
+	return ids, subagentCount, nil
+}
+
+func (db *DB) rollupUsageCost(
+	ctx context.Context, sessionIDs []string, pricing map[string]modelRates,
+) (cost float64, contributing, allPriced bool, err error) {
+	allPriced = true
+	if len(sessionIDs) == 0 {
+		return 0, false, true, nil
+	}
+	placeholders := make([]string, len(sessionIDs))
+	args := make([]any, len(sessionIDs))
+	for i, id := range sessionIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := usageRowSelect() + ` AND u.session_id IN (` + strings.Join(placeholders, ",") + `)
+		ORDER BY u.ts ASC, ` + sqliteSessionOrderExpr(sessionIDs) + ` ASC,
+		COALESCE(u.message_ordinal, -1) ASC`
+	rows, err := db.getReader().QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, false, true, fmt.Errorf("querying session usage rollup: %w", err)
+	}
+	defer rows.Close()
+
+	seen := make(map[string]struct{})
+	subagentIDs := make(map[string]struct{}, len(sessionIDs))
+	for _, id := range sessionIDs[1:] {
+		subagentIDs[id] = struct{}{}
+	}
+	subagentContributing := false
+	for rows.Next() {
+		r, scanErr := scanUsageRow(rows)
+		if scanErr != nil {
+			return 0, false, true, fmt.Errorf("scanning session usage rollup row: %w", scanErr)
+		}
+		if key := sessionUsageIdentityKey(r); key != "" {
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+		}
+		c, priced, contributes := sessionRowCost(r, pricing)
+		if !contributes {
+			continue
+		}
+		contributing = true
+		if _, ok := subagentIDs[r.sessionID]; ok {
+			subagentContributing = true
+		}
+		if priced {
+			cost += c
+		} else {
+			allPriced = false
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, false, true, fmt.Errorf("iterating session usage rollup rows: %w", err)
+	}
+	return cost, contributing && subagentContributing, allPriced, nil
 }
 
 // sortedSetKeys returns the map keys sorted; never nil so JSON
@@ -1758,10 +2180,7 @@ func (db *DB) GetUsageSessionCounts(
 	// would disagree with the deduped token totals — a fork
 	// with zero unique messages would inflate the count even
 	// though it contributes zero cost.
-	type dedupKey struct {
-		msgID, reqID string
-	}
-	dedup := make(map[dedupKey]struct{})
+	dedup := make(map[string]struct{})
 
 	for rows.Next() {
 		r, err := scanDailyUsageRow(rows)
@@ -1781,17 +2200,7 @@ func (db *DB) GetUsageSessionCounts(
 
 		// Dedup AFTER the date filter, matching the other two
 		// queries so ±14h padding rows don't claim keys.
-		if r.claudeMessageID != "" && r.claudeRequestID != "" {
-			key := dedupKey{
-				msgID: r.claudeMessageID,
-				reqID: r.claudeRequestID,
-			}
-			if _, dup := dedup[key]; dup {
-				continue
-			}
-			dedup[key] = struct{}{}
-		} else if r.usageDedupKey != "" {
-			key := dedupKey{msgID: "usage", reqID: r.usageDedupKey}
+		if key := dailyUsageIdentityKey(r); key != "" {
 			if _, dup := dedup[key]; dup {
 				continue
 			}

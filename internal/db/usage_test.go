@@ -109,7 +109,7 @@ func TestUsageRowQueryPushesDateBoundsIntoUnion(t *testing.T) {
 	assert.NotContains(t, normalized, "user_message_count")
 	assert.NotContains(t, normalized, "session_activity_at")
 	assert.NotContains(t, normalized, " as started_at")
-	assert.NotContains(t, normalized, "u.machine")
+	assert.Contains(t, normalized, "u.machine")
 	assert.Contains(t, normalized, "message_timestamp_rows as materialized")
 	assert.Contains(t, normalized, "usage_event_timestamp_rows as materialized")
 	assert.Contains(t, normalized, "from message_timestamp_rows m\njoin sessions s")
@@ -133,6 +133,67 @@ func TestUsageRowQueryPushesDateBoundsIntoUnion(t *testing.T) {
 	assert.Equal(t, "2024-07-01T13:59:59Z", args[5])
 	assert.Equal(t, "2024-05-31T10:00:00Z", args[6])
 	assert.Equal(t, "2024-07-01T13:59:59Z", args[7])
+}
+
+func TestPhase17GetDailyUsage_MachineBreakdowns(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	requireNoError(t, d.UpsertModelPricing([]ModelPricing{{
+		ModelPattern:  "phase17-model",
+		InputPerMTok:  1,
+		OutputPerMTok: 1,
+	}}), "UpsertModelPricing")
+
+	insertSession(t, d, "phase17-machine-a", "proj", func(s *Session) {
+		s.Agent = "codex"
+		s.Machine = "machine-a"
+		s.StartedAt = new("2026-06-01T10:00:00Z")
+	})
+	insertSession(t, d, "phase17-machine-b", "proj", func(s *Session) {
+		s.Agent = "codex"
+		s.Machine = "machine-b"
+		s.StartedAt = new("2026-06-01T11:00:00Z")
+	})
+	insertMessages(t, d,
+		Message{
+			SessionID: "phase17-machine-a", Ordinal: 0,
+			Role: "assistant", Timestamp: "2026-06-01T10:01:00Z",
+			Model:      "phase17-model",
+			TokenUsage: json.RawMessage(`{"input_tokens":100,"output_tokens":10}`),
+		},
+		Message{
+			SessionID: "phase17-machine-b", Ordinal: 0,
+			Role: "assistant", Timestamp: "2026-06-01T11:01:00Z",
+			Model:      "phase17-model",
+			TokenUsage: json.RawMessage(`{"input_tokens":200,"output_tokens":20}`),
+		},
+	)
+
+	got, err := d.GetDailyUsage(ctx, UsageFilter{
+		From: "2026-06-01", To: "2026-06-01", Timezone: "UTC",
+		Breakdowns: true,
+	})
+	requireNoError(t, err, "GetDailyUsage")
+	require.Len(t, got.Daily, 1)
+	require.Len(t, got.Daily[0].MachineBreakdowns, 2)
+
+	assert.Equal(t, []MachineBreakdown{
+		{
+			Machine: "machine-b", InputTokens: 200, OutputTokens: 20,
+			Cost: 0.00022,
+		},
+		{
+			Machine: "machine-a", InputTokens: 100, OutputTokens: 10,
+			Cost: 0.00011,
+		},
+	}, got.Daily[0].MachineBreakdowns)
+
+	fast, err := d.GetDailyUsage(ctx, UsageFilter{
+		From: "2026-06-01", To: "2026-06-01", Timezone: "UTC",
+	})
+	requireNoError(t, err, "GetDailyUsage fast")
+	require.Len(t, fast.Daily, 1)
+	assert.Empty(t, fast.Daily[0].MachineBreakdowns)
 }
 
 func TestTopSessionsUsageRowQueryUsesNarrowScan(t *testing.T) {
@@ -2349,6 +2410,259 @@ func TestGetSessionUsage_DedupesDuplicateClaudeRows(t *testing.T) {
 	// One row priced at 1000*5/1e6 + 500*25/1e6 = 0.0175; deduped, not 0.035.
 	assert.InDelta(t, 0.0175, u.CostUSD, 1e-9, "CostUSD want 0.0175 (deduped)")
 	assert.True(t, u.HasCost, "HasCost = false, want true")
+}
+
+func TestPhase17GetSessionUsage_BreakdownLazyLoadsRows(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	seedOpusPricing(t, d)
+	insertSession(t, d, "phase17:breakdown", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.StartedAt = new("2026-05-20T10:00:00Z")
+	})
+	ord := 1
+	cost := 0.25
+	insertMessages(t, d, Message{
+		SessionID: "phase17:breakdown", Ordinal: 0, Role: "assistant",
+		Timestamp: "2026-05-20T10:30:00Z", Model: "claude-opus-4-6",
+		TokenUsage: json.RawMessage(`{"input_tokens":1000,"output_tokens":500}`),
+	})
+	require.NoError(t, d.ReplaceSessionUsageEvents("phase17:breakdown", []UsageEvent{{
+		SessionID: "phase17:breakdown", MessageOrdinal: &ord,
+		Source: "generation", Model: "external-priced-model",
+		InputTokens: 100, OutputTokens: 50, CostUSD: &cost,
+		OccurredAt: "2026-05-20T10:31:00Z", DedupKey: "phase17-generation",
+	}}))
+
+	shallow, err := d.GetSessionUsage(ctx, "phase17:breakdown")
+	requireNoError(t, err, "GetSessionUsage shallow")
+	require.NotNil(t, shallow)
+	assert.Equal(t, 2, shallow.BreakdownCount)
+	assert.Empty(t, shallow.Breakdown)
+
+	full, err := d.GetSessionUsage(ctx, "phase17:breakdown", SessionUsageOptions{IncludeBreakdown: true})
+	requireNoError(t, err, "GetSessionUsage breakdown")
+	require.NotNil(t, full)
+	require.Len(t, full.Breakdown, 2)
+	assert.Equal(t, SessionUsageBreakdownEntry{
+		Ordinal: 1, MessageOrdinal: Ptr(0), Source: "message", Label: "Prompt 1",
+		Timestamp: "2026-05-20T10:30:00Z", Model: "claude-opus-4-6",
+		InputTokens: 1000, OutputTokens: 500, CostUSD: 0.0175, HasCost: true,
+	}, full.Breakdown[0])
+	assert.Equal(t, SessionUsageBreakdownEntry{
+		Ordinal: 2, MessageOrdinal: Ptr(1), Source: "generation", Label: "Step 2",
+		Timestamp: "2026-05-20T10:31:00Z", Model: "external-priced-model",
+		InputTokens: 100, OutputTokens: 50, CostUSD: 0.25, HasCost: true,
+	}, full.Breakdown[1])
+}
+
+func TestPhase17GetSessionUsage_RollupUsesGlobalDedupAcrossSubagents(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	seedOpusPricing(t, d)
+	insertSession(t, d, "phase17:root", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.StartedAt = new("2026-05-20T10:00:00Z")
+	})
+	insertSession(t, d, "phase17:sub", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.ParentSessionID = new("phase17:root")
+		s.RelationshipType = "subagent"
+		s.StartedAt = new("2026-05-20T10:01:00Z")
+	})
+	insertMessages(t, d,
+		Message{
+			SessionID: "phase17:root", Ordinal: 0, Role: "assistant",
+			Timestamp: "2026-05-20T10:30:00Z", Model: "claude-opus-4-6",
+			ClaudeMessageID: "phase17-shared", ClaudeRequestID: "phase17-req",
+			TokenUsage: json.RawMessage(`{"input_tokens":1000,"output_tokens":500}`),
+		},
+		Message{
+			SessionID: "phase17:sub", Ordinal: 0, Role: "assistant",
+			Timestamp: "2026-05-20T10:31:00Z", Model: "claude-opus-4-6",
+			ClaudeMessageID: "phase17-shared", ClaudeRequestID: "phase17-req",
+			TokenUsage: json.RawMessage(`{"input_tokens":1000,"output_tokens":500}`),
+		},
+		Message{
+			SessionID: "phase17:sub", Ordinal: 1, Role: "assistant",
+			Timestamp: "2026-05-20T10:32:00Z", Model: "claude-opus-4-6",
+			ClaudeMessageID: "phase17-unique", ClaudeRequestID: "phase17-unique-req",
+			TokenUsage: json.RawMessage(`{"input_tokens":100,"output_tokens":50}`),
+		},
+	)
+
+	u, err := d.GetSessionUsage(ctx, "phase17:root", SessionUsageOptions{Rollup: true})
+	requireNoError(t, err, "GetSessionUsage rollup")
+	require.NotNil(t, u)
+	assert.True(t, u.HasCost)
+	assert.InDelta(t, 0.0175, u.CostUSD, 1e-9)
+	assert.True(t, u.HasRollupCost)
+	assert.Equal(t, 1, u.RollupSubagentCount)
+	assert.InDelta(t, 0.01925, u.RollupCostUSD, 1e-9)
+}
+
+func TestPhase17GetSessionUsage_RollupDoesNotExposePartialUnpricedCost(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	seedOpusPricing(t, d)
+	insertSession(t, d, "phase17:unpriced-root", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.StartedAt = new("2026-05-20T10:00:00Z")
+	})
+	insertSession(t, d, "phase17:unpriced-sub", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.ParentSessionID = new("phase17:unpriced-root")
+		s.RelationshipType = "subagent"
+		s.StartedAt = new("2026-05-20T10:01:00Z")
+	})
+	insertMessages(t, d,
+		Message{
+			SessionID: "phase17:unpriced-root", Ordinal: 0, Role: "assistant",
+			Timestamp: "2026-05-20T10:30:00Z", Model: "claude-opus-4-6",
+			TokenUsage: json.RawMessage(`{"input_tokens":1000,"output_tokens":500}`),
+		},
+		Message{
+			SessionID: "phase17:unpriced-sub", Ordinal: 0, Role: "assistant",
+			Timestamp: "2026-05-20T10:31:00Z", Model: "local-phase17-model",
+			TokenUsage: json.RawMessage(`{"input_tokens":1000,"output_tokens":500}`),
+		},
+	)
+
+	u, err := d.GetSessionUsage(ctx, "phase17:unpriced-root", SessionUsageOptions{Rollup: true})
+	requireNoError(t, err, "GetSessionUsage rollup")
+	require.NotNil(t, u)
+	assert.True(t, u.HasCost, "root cost stays complete")
+	assert.False(t, u.HasRollupCost, "rollup must not expose partial cost")
+	assert.Equal(t, 0.0, u.RollupCostUSD)
+	assert.Equal(t, 1, u.RollupSubagentCount)
+}
+
+func TestPhase17GetSessionUsage_RollupDedupesSourceUUIDRootFirst(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	seedOpusPricing(t, d)
+	insertSession(t, d, "phase17:uuid-root", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.StartedAt = new("2026-05-20T10:00:00Z")
+	})
+	insertSession(t, d, "phase17:uuid-sub", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.ParentSessionID = new("phase17:uuid-root")
+		s.RelationshipType = "subagent"
+		s.StartedAt = new("2026-05-20T10:01:00Z")
+	})
+	insertMessages(t, d,
+		Message{
+			SessionID: "phase17:uuid-root", Ordinal: 0, Role: "assistant",
+			Timestamp: "2026-05-20T10:30:00Z", Model: "claude-opus-4-6",
+			SourceUUID: "phase17-source-replay",
+			TokenUsage: json.RawMessage(`{"input_tokens":1000,"output_tokens":500}`),
+		},
+		Message{
+			SessionID: "phase17:uuid-sub", Ordinal: 0, Role: "assistant",
+			Timestamp: "2026-05-20T10:30:00Z", Model: "claude-opus-4-6",
+			SourceUUID: "phase17-source-replay",
+			TokenUsage: json.RawMessage(`{"input_tokens":2000,"output_tokens":1000}`),
+		},
+		Message{
+			SessionID: "phase17:uuid-sub", Ordinal: 1, Role: "assistant",
+			Timestamp: "2026-05-20T10:31:00Z", Model: "claude-opus-4-6",
+			SourceUUID: "phase17-source-unique",
+			TokenUsage: json.RawMessage(`{"input_tokens":100,"output_tokens":50}`),
+		},
+	)
+
+	u, err := d.GetSessionUsage(ctx, "phase17:uuid-root", SessionUsageOptions{Rollup: true})
+	requireNoError(t, err, "GetSessionUsage rollup")
+	require.NotNil(t, u)
+	assert.True(t, u.HasRollupCost)
+	assert.InDelta(t, 0.01925, u.RollupCostUSD, 1e-9)
+}
+
+func TestPhase17GetSessionUsage_RollupIgnoresNonSubagentBranches(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	seedOpusPricing(t, d)
+	insertSession(t, d, "phase17:branch-root", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.StartedAt = new("2026-05-20T10:00:00Z")
+	})
+	insertSession(t, d, "phase17:branch-fork", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.ParentSessionID = new("phase17:branch-root")
+		s.RelationshipType = "fork"
+		s.StartedAt = new("2026-05-20T10:01:00Z")
+	})
+	insertSession(t, d, "phase17:branch-grandchild", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.ParentSessionID = new("phase17:branch-fork")
+		s.RelationshipType = "subagent"
+		s.StartedAt = new("2026-05-20T10:02:00Z")
+	})
+	insertMessages(t, d,
+		Message{SessionID: "phase17:branch-root", Ordinal: 0, Role: "assistant", Timestamp: "2026-05-20T10:30:00Z", Model: "claude-opus-4-6", TokenUsage: json.RawMessage(`{"input_tokens":1000,"output_tokens":500}`)},
+		Message{SessionID: "phase17:branch-fork", Ordinal: 0, Role: "assistant", Timestamp: "2026-05-20T10:31:00Z", Model: "claude-opus-4-6", TokenUsage: json.RawMessage(`{"input_tokens":2000,"output_tokens":1000}`)},
+		Message{SessionID: "phase17:branch-grandchild", Ordinal: 0, Role: "assistant", Timestamp: "2026-05-20T10:32:00Z", Model: "claude-opus-4-6", TokenUsage: json.RawMessage(`{"input_tokens":3000,"output_tokens":1500}`)},
+	)
+
+	u, err := d.GetSessionUsage(ctx, "phase17:branch-root", SessionUsageOptions{Rollup: true})
+	requireNoError(t, err, "GetSessionUsage rollup")
+	require.NotNil(t, u)
+	assert.Equal(t, 0, u.RollupSubagentCount)
+	assert.False(t, u.HasRollupCost)
+	assert.Zero(t, u.RollupCostUSD)
+}
+
+func TestPhase17GetSessionUsage_RollupRequiresSubagentContribution(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	seedOpusPricing(t, d)
+	insertSession(t, d, "phase17:empty-sub-root", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.StartedAt = new("2026-05-20T10:00:00Z")
+	})
+	insertSession(t, d, "phase17:empty-sub", "proj", func(s *Session) {
+		s.Agent = "claude-code"
+		s.ParentSessionID = new("phase17:empty-sub-root")
+		s.RelationshipType = "subagent"
+		s.StartedAt = new("2026-05-20T10:01:00Z")
+	})
+	insertMessages(t, d, Message{
+		SessionID: "phase17:empty-sub-root", Ordinal: 0, Role: "assistant",
+		Timestamp: "2026-05-20T10:30:00Z", Model: "claude-opus-4-6",
+		TokenUsage: json.RawMessage(`{"input_tokens":1000,"output_tokens":500}`),
+	})
+
+	u, err := d.GetSessionUsage(ctx, "phase17:empty-sub-root", SessionUsageOptions{Rollup: true})
+	requireNoError(t, err, "GetSessionUsage rollup")
+	require.NotNil(t, u)
+	assert.Equal(t, 1, u.RollupSubagentCount)
+	assert.False(t, u.HasRollupCost)
+	assert.Zero(t, u.RollupCostUSD)
+}
+
+func TestPhase17GetDailyUsage_CostUSDRowsKeepCacheSavings(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	require.NoError(t, d.UpsertModelPricing([]ModelPricing{{
+		ModelPattern: "phase17-explicit-cost", InputPerMTok: 3,
+		OutputPerMTok: 15, CacheCreationPerMTok: 1, CacheReadPerMTok: 0.5,
+	}}))
+	insertSession(t, d, "phase17:explicit-cost", "proj", func(s *Session) {
+		s.Agent = "hermes"
+		s.StartedAt = new("2026-05-20T10:00:00Z")
+	})
+	cost := 0.02
+	require.NoError(t, d.ReplaceSessionUsageEvents("phase17:explicit-cost", []UsageEvent{{
+		SessionID: "phase17:explicit-cost", Source: "hermes", Model: "phase17-explicit-cost",
+		InputTokens: 10, OutputTokens: 5, CacheReadInputTokens: 4,
+		CostUSD: &cost, OccurredAt: "2026-05-20T10:01:00Z", DedupKey: "explicit-cost",
+	}}))
+
+	got, err := d.GetDailyUsage(ctx, UsageFilter{From: "2026-05-20", To: "2026-05-20", Timezone: "UTC"})
+	requireNoError(t, err, "GetDailyUsage")
+	assert.InDelta(t, 0.02, got.Totals.TotalCost, 1e-9)
+	assert.InDelta(t, 0.00001, got.Totals.CacheSavings, 0.000001)
 }
 
 func TestGetSessionUsage_NoTokenRowsKeepsMetadata(t *testing.T) {

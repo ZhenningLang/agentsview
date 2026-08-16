@@ -4,13 +4,14 @@
 /* eslint-disable */
 import type { CacheStats } from './CacheStats';
 import type { Comparison } from './Comparison';
+import type { DbDailyUsageEntry } from './DbDailyUsageEntry';
 import type { DbUsageSessionCounts } from './DbUsageSessionCounts';
 import type { DbUsageTotals } from './DbUsageTotals';
 export type UsageSummaryResponse = {
   agentTotals: any[] | null;
   cacheStats: CacheStats;
   comparison?: Comparison;
-  daily: any[] | null;
+  daily: Array<DbDailyUsageEntry> | null;
   from: string;
   modelTotals: any[] | null;
   projectTotals: any[] | null;
@@ -18,4 +19,3 @@ export type UsageSummaryResponse = {
   to: string;
   totals: DbUsageTotals;
 };
-

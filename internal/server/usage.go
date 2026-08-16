@@ -4,6 +4,7 @@ import (
 	"sort"
 
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/service"
 )
 
 // ProjectTotal holds range-wide token and cost totals per project.
@@ -29,6 +30,16 @@ type ModelTotal struct {
 // AgentTotal holds range-wide token and cost totals per agent.
 type AgentTotal struct {
 	Agent               string  `json:"agent"`
+	InputTokens         int     `json:"inputTokens"`
+	OutputTokens        int     `json:"outputTokens"`
+	CacheCreationTokens int     `json:"cacheCreationTokens"`
+	CacheReadTokens     int     `json:"cacheReadTokens"`
+	Cost                float64 `json:"cost"`
+}
+
+// MachineTotal holds range-wide token and cost totals per machine.
+type MachineTotal struct {
+	Machine             string  `json:"machine"`
 	InputTokens         int     `json:"inputTokens"`
 	OutputTokens        int     `json:"outputTokens"`
 	CacheCreationTokens int     `json:"cacheCreationTokens"`
@@ -64,10 +75,22 @@ type UsageSummaryResponse struct {
 	ProjectTotals []ProjectTotal        `json:"projectTotals"`
 	ModelTotals   []ModelTotal          `json:"modelTotals"`
 	AgentTotals   []AgentTotal          `json:"agentTotals"`
+	MachineTotals []MachineTotal        `json:"machineTotals"`
 	SessionCounts db.UsageSessionCounts `json:"sessionCounts"`
 	CacheStats    CacheStats            `json:"cacheStats"`
 	Comparison    *Comparison           `json:"comparison,omitempty"`
 }
+
+type PairwiseDimension = service.PairwiseDimension
+type PairwiseSide = service.PairwiseSide
+type PairwiseUsageMetrics = service.PairwiseUsageMetrics
+type PairwiseDelta = service.PairwiseDelta
+type PairwiseComparisonResponse = service.PairwiseComparisonResponse
+
+const (
+	PairwiseDimensionModel   = service.PairwiseDimensionModel
+	PairwiseDimensionProject = service.PairwiseDimensionProject
+)
 
 // foldProjectTotals sums daily project breakdowns into
 // range-wide totals sorted by cost descending.
@@ -76,6 +99,9 @@ func foldProjectTotals(
 ) []ProjectTotal {
 	m := make(map[string]*ProjectTotal)
 	for _, d := range daily {
+		if len(d.ProjectBreakdowns) == 0 {
+			continue
+		}
 		for _, pb := range d.ProjectBreakdowns {
 			pt, ok := m[pb.Project]
 			if !ok {
@@ -109,6 +135,9 @@ func foldModelTotals(
 ) []ModelTotal {
 	m := make(map[string]*ModelTotal)
 	for _, d := range daily {
+		if len(d.ModelBreakdowns) == 0 {
+			continue
+		}
 		for _, mb := range d.ModelBreakdowns {
 			mt, ok := m[mb.ModelName]
 			if !ok {
@@ -142,6 +171,9 @@ func foldAgentTotals(
 ) []AgentTotal {
 	m := make(map[string]*AgentTotal)
 	for _, d := range daily {
+		if len(d.AgentBreakdowns) == 0 {
+			continue
+		}
 		for _, ab := range d.AgentBreakdowns {
 			at, ok := m[ab.Agent]
 			if !ok {
@@ -164,6 +196,40 @@ func foldAgentTotals(
 			return out[i].Cost > out[j].Cost
 		}
 		return out[i].Agent < out[j].Agent
+	})
+	return out
+}
+
+func foldMachineTotals(
+	daily []db.DailyUsageEntry,
+) []MachineTotal {
+	m := make(map[string]*MachineTotal)
+	for _, d := range daily {
+		if len(d.MachineBreakdowns) == 0 {
+			continue
+		}
+		for _, mb := range d.MachineBreakdowns {
+			mt, ok := m[mb.Machine]
+			if !ok {
+				mt = &MachineTotal{Machine: mb.Machine}
+				m[mb.Machine] = mt
+			}
+			mt.InputTokens += mb.InputTokens
+			mt.OutputTokens += mb.OutputTokens
+			mt.CacheCreationTokens += mb.CacheCreationTokens
+			mt.CacheReadTokens += mb.CacheReadTokens
+			mt.Cost += mb.Cost
+		}
+	}
+	out := make([]MachineTotal, 0, len(m))
+	for _, v := range m {
+		out = append(out, *v)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Cost != out[j].Cost {
+			return out[i].Cost > out[j].Cost
+		}
+		return out[i].Machine < out[j].Machine
 	})
 	return out
 }

@@ -35,6 +35,10 @@
 
   const groupBy = $derived(usage.toggles.timeSeries.groupBy);
 
+  const partialDays = $derived(
+    usage.summary?.daily?.filter((d) => d.hasCost === false).length ?? 0,
+  );
+
   const seriesData = $derived.by((): {
     points: Point[];
     keys: string[];
@@ -334,7 +338,12 @@
 
 <div class="chart-container">
   <div class="chart-header">
-    <h3 class="chart-title">Cost Over Time</h3>
+    <h3 class="chart-title">
+      Cost Over Time
+      {#if partialDays > 0}
+        <span class="partial-note">{partialDays} partial day{partialDays === 1 ? "" : "s"}</span>
+      {/if}
+    </h3>
     <div class="segment-toggle">
       <button
         class="toggle-btn"
@@ -440,6 +449,13 @@
     font-size: 12px;
     font-weight: 600;
     color: var(--text-primary);
+  }
+
+  .partial-note {
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 500;
+    margin-left: 6px;
   }
 
   .segment-toggle {

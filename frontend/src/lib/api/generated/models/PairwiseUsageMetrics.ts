@@ -2,17 +2,16 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export type DbDailyUsageEntry = {
-  agentBreakdowns?: any[] | null;
+export type PairwiseUsageMetrics = {
   cacheCreationTokens: number;
   cacheReadTokens: number;
-  date: string;
+  costPerSession?: number;
   hasCost: boolean;
   inputTokens: number;
-  modelBreakdowns?: any[] | null;
-  modelsUsed: any[] | null;
   outputTokens: number;
-  projectBreakdowns?: any[] | null;
+  sessionCount: number;
+  tokensPerSession?: number;
   totalCost: number;
+  totalTokens: number;
   unpricedModels?: Array<string> | null;
 };

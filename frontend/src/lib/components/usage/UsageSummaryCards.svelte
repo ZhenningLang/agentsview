@@ -5,6 +5,13 @@
     return `$${v.toFixed(2)}`;
   }
 
+  function fmtCostWithCompleteness(v: number): string {
+    if (usage.summary?.totals.hasCost === false) {
+      return `${fmtCost(v)} partial`;
+    }
+    return fmtCost(v);
+  }
+
   function fmtTokens(v: number): string {
     if (v >= 1_000_000_000) {
       const g = Math.floor(v / 100_000_000) / 10;
@@ -74,6 +81,14 @@
     return `${sign}${(c.deltaPct * 100).toFixed(0)}% vs prior`;
   });
 
+  const unpricedModels = $derived(
+    usage.summary?.totals.unpricedModels ?? [],
+  );
+
+  const incompleteCostNote = $derived(
+    unpricedModels.length > 0 ? `unknown ${unpricedModels.join(", ")}` : "",
+  );
+
   interface Card {
     label: string;
     value: () => string;
@@ -84,8 +99,8 @@
   const cards: Card[] = [
     {
       label: "Total Cost",
-      value: () => fmtCost(usage.summary?.totals.totalCost ?? 0),
-      sub: () => vsPrior ?? "",
+      value: () => fmtCostWithCompleteness(usage.summary?.totals.totalCost ?? 0),
+      sub: () => incompleteCostNote || vsPrior || "",
       featured: true,
     },
     {
@@ -100,13 +115,13 @@
     },
     {
       label: "Daily Burn",
-      value: () => fmtCost(dailyBurn),
-      sub: () => "avg/day",
+      value: () => fmtCostWithCompleteness(dailyBurn),
+      sub: () => incompleteCostNote || "avg/day",
     },
     {
       label: "Peak Day",
-      value: () => fmtCost(peak.cost),
-      sub: () => peak.date,
+      value: () => fmtCostWithCompleteness(peak.cost),
+      sub: () => incompleteCostNote || peak.date,
     },
     {
       label: "Cache Hit",

@@ -7,6 +7,8 @@ export interface UsageTotals {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   totalCost: number;
+  hasCost?: boolean;
+  unpricedModels?: string[];
 }
 
 export interface ModelBreakdown {
@@ -36,6 +38,15 @@ export interface AgentBreakdown {
   cost: number;
 }
 
+export interface MachineBreakdown {
+  machine: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  cost: number;
+}
+
 export interface DailyUsageEntry {
   date: string;
   inputTokens: number;
@@ -43,10 +54,13 @@ export interface DailyUsageEntry {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   totalCost: number;
+  hasCost?: boolean;
+  unpricedModels?: string[];
   modelsUsed: string[];
   modelBreakdowns?: ModelBreakdown[];
   projectBreakdowns?: ProjectBreakdown[];
   agentBreakdowns?: AgentBreakdown[];
+  machineBreakdowns?: MachineBreakdown[];
 }
 
 export interface ProjectTotal {
@@ -69,6 +83,15 @@ export interface ModelTotal {
 
 export interface AgentTotal {
   agent: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  cost: number;
+}
+
+export interface MachineTotal {
+  machine: string;
   inputTokens: number;
   outputTokens: number;
   cacheCreationTokens: number;
@@ -106,6 +129,7 @@ export interface UsageSummaryResponse {
   projectTotals: ProjectTotal[];
   modelTotals: ModelTotal[];
   agentTotals: AgentTotal[];
+  machineTotals: MachineTotal[];
   sessionCounts: UsageSessionCounts;
   cacheStats: CacheStats;
   comparison?: UsageComparison;
@@ -119,9 +143,57 @@ export interface TopSessionEntry {
   startedAt: string;
   totalTokens: number;
   cost: number;
+  hasCost?: boolean;
+  unpricedModels?: string[];
 }
 
 export type TopUsageSessionsResponse = TopSessionEntry[];
+
+export type PairwiseDimension = "model" | "project";
+
+export interface PairwiseSide {
+  dimension: PairwiseDimension;
+  value: string;
+  empty?: boolean;
+}
+
+export interface PairwiseUsageMetrics {
+  totalCost: number;
+  hasCost?: boolean;
+  unpricedModels?: string[];
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  totalTokens: number;
+  sessionCount: number;
+  costPerSession?: number;
+  tokensPerSession?: number;
+}
+
+export interface PairwiseDelta {
+  totalCost: number;
+  hasCost?: boolean;
+  unpricedModels?: string[];
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationTokens: number;
+  cacheReadTokens: number;
+  totalTokens: number;
+  sessionCount: number;
+  costPerSession?: number;
+  tokensPerSession?: number;
+  costRelativeChange?: number;
+  tokensRelativeChange?: number;
+}
+
+export interface PairwiseComparisonResponse {
+  left: PairwiseSide;
+  right: PairwiseSide;
+  leftMetrics: PairwiseUsageMetrics;
+  rightMetrics: PairwiseUsageMetrics;
+  deltas: PairwiseDelta;
+}
 
 export interface UsageParams {
   from?: string;

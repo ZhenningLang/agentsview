@@ -82,7 +82,7 @@ func runRemoteSessionUsageToWriters(cmd *cobra.Command, remote, sessionID, forma
 func remoteSessionUsageData(ctx context.Context, remote, token, id string) (*sessionUsageOutput, int, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		strings.TrimSuffix(remote, "/")+"/api/v1/sessions/"+url.PathEscape(id)+"/usage", nil)
+		strings.TrimSuffix(remote, "/")+"/api/v1/sessions/"+url.PathEscape(id)+"/usage?breakdown=true&rollup=true", nil)
 	if err != nil {
 		return nil, tokenUseExitErr, err
 	}
@@ -158,6 +158,19 @@ func renderSessionUsageHuman(w io.Writer, out *sessionUsageOutput) error {
 			sanitizeTerminal(strings.Join(out.UnpricedModels, ", ")))
 	} else {
 		fmt.Fprintf(w, "%s n/a\n", label("Cost"))
+	}
+	if out.RollupSubagentCount > 0 {
+		if out.HasRollupCost {
+			fmt.Fprintf(w, "%s ~$%.2f (%d subagents)\n",
+				label("Total cost"), out.RollupCostUSD,
+				out.RollupSubagentCount)
+		} else {
+			fmt.Fprintf(w, "%s n/a (%d subagents; incomplete pricing)\n",
+				label("Total cost"), out.RollupSubagentCount)
+		}
+	}
+	if out.BreakdownCount > 0 {
+		fmt.Fprintf(w, "%s %d rows\n", label("Breakdown"), out.BreakdownCount)
 	}
 	return nil
 }
