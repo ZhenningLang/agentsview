@@ -30,9 +30,9 @@ type ContentSearchFilter struct {
 	Sources       []string // subset of {"messages","tool_input","tool_result"}
 	ExcludeSystem bool
 
-	Project, ExcludeProject, Machine, Agent           string
-	Date, DateFrom, DateTo, ActiveSince               string
-	IncludeChildren, IncludeAutomated, IncludeOneShot bool
+	Project, ExcludeProject, Machine, GitBranch, Agent string
+	Date, DateFrom, DateTo, ActiveSince                string
+	IncludeChildren, IncludeAutomated, IncludeOneShot  bool
 
 	// RevealSecrets returns raw snippets. It defaults false so snippets are
 	// secret-redacted unless a caller (the localhost-gated reveal path)
@@ -88,7 +88,8 @@ func sessionScopeSubquery(f ContentSearchFilter) (string, []any) {
 	sf := SessionFilter{
 		Project: f.Project, ExcludeProject: f.ExcludeProject,
 		Machine: f.Machine, Agent: f.Agent,
-		Date: f.Date, DateFrom: f.DateFrom, DateTo: f.DateTo,
+		GitBranch: f.GitBranch,
+		Date:      f.Date, DateFrom: f.DateFrom, DateTo: f.DateTo,
 		ActiveSince:      f.ActiveSince,
 		ExcludeOneShot:   !f.IncludeOneShot,
 		ExcludeAutomated: !f.IncludeAutomated,

@@ -724,3 +724,43 @@ func (s *Store) GetMachines(
 	}
 	return machines, rows.Err()
 }
+
+// GetBranches returns distinct (project, git_branch) pairs with the same root
+// session scope as project metadata.
+func (s *Store) GetBranches(
+	ctx context.Context,
+	excludeOneShot, excludeAutomated bool,
+) ([]db.BranchInfo, error) {
+	q := `SELECT DISTINCT project, git_branch
+		FROM sessions
+		WHERE message_count > 0
+		  AND relationship_type NOT IN ('subagent', 'fork')
+		  AND deleted_at IS NULL`
+	if excludeOneShot {
+		if !excludeAutomated {
+			q += " AND (user_message_count > 1 OR is_automated = TRUE)"
+		} else {
+			q += " AND user_message_count > 1"
+		}
+	}
+	if excludeAutomated {
+		q += " AND is_automated = FALSE"
+	}
+	q += " ORDER BY project, git_branch"
+	rows, err := s.pg.QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("querying branches: %w", err)
+	}
+	defer rows.Close()
+
+	branches := []db.BranchInfo{}
+	for rows.Next() {
+		var bi db.BranchInfo
+		if err := rows.Scan(&bi.Project, &bi.Branch); err != nil {
+			return nil, fmt.Errorf("scanning branch: %w", err)
+		}
+		bi.Token = db.EncodeBranchFilterToken(bi.Project, bi.Branch)
+		branches = append(branches, bi)
+	}
+	return branches, rows.Err()
+}

@@ -80,7 +80,7 @@ type ContentSearchRequest struct {
 	ExcludeSystem bool     `json:"exclude_system,omitempty"`
 	Reveal        bool     `json:"reveal,omitempty"`
 
-	Project, ExcludeProject, Machine, Agent           string
+	Project, ExcludeProject, Machine, GitBranch, Agent string
 	Date, DateFrom, DateTo, ActiveSince               string
 	IncludeChildren, IncludeAutomated, IncludeOneShot bool
 
@@ -117,6 +117,7 @@ type ListFilter struct {
 	Project          string `json:"project,omitempty"`
 	ExcludeProject   string `json:"exclude_project,omitempty"`
 	Machine          string `json:"machine,omitempty"`
+	GitBranch        string `json:"git_branch,omitempty"`
 	Agent            string `json:"agent,omitempty"`
 	Date             string `json:"date,omitempty"`
 	DateFrom         string `json:"date_from,omitempty"`

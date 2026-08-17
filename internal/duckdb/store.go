@@ -506,6 +506,28 @@ func (s *Store) GetMachines(ctx context.Context, excludeOneShot, excludeAutomate
 	return out, rows.Err()
 }
 
+func (s *Store) GetBranches(ctx context.Context, excludeOneShot, excludeAutomated bool) ([]db.BranchInfo, error) {
+	rows, err := s.duck.QueryContext(ctx,
+		`SELECT DISTINCT project, git_branch FROM sessions WHERE `+
+			rootSessionWhere(excludeOneShot, excludeAutomated)+
+			` ORDER BY project, git_branch`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("duckdb branches: %w", err)
+	}
+	defer rows.Close()
+	branches := []db.BranchInfo{}
+	for rows.Next() {
+		var bi db.BranchInfo
+		if err := rows.Scan(&bi.Project, &bi.Branch); err != nil {
+			return nil, err
+		}
+		bi.Token = db.EncodeBranchFilterToken(bi.Project, bi.Branch)
+		branches = append(branches, bi)
+	}
+	return branches, rows.Err()
+}
+
 func rootSessionWhere(excludeOneShot, excludeAutomated bool) string {
 	filter := `message_count > 0
 		AND relationship_type NOT IN ('subagent', 'fork')
@@ -971,7 +993,8 @@ func contentSessionFilter(f db.ContentSearchFilter) db.SessionFilter {
 	return db.SessionFilter{
 		Project: f.Project, ExcludeProject: f.ExcludeProject,
 		Machine: f.Machine, Agent: f.Agent,
-		Date: f.Date, DateFrom: f.DateFrom, DateTo: f.DateTo,
+		GitBranch: f.GitBranch,
+		Date:      f.Date, DateFrom: f.DateFrom, DateTo: f.DateTo,
 		ActiveSince:      f.ActiveSince,
 		ExcludeOneShot:   !f.IncludeOneShot,
 		ExcludeAutomated: !f.IncludeAutomated,

@@ -145,6 +145,11 @@ func buildAnalyticsWhereWithDate(
 		preds = append(preds,
 			"project = "+pb.add(f.Project))
 	}
+	if f.GitBranch != "" {
+		preds = append(preds, db.BranchPairPredicate(
+			"project", "git_branch", f.GitBranch,
+			func(v string) string { return pb.add(v) }))
+	}
 	if f.Agent != "" {
 		agents := strings.Split(f.Agent, ",")
 		if len(agents) == 1 {

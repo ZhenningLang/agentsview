@@ -372,6 +372,7 @@ type SessionFilter struct {
 	Project          string
 	ExcludeProject   string // exclude sessions with this project name
 	Machine          string
+	GitBranch        string
 	Agent            string
 	Date             string   // exact date YYYY-MM-DD
 	DateFrom         string   // range start (inclusive)
@@ -1613,6 +1614,55 @@ func (db *DB) GetAgents(
 type AgentInfo struct {
 	Name         string `json:"name"`
 	SessionCount int    `json:"session_count"`
+}
+
+// BranchInfo is a (project, branch) pair, keyed by project so same-named
+// branches across repos stay distinct.
+type BranchInfo struct {
+	Project string `json:"project"`
+	Branch  string `json:"branch"`
+	Token   string `json:"token"`
+}
+
+// GetBranches returns distinct (project, git_branch) pairs visible in root
+// sessions with messages. Empty git_branch is a valid value and is distinct
+// from a literal "unknown" branch.
+func (db *DB) GetBranches(
+	ctx context.Context,
+	excludeOneShot, excludeAutomated bool,
+) ([]BranchInfo, error) {
+	q := `SELECT DISTINCT project, git_branch
+		FROM sessions
+		WHERE message_count > 0
+		  AND relationship_type NOT IN ('subagent', 'fork')
+		  AND deleted_at IS NULL`
+	if excludeOneShot {
+		if !excludeAutomated {
+			q += " AND (user_message_count > 1 OR is_automated = 1)"
+		} else {
+			q += " AND user_message_count > 1"
+		}
+	}
+	if excludeAutomated {
+		q += " AND is_automated = 0"
+	}
+	q += " ORDER BY project, git_branch"
+	rows, err := db.getReader().QueryContext(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("querying branches: %w", err)
+	}
+	defer rows.Close()
+
+	branches := []BranchInfo{}
+	for rows.Next() {
+		var bi BranchInfo
+		if err := rows.Scan(&bi.Project, &bi.Branch); err != nil {
+			return nil, fmt.Errorf("scanning branch: %w", err)
+		}
+		bi.Token = EncodeBranchFilterToken(bi.Project, bi.Branch)
+		branches = append(branches, bi)
+	}
+	return branches, rows.Err()
 }
 
 // GetMachines returns distinct machine names.

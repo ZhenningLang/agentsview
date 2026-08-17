@@ -85,6 +85,84 @@ func TestStoreReadsSessionsMessagesAndMetadata(t *testing.T) {
 	assert.Equal(t, []string{"test-machine"}, machines)
 }
 
+func TestPhase24SessionFilterDuckDBBranchPairs(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+	for _, row := range []struct {
+		id      string
+		project string
+		branch  string
+	}{
+		{"alpha-main", "alpha", "main"},
+		{"beta-main", "beta", "main"},
+		{"alpha-empty", "alpha", ""},
+		{"alpha-unknown", "alpha", "unknown"},
+	} {
+		seedPhase24DuckBranchSession(t, local, row.id, row.project, row.branch)
+	}
+	syncer := newTestSync(t, filepath.Join(t.TempDir(), "mirror.duckdb"), local, SyncOptions{})
+	_, err := syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	store := NewStoreFromDB(syncer.DB())
+
+	branches, err := store.GetBranches(ctx, false, false)
+	require.NoError(t, err)
+	assert.Equal(t, []db.BranchInfo{
+		{Project: "alpha", Branch: "", Token: db.EncodeBranchFilterToken("alpha", "")},
+		{Project: "alpha", Branch: "main", Token: db.EncodeBranchFilterToken("alpha", "main")},
+		{Project: "alpha", Branch: "unknown", Token: db.EncodeBranchFilterToken("alpha", "unknown")},
+		{Project: "beta", Branch: "main", Token: db.EncodeBranchFilterToken("beta", "main")},
+	}, branches)
+
+	page, err := store.ListSessions(ctx, db.SessionFilter{
+		GitBranch: db.EncodeBranchFilterToken("alpha", "main"),
+		Limit:     10,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alpha-main"}, duckSessionIDs(page.Sessions))
+
+	page, err = store.ListSessions(ctx, db.SessionFilter{
+		GitBranch: db.JoinBranchFilterTokens(
+			db.EncodeBranchFilterToken("alpha", ""),
+			db.EncodeBranchFilterToken("beta", "main"),
+		),
+		Limit: 10,
+	})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"alpha-empty", "beta-main"}, duckSessionIDs(page.Sessions))
+
+	page, err = store.ListSessions(ctx, db.SessionFilter{GitBranch: "invalid", Limit: 10})
+	require.NoError(t, err)
+	assert.Empty(t, page.Sessions)
+}
+
+func seedPhase24DuckBranchSession(t *testing.T, d *db.DB, id, project, branch string) {
+	t.Helper()
+	started := "2026-08-17T00:00:00Z"
+	ended := "2026-08-17T00:01:00Z"
+	_, err := d.WriteSessionBatchAtomic([]db.SessionBatchWrite{{
+		Session: db.Session{
+			ID:               id,
+			Project:          project,
+			Machine:          "local",
+			Agent:            "claude",
+			StartedAt:        &started,
+			EndedAt:          &ended,
+			MessageCount:     2,
+			UserMessageCount: 2,
+			RelationshipType: "root",
+			GitBranch:        branch,
+		},
+		Messages: []db.Message{
+			{SessionID: id, Ordinal: 0, Role: "user", Content: "hello", Timestamp: started},
+			{SessionID: id, Ordinal: 1, Role: "assistant", Content: "world", Timestamp: ended},
+		},
+		ReplaceMessages: true,
+		DataVersion:     db.CurrentDataVersion(),
+	}})
+	require.NoError(t, err)
+}
+
 func TestStoreGetEnrichmentStatus(t *testing.T) {
 	ctx := context.Background()
 	local := newLocalDB(t)
