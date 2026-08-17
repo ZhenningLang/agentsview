@@ -1108,12 +1108,20 @@ func TestPushFilteredFullIsIncremental(t *testing.T) {
 	require.NoError(t, err, "reading watermark")
 	assert.Empty(t, wm, "watermark after filtered --full")
 
-	// Boundary fingerprints must have been written.
-	bs, err := local.GetSyncState(
-		"last_push_boundary_state",
-	)
+	// Boundary fingerprints must have been written, under the key for this
+	// sync's scope. Read the key from the syncer rather than hard-coding it:
+	// state is keyed per (canonical local path, target, filter scope) now, so
+	// a literal here would only prove the global key still exists.
+	bs, err := local.GetSyncState(ps.lastPushBoundaryStateKey())
 	require.NoError(t, err, "reading boundary state")
 	require.NotEmpty(t, bs, "boundary state empty after filtered --full")
+
+	// The legacy global boundary key is deliberately left empty: a filtered
+	// full push clears it so no later reader can mistake one scope's
+	// fingerprints for everyone's.
+	legacy, err := local.GetSyncState("last_push_boundary_state")
+	require.NoError(t, err, "reading legacy boundary state")
+	assert.Empty(t, legacy, "legacy global boundary state after filtered --full")
 
 	// Second push (not --full) should be a no-op because
 	// fingerprints were persisted after the filtered --full.

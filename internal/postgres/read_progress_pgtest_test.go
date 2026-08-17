@@ -276,6 +276,67 @@ func TestPhase20PostgresTranscriptRevisionEmptyCandidateCompletesScopedMarker(t 
 	assert.NotEmpty(t, phase20PGSyncState(t, local, syncer.lastPushBoundaryStateKey()))
 }
 
+// TestPhase20PostgresLegacyGlobalWatermarkDoesNotSeedScopedState pins the
+// upgrade path, and pins it as a deliberate cost rather than an oversight.
+//
+// Sync state used to live under two global keys. It is now keyed per
+// (canonical local path, target, filter scope), so an existing target's first
+// push after upgrading finds no scoped watermark and re-pushes everything.
+// Seeding the scoped key from the leftover global one would avoid that, and
+// must not be done: the global key does not record *which* target it belonged
+// to, so seeding would hand one target's watermark to every scope and a second
+// target would silently skip its own backfill — exactly what
+// TestPhase20PostgresTranscriptRevisionScopedMarkersDoNotCrossTargetOrFilter
+// forbids. One idempotent full push is the cheaper mistake.
+func TestPhase20PostgresLegacyGlobalWatermarkDoesNotSeedScopedState(t *testing.T) {
+	pgURL := testPGURL(t)
+	const schema = "agentsview_phase20_legacy_watermark"
+	cleanPhase20PGSchema(t, pgURL, schema)
+	t.Cleanup(func() { cleanPhase20PGSchema(t, pgURL, schema) })
+
+	ctx := context.Background()
+	local := testDB(t)
+	for _, id := range []string{"phase20-legacy-a", "phase20-legacy-b"} {
+		seedPhase20PGLocalSession(t, local, phase20PGSession(id, "alpha", 1), true)
+	}
+
+	syncer := newPhase20PGSync(t, pgURL, schema, local, SyncOptions{})
+	first, err := syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 2, first.SessionsPushed)
+
+	// An unfiltered push writes both the scoped and the legacy global
+	// watermark, so the legacy key is what a pre-scope release left on disk.
+	legacyWatermark := phase20PGSyncState(t, local, lastPushStateKey)
+	require.NotEmpty(t, legacyWatermark)
+	require.NotEmpty(t, phase20PGSyncState(t, local, syncer.lastPushStateKey()))
+
+	// Rewind to the on-disk state of a user who upgraded: the global keys are
+	// populated, the scoped ones do not exist yet.
+	require.NoError(t, local.SetSyncState(syncer.lastPushStateKey(), ""))
+	require.NoError(t, local.SetSyncState(syncer.lastPushBoundaryStateKey(), ""))
+
+	upgraded := newPhase20PGSync(t, pgURL, schema, local, SyncOptions{})
+	require.Equal(t, syncer.lastPushStateKey(), upgraded.lastPushStateKey(),
+		"the scope is stable across processes for the same target and filter")
+
+	second, err := upgraded.Push(ctx, false, nil)
+	require.NoError(t, err)
+	assert.Equal(t, 2, second.SessionsPushed,
+		"a leftover global watermark must not be adopted as the scoped one")
+
+	// The full re-push is idempotent: same rows, and the scoped state is now
+	// established so the next push is a no-op.
+	third, err := upgraded.Push(ctx, false, nil)
+	require.NoError(t, err)
+	assert.Zero(t, third.SessionsPushed)
+
+	var sessionCount int
+	require.NoError(t, upgraded.DB().QueryRowContext(ctx,
+		`SELECT count(*) FROM sessions`).Scan(&sessionCount))
+	assert.Equal(t, 2, sessionCount, "the full re-push upserts rather than duplicating")
+}
+
 func newPhase20PGSync(t *testing.T, pgURL, schema string, local *db.DB, opts SyncOptions) *Sync {
 	t.Helper()
 	syncer, err := New(pgURL, schema, local, "phase20-machine", true, opts)
