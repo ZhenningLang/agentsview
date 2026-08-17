@@ -23,6 +23,7 @@ export class UsageService {
     agent,
     project,
     machine,
+    gitBranch,
     excludeProject,
     excludeAgent,
     excludeModel,
@@ -61,6 +62,10 @@ export class UsageService {
      * Filter by machine
      */
     machine?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Exclude a project
      */
@@ -108,6 +113,7 @@ export class UsageService {
         'agent': agent,
         'project': project,
         'machine': machine,
+        'git_branch': gitBranch,
         'exclude_project': excludeProject,
         'exclude_agent': excludeAgent,
         'exclude_model': excludeModel,
@@ -150,6 +156,7 @@ export class UsageService {
     agent,
     project,
     machine,
+    gitBranch,
     excludeProject,
     excludeAgent,
     excludeModel,
@@ -201,6 +208,10 @@ export class UsageService {
      */
     machine?: string,
     /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
+    /**
      * Exclude a project
      */
     excludeProject?: string,
@@ -247,6 +258,7 @@ export class UsageService {
         'agent': agent,
         'project': project,
         'machine': machine,
+        'git_branch': gitBranch,
         'exclude_project': excludeProject,
         'exclude_agent': excludeAgent,
         'exclude_model': excludeModel,
@@ -288,6 +300,7 @@ export class UsageService {
     agent,
     project,
     machine,
+    gitBranch,
     excludeProject,
     excludeAgent,
     excludeModel,
@@ -322,6 +335,10 @@ export class UsageService {
      * Filter by machine
      */
     machine?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Exclude a project
      */
@@ -369,6 +386,7 @@ export class UsageService {
         'agent': agent,
         'project': project,
         'machine': machine,
+        'git_branch': gitBranch,
         'exclude_project': excludeProject,
         'exclude_agent': excludeAgent,
         'exclude_model': excludeModel,
@@ -406,6 +424,7 @@ export class UsageService {
     agent,
     project,
     machine,
+    gitBranch,
     excludeProject,
     excludeAgent,
     excludeModel,
@@ -441,6 +460,10 @@ export class UsageService {
      * Filter by machine
      */
     machine?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Exclude a project
      */
@@ -492,6 +515,7 @@ export class UsageService {
         'agent': agent,
         'project': project,
         'machine': machine,
+        'git_branch': gitBranch,
         'exclude_project': excludeProject,
         'exclude_agent': excludeAgent,
         'exclude_model': excludeModel,

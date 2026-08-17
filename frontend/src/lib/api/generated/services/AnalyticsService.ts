@@ -29,6 +29,7 @@ export class AnalyticsService {
     timezone,
     machine,
     project,
+    gitBranch,
     agent,
     model,
     dow,
@@ -60,6 +61,10 @@ export class AnalyticsService {
      * Filter by project
      */
     project?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Filter by agent
      */
@@ -110,6 +115,7 @@ export class AnalyticsService {
         'timezone': timezone,
         'machine': machine,
         'project': project,
+        'git_branch': gitBranch,
         'agent': agent,
         'model': model,
         'dow': dow,
@@ -147,6 +153,7 @@ export class AnalyticsService {
     timezone,
     machine,
     project,
+    gitBranch,
     agent,
     model,
     dow,
@@ -178,6 +185,10 @@ export class AnalyticsService {
      * Filter by project
      */
     project?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Filter by agent
      */
@@ -228,6 +239,7 @@ export class AnalyticsService {
         'timezone': timezone,
         'machine': machine,
         'project': project,
+        'git_branch': gitBranch,
         'agent': agent,
         'model': model,
         'dow': dow,
@@ -265,6 +277,7 @@ export class AnalyticsService {
     timezone,
     machine,
     project,
+    gitBranch,
     agent,
     model,
     dow,
@@ -295,6 +308,10 @@ export class AnalyticsService {
      * Filter by project
      */
     project?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Filter by agent
      */
@@ -341,6 +358,7 @@ export class AnalyticsService {
         'timezone': timezone,
         'machine': machine,
         'project': project,
+        'git_branch': gitBranch,
         'agent': agent,
         'model': model,
         'dow': dow,
@@ -377,6 +395,7 @@ export class AnalyticsService {
     timezone,
     machine,
     project,
+    gitBranch,
     agent,
     model,
     dow,
@@ -407,6 +426,10 @@ export class AnalyticsService {
      * Filter by project
      */
     project?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Filter by agent
      */
@@ -453,6 +476,7 @@ export class AnalyticsService {
         'timezone': timezone,
         'machine': machine,
         'project': project,
+        'git_branch': gitBranch,
         'agent': agent,
         'model': model,
         'dow': dow,
@@ -489,6 +513,7 @@ export class AnalyticsService {
     timezone,
     machine,
     project,
+    gitBranch,
     agent,
     model,
     dow,
@@ -519,6 +544,10 @@ export class AnalyticsService {
      * Filter by project
      */
     project?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Filter by agent
      */
@@ -565,6 +594,7 @@ export class AnalyticsService {
         'timezone': timezone,
         'machine': machine,
         'project': project,
+        'git_branch': gitBranch,
         'agent': agent,
         'model': model,
         'dow': dow,
@@ -601,6 +631,7 @@ export class AnalyticsService {
     timezone,
     machine,
     project,
+    gitBranch,
     agent,
     model,
     dow,
@@ -631,6 +662,10 @@ export class AnalyticsService {
      * Filter by project
      */
     project?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Filter by agent
      */
@@ -677,6 +712,7 @@ export class AnalyticsService {
         'timezone': timezone,
         'machine': machine,
         'project': project,
+        'git_branch': gitBranch,
         'agent': agent,
         'model': model,
         'dow': dow,
@@ -713,6 +749,7 @@ export class AnalyticsService {
     timezone,
     machine,
     project,
+    gitBranch,
     agent,
     model,
     dow,
@@ -744,6 +781,10 @@ export class AnalyticsService {
      * Filter by project
      */
     project?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Filter by agent
      */
@@ -794,6 +835,7 @@ export class AnalyticsService {
         'timezone': timezone,
         'machine': machine,
         'project': project,
+        'git_branch': gitBranch,
         'agent': agent,
         'model': model,
         'dow': dow,
@@ -889,6 +931,7 @@ export class AnalyticsService {
     timezone,
     machine,
     project,
+    gitBranch,
     agent,
     model,
     dow,
@@ -919,6 +962,10 @@ export class AnalyticsService {
      * Filter by project
      */
     project?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Filter by agent
      */
@@ -965,6 +1012,7 @@ export class AnalyticsService {
         'timezone': timezone,
         'machine': machine,
         'project': project,
+        'git_branch': gitBranch,
         'agent': agent,
         'model': model,
         'dow': dow,
@@ -1001,6 +1049,7 @@ export class AnalyticsService {
     timezone,
     machine,
     project,
+    gitBranch,
     agent,
     model,
     dow,
@@ -1031,6 +1080,10 @@ export class AnalyticsService {
      * Filter by project
      */
     project?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Filter by agent
      */
@@ -1077,6 +1130,7 @@ export class AnalyticsService {
         'timezone': timezone,
         'machine': machine,
         'project': project,
+        'git_branch': gitBranch,
         'agent': agent,
         'model': model,
         'dow': dow,
@@ -1113,6 +1167,7 @@ export class AnalyticsService {
     timezone,
     machine,
     project,
+    gitBranch,
     agent,
     model,
     dow,
@@ -1144,6 +1199,10 @@ export class AnalyticsService {
      * Filter by project
      */
     project?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Filter by agent
      */
@@ -1194,6 +1253,7 @@ export class AnalyticsService {
         'timezone': timezone,
         'machine': machine,
         'project': project,
+        'git_branch': gitBranch,
         'agent': agent,
         'model': model,
         'dow': dow,
@@ -1231,6 +1291,7 @@ export class AnalyticsService {
     timezone,
     machine,
     project,
+    gitBranch,
     agent,
     model,
     dow,
@@ -1261,6 +1322,10 @@ export class AnalyticsService {
      * Filter by project
      */
     project?: string,
+    /**
+     * Filter by git branch; opaque (project, branch) tokens from the /branches endpoint
+     */
+    gitBranch?: string,
     /**
      * Filter by agent
      */
@@ -1307,6 +1372,7 @@ export class AnalyticsService {
         'timezone': timezone,
         'machine': machine,
         'project': project,
+        'git_branch': gitBranch,
         'agent': agent,
         'model': model,
         'dow': dow,

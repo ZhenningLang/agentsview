@@ -27,6 +27,7 @@ type UsageFilterInput struct {
 	Agent            string `query:"agent" doc:"Filter by agent"`
 	Project          string `query:"project" doc:"Filter by project"`
 	Machine          string `query:"machine" doc:"Filter by machine"`
+	GitBranch        string `query:"git_branch" doc:"Filter by git branch; opaque (project, branch) tokens from the /branches endpoint"`
 	ExcludeProject   string `query:"exclude_project" doc:"Exclude a project"`
 	ExcludeAgent     string `query:"exclude_agent" doc:"Exclude an agent"`
 	ExcludeModel     string `query:"exclude_model" doc:"Exclude a model"`
@@ -80,6 +81,7 @@ func usageFilterFromInput(in UsageFilterInput) (db.UsageFilter, error) {
 		Agent:            in.Agent,
 		Project:          in.Project,
 		Machine:          in.Machine,
+		GitBranch:        in.GitBranch,
 		ExcludeProject:   in.ExcludeProject,
 		ExcludeAgent:     in.ExcludeAgent,
 		ExcludeModel:     in.ExcludeModel,
@@ -266,6 +268,7 @@ func (s *Server) computeUsageComparison(
 		Agent:            f.Agent,
 		Project:          f.Project,
 		Machine:          f.Machine,
+		GitBranch:        f.GitBranch,
 		Model:            f.Model,
 		ExcludeProject:   f.ExcludeProject,
 		ExcludeAgent:     f.ExcludeAgent,

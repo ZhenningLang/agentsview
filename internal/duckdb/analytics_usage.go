@@ -212,6 +212,11 @@ func duckBuildAnalyticsWhere(
 		preds = append(preds, q("project")+" = ?")
 		args = append(args, f.Project)
 	}
+	if f.GitBranch != "" {
+		var pred string
+		pred, args = db.BranchPairClauseArgs(q("project"), q("git_branch"), f.GitBranch, args)
+		preds = append(preds, pred)
+	}
 	if f.Agent != "" {
 		preds, args = appendDuckAnalyticsCSVFilter(preds, args, q("agent"), f.Agent)
 	}
@@ -2818,6 +2823,11 @@ func appendDuckUsageSessionFilterClauses(
 	where, args = appendDuckUsageCSVFilter(where, args, "s.agent", f.Agent, true)
 	where, args = appendDuckUsageCSVFilter(where, args, "s.project", f.Project, true)
 	where, args = appendDuckUsageCSVFilter(where, args, "s.machine", f.Machine, true)
+	if f.GitBranch != "" {
+		var pred string
+		pred, args = db.BranchPairClauseArgs("s.project", "s.git_branch", f.GitBranch, args)
+		where += "\n\t\t\tAND " + pred
+	}
 	where, args = appendDuckUsageCSVFilter(where, args, "s.project", f.ExcludeProject, false)
 	where, args = appendDuckUsageCSVFilter(where, args, "s.agent", f.ExcludeAgent, false)
 	if sessionID != "" {

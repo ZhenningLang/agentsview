@@ -46,6 +46,7 @@ type AnalyticsFilter struct {
 	To               string // ISO date YYYY-MM-DD, inclusive
 	Machine          string // optional machine filter
 	Project          string // optional project filter
+	GitBranch        string // opaque (project, branch) tokens
 	Agent            string // optional agent filter
 	Model            string // optional model filter
 	Timezone         string // IANA timezone for day bucketing
@@ -241,6 +242,11 @@ func (f AnalyticsFilter) buildWhereWithDate(
 	if f.Project != "" {
 		preds = append(preds, "project = ?")
 		args = append(args, f.Project)
+	}
+	if f.GitBranch != "" {
+		var pred string
+		pred, args = BranchPairClauseArgs("project", "git_branch", f.GitBranch, args)
+		preds = append(preds, pred)
 	}
 
 	if f.Agent != "" {

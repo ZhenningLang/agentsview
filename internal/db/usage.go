@@ -25,6 +25,7 @@ type UsageFilter struct {
 	Agent            string // "" for all; supports comma-separated
 	Project          string // "" for all; supports comma-separated
 	Machine          string // "" for all; supports comma-separated
+	GitBranch        string // opaque (project, branch) tokens
 	Model            string // "" for all; supports comma-separated
 	ExcludeProject   string // comma-separated projects to exclude
 	ExcludeAgent     string // comma-separated agents to exclude
@@ -119,6 +120,11 @@ func (f UsageFilter) appendUsageSessionFilterClauses(
 	where, args = appendCSV(where, args, "s.agent", f.Agent, true)
 	where, args = appendCSV(where, args, "s.project", f.Project, true)
 	where, args = appendCSV(where, args, "s.machine", f.Machine, true)
+	if f.GitBranch != "" {
+		var pred string
+		pred, args = BranchPairClauseArgs("s.project", "s.git_branch", f.GitBranch, args)
+		where += "\n\tAND " + pred
+	}
 	where, args = appendCSV(where, args, "s.project", f.ExcludeProject, false)
 	where, args = appendCSV(where, args, "s.agent", f.ExcludeAgent, false)
 

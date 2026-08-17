@@ -118,6 +118,11 @@ func appendPGUsageSessionFilterClauses(
 	where = appendCSV(where, "s.agent", f.Agent, true)
 	where = appendCSV(where, "s.project", f.Project, true)
 	where = appendCSV(where, "s.machine", f.Machine, true)
+	if f.GitBranch != "" {
+		where += "\n\tAND " + db.BranchPairPredicate(
+			"s.project", "s.git_branch", f.GitBranch,
+			func(v string) string { return pb.add(v) })
+	}
 	where = appendCSV(where, "s.project", f.ExcludeProject, false)
 	where = appendCSV(where, "s.agent", f.ExcludeAgent, false)
 

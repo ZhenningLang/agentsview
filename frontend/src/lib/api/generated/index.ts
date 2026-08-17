@@ -14,6 +14,7 @@ export type { ApplyWorktreeMappingsResponse } from './models/ApplyWorktreeMappin
 export type { BackupPushEnableOutput } from './models/BackupPushEnableOutput';
 export type { BackupPushEnableRequest } from './models/BackupPushEnableRequest';
 export type { BackupPushStatusResponse } from './models/BackupPushStatusResponse';
+export type { BranchesResponse } from './models/BranchesResponse';
 export type { BulkStarInputBody } from './models/BulkStarInputBody';
 export type { CacheStats } from './models/CacheStats';
 export type { Comparison } from './models/Comparison';
@@ -34,6 +35,7 @@ export type { DbAgentBreakdown } from './models/DbAgentBreakdown';
 export type { DbAgentInfo } from './models/DbAgentInfo';
 export type { DbAgentSummary } from './models/DbAgentSummary';
 export type { DbAnalyticsSummary } from './models/DbAnalyticsSummary';
+export type { DbBranchInfo } from './models/DbBranchInfo';
 export type { DbCallTiming } from './models/DbCallTiming';
 export type { DbCategoryTotal } from './models/DbCategoryTotal';
 export type { DbContentMatch } from './models/DbContentMatch';
