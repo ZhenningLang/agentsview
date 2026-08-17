@@ -94,6 +94,39 @@ func TestPhase24PostgresContentSearchBranchFilter(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, page.Matches)
+
+	page, err = store.SearchContent(ctx, db.ContentSearchFilter{
+		Pattern: "phase24 shared needle",
+		Mode:    "substring",
+		Sources: []string{"messages"},
+		Limit:   20,
+	})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{
+		"pg-p24-alpha-main",
+		"pg-p24-beta-main",
+	}, pgContentMatchSessionIDs(page.Matches))
+}
+
+func TestPhase24PostgresSidebarBranchFilter(t *testing.T) {
+	ctx := context.Background()
+	store := newPhase24PostgresBranchStore(t)
+
+	index, err := store.GetSidebarSessionIndex(ctx, db.SessionFilter{
+		GitBranch: db.EncodeBranchFilterToken("alpha", "main"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"pg-p24-alpha-main"}, pgSessionIDs(index.Sessions))
+
+	index, err = store.GetSidebarSessionIndex(ctx, db.SessionFilter{})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{
+		"pg-p24-alpha-main",
+		"pg-p24-alpha-empty",
+		"pg-p24-alpha-unknown",
+		"pg-p24-alpha-comma",
+		"pg-p24-beta-main",
+	}, pgSessionIDs(index.Sessions))
 }
 
 func TestPhase24PostgresAnalyticsBranchFilter(t *testing.T) {
@@ -229,4 +262,12 @@ func phase24InsertPostgresBranchSession(
 			 jsonb_build_object('input_tokens', $3::int, 'output_tokens', $4::int)::text)
 		`, id, content, input, output)
 	require.NoError(t, err, "insert messages %s", id)
+}
+
+func pgContentMatchSessionIDs(matches []db.ContentMatch) []string {
+	ids := make([]string, len(matches))
+	for i, match := range matches {
+		ids[i] = match.SessionID
+	}
+	return ids
 }

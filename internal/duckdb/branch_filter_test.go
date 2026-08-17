@@ -94,6 +94,39 @@ func TestPhase24DuckDBContentSearchBranchFilter(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, page.Matches)
+
+	page, err = store.SearchContent(ctx, db.ContentSearchFilter{
+		Pattern: "phase24 shared needle",
+		Mode:    "substring",
+		Sources: []string{"messages"},
+		Limit:   20,
+	})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{
+		"duck-p24-alpha-main",
+		"duck-p24-beta-main",
+	}, duckContentMatchSessionIDs(page.Matches))
+}
+
+func TestPhase24DuckDBSidebarBranchFilter(t *testing.T) {
+	ctx := context.Background()
+	store := newPhase24DuckDBBranchStore(t)
+
+	index, err := store.GetSidebarSessionIndex(ctx, db.SessionFilter{
+		GitBranch: db.EncodeBranchFilterToken("alpha", "main"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"duck-p24-alpha-main"}, duckSidebarSessionIDs(index.Sessions))
+
+	index, err = store.GetSidebarSessionIndex(ctx, db.SessionFilter{})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{
+		"duck-p24-alpha-main",
+		"duck-p24-alpha-empty",
+		"duck-p24-alpha-unknown",
+		"duck-p24-alpha-comma",
+		"duck-p24-beta-main",
+	}, duckSidebarSessionIDs(index.Sessions))
 }
 
 func TestPhase24DuckDBAnalyticsBranchFilter(t *testing.T) {
@@ -233,4 +266,12 @@ func phase24WriteBranchSession(
 		DataVersion:     db.CurrentDataVersion(),
 	}})
 	require.NoError(t, err)
+}
+
+func duckContentMatchSessionIDs(matches []db.ContentMatch) []string {
+	ids := make([]string, len(matches))
+	for i, match := range matches {
+		ids[i] = match.SessionID
+	}
+	return ids
 }

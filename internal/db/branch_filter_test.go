@@ -75,6 +75,64 @@ func TestPhase24BranchSessionFilterSQLiteBranchPairs(t *testing.T) {
 	assert.Empty(t, page.Sessions)
 }
 
+func TestPhase24ContentSearchBranchFilterSQLite(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	seedPhase24BranchSession(t, d, "alpha-main", "alpha", "main")
+	seedPhase24BranchSession(t, d, "beta-main", "beta", "main")
+	require.NoError(t, d.InsertMessages([]Message{
+		{SessionID: "alpha-main", Ordinal: 0, Role: "assistant", Content: "phase24 shared needle alpha-only", Timestamp: "2026-08-17T00:01:00Z", ContentLength: 34},
+		{SessionID: "beta-main", Ordinal: 0, Role: "assistant", Content: "phase24 shared needle beta-only", Timestamp: "2026-08-17T00:01:00Z", ContentLength: 33},
+	}))
+
+	page, err := d.SearchContent(ctx, ContentSearchFilter{
+		Pattern:   "phase24 shared needle",
+		Mode:      "substring",
+		Sources:   []string{"messages"},
+		Limit:     20,
+		GitBranch: EncodeBranchFilterToken("alpha", "main"),
+	})
+	require.NoError(t, err)
+	require.Len(t, page.Matches, 1)
+	assert.Equal(t, "alpha-main", page.Matches[0].SessionID)
+
+	page, err = d.SearchContent(ctx, ContentSearchFilter{
+		Pattern:   "phase24 shared needle",
+		Mode:      "substring",
+		Sources:   []string{"messages"},
+		Limit:     20,
+		GitBranch: "invalid",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, page.Matches)
+
+	page, err = d.SearchContent(ctx, ContentSearchFilter{
+		Pattern: "phase24 shared needle",
+		Mode:    "substring",
+		Sources: []string{"messages"},
+		Limit:   20,
+	})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"alpha-main", "beta-main"}, phase24ContentMatchSessionIDs(page.Matches))
+}
+
+func TestPhase24SidebarBranchFilterSQLite(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	seedPhase24BranchSession(t, d, "alpha-main", "alpha", "main")
+	seedPhase24BranchSession(t, d, "beta-main", "beta", "main")
+
+	index, err := d.GetSidebarSessionIndex(ctx, SessionFilter{
+		GitBranch: EncodeBranchFilterToken("alpha", "main"),
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"alpha-main"}, phase24SidebarSessionIDs(index.Sessions))
+
+	index, err = d.GetSidebarSessionIndex(ctx, SessionFilter{})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"alpha-main", "beta-main"}, phase24SidebarSessionIDs(index.Sessions))
+}
+
 func seedPhase24BranchSession(t *testing.T, d *DB, id, project, branch string) {
 	t.Helper()
 	started := "2026-08-17T00:00:00Z"
@@ -97,6 +155,22 @@ func phase24SessionIDs(sessions []Session) []string {
 	out := make([]string, len(sessions))
 	for i, s := range sessions {
 		out[i] = s.ID
+	}
+	return out
+}
+
+func phase24SidebarSessionIDs(sessions []SidebarSessionIndexRow) []string {
+	out := make([]string, len(sessions))
+	for i, s := range sessions {
+		out[i] = s.ID
+	}
+	return out
+}
+
+func phase24ContentMatchSessionIDs(matches []ContentMatch) []string {
+	out := make([]string, len(matches))
+	for i, match := range matches {
+		out[i] = match.SessionID
 	}
 	return out
 }
