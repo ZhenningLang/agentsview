@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -16,9 +17,11 @@ import (
 )
 
 const (
-	lastPushStateKey         = "duckdb_last_push_at"
-	lastPushBoundaryStateKey = "duckdb_last_push_boundary_state"
-	localSyncTimestampLayout = "2006-01-02T15:04:05.000Z"
+	lastPushStateKey              = "duckdb_last_push_at"
+	lastPushBoundaryStateKey      = "duckdb_last_push_boundary_state"
+	duckDBScopedLastPushKeyPrefix = "duckdb_last_push_at_v2"
+	duckDBScopedBoundaryKeyPrefix = "duckdb_last_push_boundary_state_v2"
+	localSyncTimestampLayout      = "2006-01-02T15:04:05.000Z"
 )
 
 type syncState struct {
@@ -33,6 +36,7 @@ type Sync struct {
 	machine         string
 	projects        []string
 	excludeProjects []string
+	stateScope      string
 
 	closeOnce sync.Once
 	closeErr  error
@@ -84,12 +88,18 @@ func New(
 	if err != nil {
 		return nil, err
 	}
+	stateScope, err := duckDBStateScope(path, opts)
+	if err != nil {
+		_ = duck.Close()
+		return nil, err
+	}
 	return &Sync{
 		duck:            duck,
 		local:           local,
 		machine:         machine,
 		projects:        opts.Projects,
 		excludeProjects: opts.ExcludeProjects,
+		stateScope:      stateScope,
 	}, nil
 }
 
@@ -124,9 +134,10 @@ func (s *Sync) EnsureSchema(ctx context.Context) error {
 
 // Status returns current DuckDB mirror row counts.
 func (s *Sync) Status(ctx context.Context) (SyncStatus, error) {
-	lastPush, err := s.local.GetSyncState(lastPushStateKey)
+	lastPushKey := s.lastPushStateKey()
+	lastPush, err := s.local.GetSyncState(lastPushKey)
 	if err != nil {
-		log.Printf("warning: reading %s: %v", lastPushStateKey, err)
+		log.Printf("warning: reading %s: %v", lastPushKey, err)
 	}
 	status := SyncStatus{Machine: s.machine, LastPushAt: lastPush}
 	if err := s.EnsureSchema(ctx); err != nil {
@@ -167,9 +178,11 @@ func (s *Sync) Push(
 		log.Printf("duckdb: skill mirror failed: %v", err)
 	}
 
-	lastPush, err := s.local.GetSyncState(lastPushStateKey)
+	lastPushKey := s.lastPushStateKey()
+	lastBoundaryKey := s.lastPushBoundaryStateKey()
+	lastPush, err := s.local.GetSyncState(lastPushKey)
 	if err != nil {
-		return result, fmt.Errorf("reading %s: %w", lastPushStateKey, err)
+		return result, fmt.Errorf("reading %s: %w", lastPushKey, err)
 	}
 	if full {
 		lastPush = ""
@@ -233,7 +246,7 @@ func (s *Sync) Push(
 	}
 	priorFingerprints := map[string]string{}
 	if !full {
-		priorFingerprints, err = readSyncFingerprints(s.local)
+		priorFingerprints, err = readSyncFingerprints(s.local, lastBoundaryKey)
 		if err != nil {
 			return result, err
 		}
@@ -297,7 +310,7 @@ func (s *Sync) Push(
 		// Clear the global watermark so the next unfiltered push
 		// starts from scratch; finalizeState then persists fresh
 		// fingerprints keyed at cutoff for later filtered runs.
-		if err := clearDuckDBSyncState(s.local); err != nil {
+		if err := s.clearDuckDBSyncState(); err != nil {
 			return result, err
 		}
 	}
@@ -342,6 +355,8 @@ func (s *Sync) finalizeState(
 	priorFingerprints map[string]string,
 	sessionFingerprints map[string]string,
 ) error {
+	lastPushKey := s.lastPushStateKey()
+	lastBoundaryKey := s.lastPushBoundaryStateKey()
 	if s.isFiltered() {
 		// Filtered pushes must not advance the global watermark
 		// past sessions from other projects, but still persist
@@ -354,31 +369,46 @@ func (s *Sync) finalizeState(
 			boundaryKey = cutoff
 		}
 		return writeSyncFingerprints(
-			s.local, boundaryKey, pushed, priorFingerprints, sessionFingerprints,
+			s.local, lastBoundaryKey, boundaryKey, pushed, priorFingerprints, sessionFingerprints,
 		)
 	}
-	if err := s.local.SetSyncState(lastPushStateKey, cutoff); err != nil {
-		return fmt.Errorf("updating %s: %w", lastPushStateKey, err)
+	if err := s.local.SetSyncState(lastPushKey, cutoff); err != nil {
+		return fmt.Errorf("updating %s: %w", lastPushKey, err)
+	}
+	if lastPushKey != lastPushStateKey {
+		if err := s.local.SetSyncState(lastPushStateKey, cutoff); err != nil {
+			return fmt.Errorf("updating %s: %w", lastPushStateKey, err)
+		}
 	}
 	return writeSyncFingerprints(
-		s.local, cutoff, pushed, priorFingerprints, sessionFingerprints,
+		s.local, lastBoundaryKey, cutoff, pushed, priorFingerprints, sessionFingerprints,
 	)
 }
 
-func clearDuckDBSyncState(local *db.DB) error {
-	if err := local.SetSyncState(lastPushStateKey, ""); err != nil {
+func (s *Sync) clearDuckDBSyncState() error {
+	if err := s.local.SetSyncState(s.lastPushStateKey(), ""); err != nil {
+		return fmt.Errorf("clearing %s: %w", s.lastPushStateKey(), err)
+	}
+	if err := s.local.SetSyncState(s.lastPushBoundaryStateKey(), ""); err != nil {
+		return fmt.Errorf("clearing %s: %w", s.lastPushBoundaryStateKey(), err)
+	}
+	if err := s.local.SetSyncState(lastPushStateKey, ""); err != nil {
 		return fmt.Errorf("clearing %s: %w", lastPushStateKey, err)
 	}
-	if err := local.SetSyncState(lastPushBoundaryStateKey, ""); err != nil {
+	if err := s.local.SetSyncState(lastPushBoundaryStateKey, ""); err != nil {
 		return fmt.Errorf("clearing %s: %w", lastPushBoundaryStateKey, err)
 	}
 	return nil
 }
 
-func readSyncFingerprints(local *db.DB) (map[string]string, error) {
-	raw, err := local.GetSyncState(lastPushBoundaryStateKey)
+func readSyncFingerprints(local *db.DB, keys ...string) (map[string]string, error) {
+	key := lastPushBoundaryStateKey
+	if len(keys) > 0 && keys[0] != "" {
+		key = keys[0]
+	}
+	raw, err := local.GetSyncState(key)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", lastPushBoundaryStateKey, err)
+		return nil, fmt.Errorf("reading %s: %w", key, err)
 	}
 	if raw == "" {
 		return map[string]string{}, nil
@@ -395,6 +425,7 @@ func readSyncFingerprints(local *db.DB) (map[string]string, error) {
 
 func writeSyncFingerprints(
 	local *db.DB,
+	key string,
 	cutoff string,
 	sessions []db.Session,
 	priorFingerprints map[string]string,
@@ -416,12 +447,68 @@ func writeSyncFingerprints(
 	}
 	data, err := json.Marshal(state)
 	if err != nil {
-		return fmt.Errorf("encoding %s: %w", lastPushBoundaryStateKey, err)
+		return fmt.Errorf("encoding %s: %w", key, err)
 	}
-	if err := local.SetSyncState(lastPushBoundaryStateKey, string(data)); err != nil {
-		return fmt.Errorf("writing %s: %w", lastPushBoundaryStateKey, err)
+	if err := local.SetSyncState(key, string(data)); err != nil {
+		return fmt.Errorf("writing %s: %w", key, err)
 	}
 	return nil
+}
+
+func (s *Sync) lastPushStateKey() string {
+	if s.stateScope == "" {
+		return lastPushStateKey
+	}
+	return duckDBScopedLastPushKeyPrefix + ":" + s.stateScope
+}
+
+func (s *Sync) lastPushBoundaryStateKey() string {
+	if s.stateScope == "" {
+		return lastPushBoundaryStateKey
+	}
+	return duckDBScopedBoundaryKeyPrefix + ":" + s.stateScope
+}
+
+func duckDBStateScope(path string, opts SyncOptions) (string, error) {
+	canonical, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("canonicalizing duckdb path: %w", err)
+	}
+	if evaluated, err := filepath.EvalSymlinks(canonical); err == nil {
+		canonical = evaluated
+	}
+	scope := struct {
+		TargetHash string `json:"target_hash"`
+		FilterHash string `json:"filter_hash"`
+	}{
+		TargetHash: duckDBHashHex(canonical),
+		FilterHash: duckDBHashHex(duckDBFilterScope(opts)),
+	}
+	data, err := json.Marshal(scope)
+	if err != nil {
+		return "", fmt.Errorf("encoding duckdb sync scope: %w", err)
+	}
+	return duckDBHashHex(string(data)), nil
+}
+
+func duckDBFilterScope(opts SyncOptions) string {
+	projects := append([]string(nil), opts.Projects...)
+	excludeProjects := append([]string(nil), opts.ExcludeProjects...)
+	sort.Strings(projects)
+	sort.Strings(excludeProjects)
+	data, _ := json.Marshal(struct {
+		Projects        []string `json:"projects"`
+		ExcludeProjects []string `json:"exclude_projects"`
+	}{
+		Projects:        projects,
+		ExcludeProjects: excludeProjects,
+	})
+	return string(data)
+}
+
+func duckDBHashHex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func normalizeStoredFingerprint(value string) string {
@@ -582,6 +669,6 @@ func duckSessionFingerprintFields(sess db.Session, machine string) []any {
 		sess.LLMTitle, sess.LLMSummary, sess.LLMKeywords,
 		sess.LLMEmbedding, sess.LLMEmbeddingDim, sess.EnrichedAt,
 		sess.EnrichedMsgCount, sess.EnrichModel, sess.EnrichStatus,
-		sess.EnrichError,
+		sess.EnrichError, duckTranscriptRevision(sess.TranscriptRevision),
 	}
 }

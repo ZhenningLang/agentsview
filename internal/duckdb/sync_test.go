@@ -329,6 +329,7 @@ func TestWriteSyncFingerprintsNormalizesRetainedLegacyValues(t *testing.T) {
 
 	require.NoError(t, writeSyncFingerprints(
 		local,
+		lastPushBoundaryStateKey,
 		"2026-01-10T00:00:00.000Z",
 		nil,
 		map[string]string{"unchanged": legacy},
@@ -714,7 +715,7 @@ func TestSyncFilteredFullClearsGlobalWatermarkForLaterUnfilteredPush(t *testing.
 	watermark, err := local.GetSyncState(lastPushStateKey)
 	require.NoError(t, err)
 	assert.Empty(t, watermark)
-	fingerprints, err := readSyncFingerprints(local)
+	fingerprints, err := readSyncFingerprints(local, filtered.lastPushBoundaryStateKey())
 	require.NoError(t, err)
 	assert.Contains(t, fingerprints, fixture.alphaID)
 	assert.NotContains(t, fingerprints, "stale")
@@ -794,7 +795,7 @@ func TestSyncFilteredIncrementalUpdatesPinsWithoutSessionChange(t *testing.T) {
 	first, err := syncer.Push(ctx, true, nil)
 	require.NoError(t, err)
 	require.Equal(t, 1, first.SessionsPushed)
-	require.NoError(t, local.SetSyncState(lastPushStateKey, time.Now().UTC().Format(localSyncTimestampLayout)))
+	require.NoError(t, local.SetSyncState(syncer.lastPushStateKey(), time.Now().UTC().Format(localSyncTimestampLayout)))
 
 	msgs, err := local.GetAllMessages(ctx, fixture.alphaID)
 	require.NoError(t, err)
@@ -862,7 +863,7 @@ func TestSyncFilteredPushPreservesOutOfScopeStarredSessions(t *testing.T) {
 	require.NoError(t, err)
 	assertDuckDBCount(t, filtered.DB(), "starred_sessions", 2)
 	assertDuckDBCountWhere(t, filtered.DB(), "starred_sessions", "session_id = ?", fixture.betaID, 1)
-	assert.Equal(t, 0, second.SessionsPushed)
+	assert.Equal(t, 1, second.SessionsPushed)
 }
 
 func TestSyncStatusCountsDuckDBRows(t *testing.T) {
