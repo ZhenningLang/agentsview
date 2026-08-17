@@ -81,8 +81,8 @@ type ContentSearchRequest struct {
 	Reveal        bool     `json:"reveal,omitempty"`
 
 	Project, ExcludeProject, Machine, GitBranch, Agent string
-	Date, DateFrom, DateTo, ActiveSince               string
-	IncludeChildren, IncludeAutomated, IncludeOneShot bool
+	Date, DateFrom, DateTo, ActiveSince                string
+	IncludeChildren, IncludeAutomated, IncludeOneShot  bool
 
 	Limit  int `json:"limit,omitempty"`
 	Cursor int `json:"cursor,omitempty"`
