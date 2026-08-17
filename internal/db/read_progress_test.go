@@ -390,6 +390,74 @@ func TestPhase20SQLiteRevisionWriteSessionBatchAtomicRollsBackBump(t *testing.T)
 	assert.Equal(t, 1, d.MaxOrdinal("phase20-atomic"))
 }
 
+func TestPhase20OrphanCopyPreservesTranscriptRevision(t *testing.T) {
+	src := testDB(t)
+	dst := testDB(t)
+	insertSession(t, src, "phase20-orphan", "proj")
+	insertMessages(t, src,
+		userMsg("phase20-orphan", 0, "orphan prompt"),
+		asstMsg("phase20-orphan", 1, "orphan reply"),
+	)
+	setPhase20Revision(t, src, "phase20-orphan", "17")
+	require.NoError(t, src.CloseConnections())
+
+	copied, err := dst.CopyOrphanedDataFrom(src.Path())
+	require.NoError(t, err)
+	assert.Equal(t, 1, copied)
+	assert.Equal(t, "17", phase20Revision(t, dst, "phase20-orphan"))
+	msgs, err := dst.GetAllMessages(context.Background(), "phase20-orphan")
+	require.NoError(t, err)
+	require.Len(t, msgs, 2)
+	assert.Equal(t, "orphan prompt", msgs[0].Content)
+	assert.Equal(t, "orphan reply", msgs[1].Content)
+}
+
+func TestPhase20OrphanCopyReconcilesMatchingTranscriptRevisionsWhenNoOrphans(t *testing.T) {
+	src := testDB(t)
+	dst := testDB(t)
+	for _, id := range []string{"phase20-unchanged", "phase20-rewrite", "phase20-rename"} {
+		insertSession(t, src, id, "proj")
+		insertSession(t, dst, id, "proj")
+	}
+	insertMessages(t, src,
+		userMsg("phase20-unchanged", 0, "same"),
+		userMsg("phase20-rewrite", 0, "old"),
+		userMsg("phase20-rename", 0, "rename visible"),
+	)
+	insertMessages(t, dst,
+		userMsg("phase20-unchanged", 0, "same"),
+		userMsg("phase20-rewrite", 0, "new"),
+		userMsg("phase20-rename", 0, "rename visible"),
+	)
+	setPhase20Revision(t, src, "phase20-unchanged", "7")
+	setPhase20Revision(t, src, "phase20-rewrite", "11")
+	setPhase20Revision(t, src, "phase20-rename", "13")
+	setPhase20Revision(t, dst, "phase20-unchanged", "1")
+	setPhase20Revision(t, dst, "phase20-rewrite", "1")
+	setPhase20Revision(t, dst, "phase20-rename", "1")
+	customName := "manual rename"
+	require.NoError(t, src.RenameSession("phase20-rename", &customName))
+	require.NoError(t, src.CloseConnections())
+
+	copied, err := dst.CopyOrphanedDataFrom(src.Path())
+	require.NoError(t, err)
+	assert.Equal(t, 0, copied)
+	assert.Equal(t, "7", phase20Revision(t, dst, "phase20-unchanged"))
+	assert.Equal(t, "12", phase20Revision(t, dst, "phase20-rewrite"))
+	assert.Equal(t, "13", phase20Revision(t, dst, "phase20-rename"))
+}
+
+func setPhase20Revision(t *testing.T, d *DB, sessionID, revision string) {
+	t.Helper()
+	require.NoError(t, d.Update(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			`UPDATE sessions SET transcript_revision = ? WHERE id = ?`,
+			revision, sessionID,
+		)
+		return err
+	}))
+}
+
 func createPhase20CurrentArchiveWithoutTranscriptRevision(t *testing.T, path string) {
 	t.Helper()
 	conn, err := sql.Open("sqlite3", makeDSN(path, false))
