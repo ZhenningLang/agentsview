@@ -1118,6 +1118,82 @@ func TestSidebarIndexReturnsSkinnyRows(t *testing.T) {
 	}
 }
 
+func TestPhase20ReadProgressHTTPDetailAndSidebarTokenContract(t *testing.T) {
+	te := setup(t)
+	fileHash := "phase20-file-hash"
+	localModifiedAt := "2026-08-18T03:17:00.000Z"
+	te.seedSession(t, "phase20-http-default", "my-app", 2, func(s *db.Session) {
+		s.UserMessageCount = 2
+		s.FileHash = &fileHash
+		s.LocalModifiedAt = &localModifiedAt
+	})
+	te.seedSession(t, "phase20-http", "my-app", 2, func(s *db.Session) {
+		s.UserMessageCount = 2
+		s.FileHash = &fileHash
+		s.LocalModifiedAt = &localModifiedAt
+	})
+	setPhase20ServerRevision(t, te.db, "phase20-http", "1")
+
+	defaultDetail := te.get(t, "/api/v1/sessions/phase20-http-default")
+	assertStatus(t, defaultDetail, http.StatusOK)
+	assertPhase20HTTPToken(t, defaultDetail, "0", fileHash, localModifiedAt)
+
+	detail := te.get(t, "/api/v1/sessions/phase20-http")
+	assertStatus(t, detail, http.StatusOK)
+	assertPhase20HTTPToken(t, detail, "1", fileHash, localModifiedAt)
+
+	sidebar := te.get(t, "/api/v1/sessions/sidebar-index")
+	assertStatus(t, sidebar, http.StatusOK)
+	var raw struct {
+		Sessions []map[string]any `json:"sessions"`
+	}
+	require.NoError(t, json.Unmarshal(sidebar.Body.Bytes(), &raw))
+	require.NotEmpty(t, raw.Sessions)
+	rows := map[string]map[string]any{}
+	for _, candidate := range raw.Sessions {
+		if id, ok := candidate["id"].(string); ok {
+			rows[id] = candidate
+		}
+	}
+	defaultRow, ok := rows["phase20-http-default"]
+	require.True(t, ok, "phase20-http-default row missing from sidebar response: %s", sidebar.Body.String())
+	assertPhase20RawToken(t, defaultRow, "0", fileHash, localModifiedAt)
+	row, ok := rows["phase20-http"]
+	require.True(t, ok, "phase20-http row missing from sidebar response: %s", sidebar.Body.String())
+	assertPhase20RawToken(t, row, "1", fileHash, localModifiedAt)
+}
+
+func setPhase20ServerRevision(t *testing.T, d *db.DB, sessionID, revision string) {
+	t.Helper()
+	require.NoError(t, d.Update(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			`UPDATE sessions SET transcript_revision = ? WHERE id = ?`,
+			revision, sessionID,
+		)
+		return err
+	}))
+}
+
+func assertPhase20HTTPToken(
+	t *testing.T, w *httptest.ResponseRecorder, want, fileHash, localModifiedAt string,
+) {
+	t.Helper()
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &raw))
+	assertPhase20RawToken(t, raw, want, fileHash, localModifiedAt)
+}
+
+func assertPhase20RawToken(
+	t *testing.T, raw map[string]any, want, fileHash, localModifiedAt string,
+) {
+	t.Helper()
+	got, ok := raw["transcript_revision"].(string)
+	require.True(t, ok, "transcript_revision must be a JSON string: %#v", raw["transcript_revision"])
+	assert.Equal(t, want, got)
+	assert.NotEqual(t, fileHash, got)
+	assert.NotEqual(t, localModifiedAt, got)
+}
+
 func TestSidebarIndexValidatesParams(t *testing.T) {
 	tests := []string{
 		"/api/v1/sessions/sidebar-index?min_messages=bad",

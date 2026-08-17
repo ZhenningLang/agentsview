@@ -185,6 +185,14 @@ func TestSessionPushFingerprintDiffers(t *testing.T) {
 				return s
 			},
 		},
+		{
+			name: "transcript revision change",
+			modify: func(s db.Session) db.Session {
+				revision := "2"
+				s.TranscriptRevision = &revision
+				return s
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -244,8 +252,9 @@ func TestFinalizePushStatePersistsEmptyBoundary(
 	const cutoff = "2026-03-11T12:34:56.123Z"
 
 	store := &syncStateStoreStub{}
-	require.NoError(t, finalizePushState(
-		store, cutoff, nil, nil, map[string]string{},
+	require.NoError(t, finalizePushStateForStore(
+		store, lastPushStateKey, lastPushBoundaryStateKey,
+		cutoff, nil, nil, map[string]string{},
 	))
 	assert.Equal(t, cutoff, store.values["last_push_at"])
 
@@ -276,8 +285,9 @@ func TestFinalizePushStateMergesPriorFingerprints(
 	}
 
 	store := &syncStateStoreStub{}
-	require.NoError(t, finalizePushState(
-		store, cutoff, cycle2Sessions,
+	require.NoError(t, finalizePushStateForStore(
+		store, lastPushStateKey, lastPushBoundaryStateKey,
+		cutoff, cycle2Sessions,
 		priorFingerprints,
 		map[string]string{"sess-002": sessionPushFingerprint(cycle2Sessions[0], "")},
 	))

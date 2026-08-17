@@ -2,6 +2,7 @@
   import { onDestroy } from "svelte";
   import type { Virtualizer } from "@tanstack/virtual-core";
   import { messages } from "../../stores/messages.svelte.js";
+  import { readProgress } from "../../stores/read-progress.svelte.js";
   import { ui } from "../../stores/ui.svelte.js";
   import { sessions } from "../../stores/sessions.svelte.js";
   import { MessageSquareIcon } from "../../icons.js";
@@ -145,6 +146,201 @@
     };
   }
 
+  // ---- transcript read progress -------------------------------------
+
+  let readCheckRaf: number | null = null;
+  /** Ordinals confirmed as displayed for the current session+revision. */
+  let seenOrdinals = new Set<number>();
+  let seenKey = "";
+
+  let displayedOrdinalsAsc = $derived.by(() => {
+    const out: number[] = [];
+    for (const item of displayItemsAsc) out.push(...item.ordinals);
+    return out.sort((a, b) => a - b);
+  });
+
+  let readToken = $derived(messages.activeSessionToken);
+
+  let transcriptHasUnread = $derived(
+    messages.sessionId !== null &&
+      readProgress.hasUnread(messages.sessionId, readToken),
+  );
+
+  /**
+   * Ordinal the unread run starts at, mapped onto what is actually
+   * displayed. A reload reports the earliest changed ordinal directly; a
+   * reopen without that metadata falls back to just past the last
+   * confirmed read position, and finally to the oldest displayed message
+   * so traversal stays conservative rather than confirming a tail.
+   */
+  let unreadBoundaryOrdinal = $derived.by(() => {
+    if (!transcriptHasUnread) return null;
+    const ordinals = displayedOrdinalsAsc;
+    if (ordinals.length === 0) return null;
+
+    const reported = messages.activeSessionUnreadOrdinal;
+    const lastRead = messages.sessionId
+      ? readProgress.lastReadOrdinal(messages.sessionId)
+      : null;
+    const target = reported ?? (lastRead !== null ? lastRead + 1 : null);
+    if (target === null) return ordinals[0] ?? null;
+    return ordinals.find((o) => o >= target) ?? null;
+  });
+
+  /**
+   * Wording follows the sort direction, not just the divider position.
+   * Ascending puts the divider above the boundary message, so everything
+   * below it is what the user has not read: "New messages". Newest-first
+   * reverses the list and puts the divider below the boundary message, so
+   * everything below it is what the user already read: "Earlier messages".
+   * Keeping "New messages" in both directions labels the older half of a
+   * newest-first transcript as new.
+   */
+  let unreadDividerLabel = $derived(
+    ui.sortNewestFirst ? "Earlier messages" : "New messages",
+  );
+
+  function isBoundaryItem(item: DisplayItem): boolean {
+    return (
+      unreadBoundaryOrdinal !== null &&
+      item.kind === "message" &&
+      item.message.ordinal === unreadBoundaryOrdinal
+    );
+  }
+
+  /** Child ordinals of a grouped row whose own box is inside the
+   *  viewport. A partially visible group must never confirm the children
+   *  that are still off screen. */
+  function visibleGroupChildOrdinals(index: number): number[] {
+    if (!containerRef) return [];
+    const row = containerRef.querySelector(
+      `.virtual-row[data-index="${index}"]`,
+    );
+    if (!row) return [];
+    const bounds = containerRef.getBoundingClientRect();
+    const out: number[] = [];
+    for (
+      const el of row.querySelectorAll<HTMLElement>(
+        "[data-message-ordinal]",
+      )
+    ) {
+      const rect = el.getBoundingClientRect();
+      if (rect.height === 0) continue;
+      if (rect.bottom <= bounds.top) continue;
+      if (rect.top >= bounds.bottom) continue;
+      const ordinal = Number(el.dataset.messageOrdinal);
+      if (Number.isFinite(ordinal)) out.push(ordinal);
+    }
+    return out;
+  }
+
+  function collectVisibleOrdinals(): number[] {
+    const v = virtualizer.instance;
+    if (!v || !containerRef) return [];
+    const scrollTop = v.scrollOffset ?? 0;
+    const height = containerRef.clientHeight;
+    const viewportBottom = height > 0
+      ? scrollTop + height
+      : Number.POSITIVE_INFINITY;
+
+    const out: number[] = [];
+    for (const vi of v.getVirtualItems()) {
+      if (vi.end <= scrollTop) continue;
+      if (vi.start >= viewportBottom) continue;
+      const item = itemAt(vi.index);
+      if (!item) continue;
+      const fullyVisible =
+        vi.start >= scrollTop && vi.end <= viewportBottom;
+      if (item.kind !== "tool-group" || fullyVisible) {
+        out.push(...item.ordinals);
+        continue;
+      }
+      out.push(...visibleGroupChildOrdinals(vi.index));
+    }
+    return out;
+  }
+
+  function checkReadProgress() {
+    const sessionId = messages.sessionId;
+    const token = readToken;
+    if (!sessionId || !token || !containerRef) return;
+
+    const key = `${sessionId}:${token}`;
+    if (key !== seenKey) {
+      seenKey = key;
+      seenOrdinals = new Set();
+    }
+    const visible = collectVisibleOrdinals();
+    for (const ordinal of visible) seenOrdinals.add(ordinal);
+
+    if (!readProgress.markerFor(sessionId)) {
+      readProgress.baseline(
+        sessionId,
+        token,
+        visible.length > 0 ? Math.max(...visible) : null,
+      );
+      return;
+    }
+
+    if (!readProgress.hasUnread(sessionId, token)) {
+      if (visible.length > 0) {
+        readProgress.advanceOrdinal(sessionId, Math.max(...visible));
+      }
+      return;
+    }
+
+    // A transcript with nothing to display — every block filter hiding
+    // its content, focused mode with nothing focusable, a system-only
+    // transcript whose blocks are off — has no ordinal to traverse and no
+    // scroll surface: handleScroll only asks for older history when at
+    // least one virtual item exists, so this state cannot resolve itself.
+    // Without an explicit completion path the marker would stay pinned to
+    // the previous revision and the unread indicator could never be
+    // cleared. The user is looking at everything this filter can show, so
+    // the revision is confirmed with no ordinal claimed.
+    if (displayItemsAsc.length === 0) {
+      readProgress.markRead(sessionId, token, null);
+      return;
+    }
+
+    // Older history that is not loaded yet may hold the real boundary,
+    // so the visible window cannot confirm the revision.
+    if (messages.hasOlder) return;
+
+    const ordinals = displayedOrdinalsAsc;
+    const latest = ordinals[ordinals.length - 1];
+    if (latest === undefined || !seenOrdinals.has(latest)) return;
+    if (
+      unreadBoundaryOrdinal !== null &&
+      !seenOrdinals.has(unreadBoundaryOrdinal)
+    ) {
+      return;
+    }
+
+    readProgress.markRead(sessionId, token, latest);
+  }
+
+  function queueReadProgressCheck() {
+    if (readCheckRaf !== null) return;
+    readCheckRaf = requestAnimationFrame(() => {
+      readCheckRaf = null;
+      checkReadProgress();
+    });
+  }
+
+  // Re-check whenever the transcript, its revision, the sort order or the
+  // active filters change what is on screen.
+  $effect(() => {
+    void readToken;
+    void messages.sessionId;
+    void messages.messages.length;
+    void displayItemsAsc.length;
+    void ui.sortNewestFirst;
+    void ui.hasBlockFilters;
+    void ui.transcriptMode;
+    queueReadProgressCheck();
+  });
+
   function publishVisibleTimestamp() {
     const v = virtualizer.instance;
     if (!v) return;
@@ -211,6 +407,7 @@
         publishVisibleTimestamp();
       }
 
+      checkReadProgress();
     });
   }
 
@@ -276,6 +473,10 @@
     if (followSettleTimer !== null) {
       clearTimeout(followSettleTimer);
       followSettleTimer = null;
+    }
+    if (readCheckRaf !== null) {
+      cancelAnimationFrame(readCheckRaf);
+      readCheckRaf = null;
     }
   });
 
@@ -578,6 +779,17 @@
               ui.selectOrdinal(item.ordinals[0]!);
             }}
           >
+            {#if isBoundaryItem(item) && !ui.sortNewestFirst}
+              <div
+                class="unread-divider"
+                role="separator"
+                aria-label="Read progress boundary"
+              >
+                <span class="unread-divider-label">
+                  {unreadDividerLabel}
+                </span>
+              </div>
+            {/if}
             {#if item.kind === "tool-group"}
               <ToolCallGroup
                 messages={item.messages}
@@ -585,6 +797,7 @@
                 session={sessions.activeSession}
                 highlightQuery={highlightQuery}
                 isCurrentHighlight={item.ordinals.includes(inSessionSearch.currentOrdinal ?? -1)}
+                unreadOrdinal={unreadBoundaryOrdinal}
               />
             {:else if item.message.is_compact_boundary}
               <CompactBoundaryDivider message={item.message} />
@@ -600,6 +813,17 @@
                 highlightQuery={highlightQuery}
                 isCurrentHighlight={inSessionSearch.currentOrdinal === item.message.ordinal}
               />
+            {/if}
+            {#if isBoundaryItem(item) && ui.sortNewestFirst}
+              <div
+                class="unread-divider"
+                role="separator"
+                aria-label="Read progress boundary"
+              >
+                <span class="unread-divider-label">
+                  {unreadDividerLabel}
+                </span>
+              </div>
             {/if}
           </div>
         {/if}
@@ -620,6 +844,25 @@
   .virtual-row {
     padding: 5px 12px;
     overflow-anchor: none;
+  }
+
+  .unread-divider {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0 8px;
+    color: var(--accent-blue);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .unread-divider::before,
+  .unread-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--accent-blue);
+    opacity: 0.5;
   }
 
   .virtual-row.selected > :global(*) {

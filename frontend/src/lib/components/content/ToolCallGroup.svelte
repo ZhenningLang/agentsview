@@ -24,6 +24,10 @@
     highlightQuery?: string;
     isCurrentHighlight?: boolean;
     session?: Session | null;
+    /** Ordinal where the unread run starts. When it belongs to this
+     *  group the boundary renders inside the group rather than around
+     *  the whole collapsed row. */
+    unreadOrdinal?: number | null;
   }
 
   let {
@@ -32,6 +36,7 @@
     highlightQuery = "",
     isCurrentHighlight = false,
     session,
+    unreadOrdinal = null,
   }: Props = $props();
 
   let copied = $state(false);
@@ -146,6 +151,16 @@
     {#each messages as message (message.id)}
       {@const calls = message.tool_calls ?? []}
       {@const turn = turnByMessage.get(message.id)}
+      {#if unreadOrdinal !== null && message.ordinal === unreadOrdinal}
+        <div
+          class="unread-divider"
+          role="separator"
+          aria-label="Read progress boundary"
+        >
+          <span class="unread-divider-label">New messages</span>
+        </div>
+      {/if}
+      <div class="tool-message" data-message-ordinal={message.ordinal}>
       <div class="tool-message-actions">
         <MessageForkButton
           {message}
@@ -191,6 +206,7 @@
           />
         {/each}
       {/if}
+      </div>
     {/each}
   </div>
 </div>
@@ -239,10 +255,35 @@
     gap: 2px;
   }
 
+  .tool-message {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
   .tool-message-actions {
     display: flex;
     justify-content: flex-end;
     min-height: 18px;
+  }
+
+  .unread-divider {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 4px 0;
+    color: var(--accent-blue);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .unread-divider::before,
+  .unread-divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--accent-blue);
+    opacity: 0.5;
   }
 
   .tool-message-actions:empty {

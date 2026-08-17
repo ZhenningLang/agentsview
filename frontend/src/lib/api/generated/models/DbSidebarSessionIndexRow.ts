@@ -18,5 +18,6 @@ export type DbSidebarSessionIndexRow = {
   relationship_type?: string;
   started_at: string | null;
   termination_status?: string;
+  transcript_revision?: string;
   user_message_count: number;
 };

@@ -331,12 +331,12 @@ func upsertSession(
 			termination_status, secret_leak_count, secrets_rules_version,
 			llm_title, llm_summary, llm_keywords, llm_embedding,
 			llm_embedding_dim, enriched_at, enriched_msg_count,
-			enrich_model, enrich_status, enrich_error
+			enrich_model, enrich_status, enrich_error, transcript_revision
 		) VALUES (
 			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-			?, ?, ?, ?, ?, ?, ?, ?, ?
+			?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		)
 		ON CONFLICT(id) DO UPDATE SET
 			project = excluded.project,
@@ -400,7 +400,8 @@ func upsertSession(
 			enriched_msg_count = excluded.enriched_msg_count,
 			enrich_model = excluded.enrich_model,
 			enrich_status = excluded.enrich_status,
-			enrich_error = excluded.enrich_error`,
+			enrich_error = excluded.enrich_error,
+			transcript_revision = excluded.transcript_revision`,
 		sess.ID, sess.Project, machine, sess.Agent,
 		nilString(sess.FirstMessage), nilString(sess.DisplayName),
 		nilString(sess.SessionName),
@@ -429,12 +430,19 @@ func upsertSession(
 		sess.LLMTitle, sess.LLMSummary, sess.LLMKeywords,
 		sess.LLMEmbedding, sess.LLMEmbeddingDim, sess.EnrichedAt,
 		sess.EnrichedMsgCount, sess.EnrichModel, sess.EnrichStatus,
-		sess.EnrichError,
+		sess.EnrichError, duckTranscriptRevision(sess.TranscriptRevision),
 	)
 	if err != nil {
 		return fmt.Errorf("upserting duckdb session %s: %w", sess.ID, err)
 	}
 	return nil
+}
+
+func duckTranscriptRevision(value *string) string {
+	if value == nil || *value == "" {
+		return "0"
+	}
+	return *value
 }
 
 func insertMessages(ctx context.Context, tx *sql.Tx, msgs []db.Message) error {

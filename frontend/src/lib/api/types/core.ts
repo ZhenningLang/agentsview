@@ -36,6 +36,9 @@ export interface Session {
   is_teammate?: boolean;
   /** True when populated from the skinny sidebar index and not yet hydrated. */
   is_index_only?: boolean;
+  /** Backend-owned counter that only moves when user-visible transcript
+   *  content changes. Used as the read-progress change token. */
+  transcript_revision?: string;
   // Session signals (from backend computation)
   health_score?: number | null;
   health_grade?: string | null;
@@ -77,6 +80,7 @@ export interface SidebarSessionIndexRow {
   ended_at: string | null;
   created_at: string;
   termination_status?: string | null;
+  transcript_revision?: string;
   message_count: number;
   user_message_count: number;
   is_automated: boolean;

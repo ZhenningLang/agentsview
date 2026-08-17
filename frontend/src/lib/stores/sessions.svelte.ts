@@ -45,6 +45,8 @@ export interface SessionGroupInput {
   is_automated?: boolean;
   is_teammate?: boolean;
   is_index_only?: boolean;
+  /** Read-progress change token; sidebar rows need it to show unread. */
+  transcript_revision?: string;
 }
 
 export interface SessionGroup {
@@ -458,6 +460,8 @@ class SessionsStore {
       display_name: hydrated.display_name ?? current.display_name,
       llm_title: hydrated.llm_title ?? current.llm_title,
       is_teammate: hydrated.is_teammate ?? current.is_teammate,
+      transcript_revision: hydrated.transcript_revision ??
+        current.transcript_revision,
       is_index_only: false,
     };
   }
@@ -1129,6 +1133,8 @@ function sidebarIndexRowToSession(
     is_automated: row.is_automated,
     is_teammate: row.is_teammate ?? false,
     is_index_only: true,
+    transcript_revision: row.transcript_revision ??
+      existing?.transcript_revision,
     created_at: row.created_at,
   };
   if (!existing || existing.is_index_only) return skinny;
@@ -1150,6 +1156,10 @@ function sidebarIndexRowToSession(
     is_automated: skinny.is_automated,
     is_teammate: skinny.is_teammate ?? existing.is_teammate,
     is_index_only: false,
+    // The index is the freshest source of the revision; letting the older
+    // hydrated detail win would freeze the unread indicator.
+    transcript_revision: skinny.transcript_revision ??
+      existing.transcript_revision,
     created_at: skinny.created_at,
   };
 }

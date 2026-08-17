@@ -11,6 +11,7 @@ import { mount, tick, unmount } from "svelte";
 import type { Message, Session } from "../../api/types.js";
 import { inSessionSearch } from "../../stores/inSessionSearch.svelte.js";
 import { messages } from "../../stores/messages.svelte.js";
+import { readProgress } from "../../stores/read-progress.svelte.js";
 import { sessions } from "../../stores/sessions.svelte.js";
 import { ui } from "../../stores/ui.svelte.js";
 
@@ -354,5 +355,383 @@ describe("Phase 19 MessageList skim layout", () => {
     expect(
       document.querySelector(".virtual-row.selected"),
     ).not.toBeNull();
+  });
+});
+
+describe("Phase 20 MessageList read progress", () => {
+  let component: ReturnType<typeof mount> | undefined;
+  let rafSpy: ReturnType<typeof vi.spyOn>;
+
+  function rows(count: number) {
+    return Array.from({ length: count }, (_, i) => ({
+      index: i,
+      key: `row-${i}`,
+      start: i * 100,
+      end: (i + 1) * 100,
+    }));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    readProgress.reset();
+    messages.clear();
+    sessions.sessions = [makeSession({ id: "s1" })];
+    sessions.activeSessionId = "s1";
+    messages.sessionId = "s1";
+    messages.messages = [
+      makeMessage(0),
+      makeMessage(1),
+      makeMessage(2),
+    ];
+    messages.messageCount = 3;
+    messages.loading = false;
+    messages.hasOlder = false;
+    messages.activeSessionToken = "2";
+    messages.activeSessionUnreadOrdinal = 1;
+    virtualizerMock.visibleItems = rows(3);
+    virtualizerMock.scrollOffset = 0;
+    ui.followLatest = false;
+    ui.sortNewestFirst = false;
+    ui.selectedOrdinal = null;
+    ui.showAllBlocks();
+    rafSpy = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((cb: FrameRequestCallback) => {
+        window.setTimeout(() => cb(performance.now()), 0);
+        return 1;
+      });
+  });
+
+  afterEach(() => {
+    if (component) {
+      unmount(component);
+      component = undefined;
+    }
+    rafSpy.mockRestore();
+    readProgress.reset();
+    messages.clear();
+    sessions.sessions = [];
+    sessions.activeSessionId = null;
+    ui.sortNewestFirst = false;
+    ui.showAllBlocks();
+    document.body.innerHTML = "";
+  });
+
+  function dividers(): HTMLElement[] {
+    return [
+      ...document.querySelectorAll<HTMLElement>(".unread-divider"),
+    ];
+  }
+
+  it("shows no boundary when the stored token still matches", async () => {
+    readProgress.baseline("s1", "2", 2);
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    expect(dividers()).toHaveLength(0);
+  });
+
+  it("shows no boundary on a first visit with no marker", async () => {
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    expect(dividers()).toHaveLength(0);
+  });
+
+  it("marks the earliest changed ordinal when the token moved", async () => {
+    readProgress.baseline("s1", "1", 2);
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    const divider = dividers();
+    expect(divider).toHaveLength(1);
+    expect(divider[0]!.textContent).toContain("New messages");
+    expect(divider[0]!.getAttribute("aria-label")).toBe(
+      "Read progress boundary",
+    );
+
+    const row = divider[0]!.closest(".virtual-row") as HTMLElement;
+    expect(row.dataset.index).toBe("1");
+    // Ascending order puts the boundary above the first unread message.
+    expect(row.firstElementChild).toBe(divider[0]);
+  });
+
+  it("falls back to the message after the last read ordinal", async () => {
+    readProgress.baseline("s1", "1", 0);
+    messages.activeSessionUnreadOrdinal = null;
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    const row = dividers()[0]!.closest(".virtual-row") as HTMLElement;
+    expect(row.dataset.index).toBe("1");
+  });
+
+  it("falls back to the oldest displayed message with no read ordinal", async () => {
+    readProgress.baseline("s1", "1", null);
+    messages.activeSessionUnreadOrdinal = null;
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    const row = dividers()[0]!.closest(".virtual-row") as HTMLElement;
+    expect(row.dataset.index).toBe("0");
+  });
+
+  it("puts the boundary after the message in newest-first order", async () => {
+    readProgress.baseline("s1", "1", 2);
+    ui.sortNewestFirst = true;
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    const divider = dividers();
+    expect(divider).toHaveLength(1);
+    const row = divider[0]!.closest(".virtual-row") as HTMLElement;
+    expect(row.lastElementChild).toBe(divider[0]);
+  });
+
+  it("labels the newest-first boundary as earlier, not new", async () => {
+    readProgress.baseline("s1", "1", 2);
+    ui.sortNewestFirst = true;
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    // Newest-first puts the divider below the boundary message, so what
+    // sits below it is the already-read remainder, not the new run.
+    const divider = dividers();
+    expect(divider).toHaveLength(1);
+    expect(divider[0]!.textContent).toContain("Earlier messages");
+    expect(divider[0]!.textContent).not.toContain("New messages");
+  });
+
+  it("confirms the revision when every item is filtered out", async () => {
+    readProgress.baseline("s1", "1", 0);
+    // Hiding both text roles leaves the transcript with nothing to
+    // display, so there is no ordinal to traverse and no scroll surface
+    // to traverse it with.
+    ui.setBlockVisible("user", false);
+    ui.setBlockVisible("assistant", false);
+    virtualizerMock.visibleItems = [];
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    await vi.waitFor(() => {
+      expect(readProgress.hasUnread("s1", "2")).toBe(false);
+    });
+    expect(document.querySelectorAll(".virtual-row")).toHaveLength(0);
+    expect(dividers()).toHaveLength(0);
+  });
+
+  it("confirms a fully filtered transcript without a scroll event", async () => {
+    readProgress.baseline("s1", "1", 0);
+    ui.setBlockVisible("user", false);
+    ui.setBlockVisible("assistant", false);
+    virtualizerMock.visibleItems = [];
+    // loadOlder is unreachable with no virtual items, so an unloaded
+    // tail must not strand the marker either.
+    messages.hasOlder = true;
+    const loadOlder = vi
+      .spyOn(messages, "loadOlder")
+      .mockResolvedValue(undefined);
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    await vi.waitFor(() => {
+      expect(readProgress.hasUnread("s1", "2")).toBe(false);
+    });
+    expect(loadOlder).not.toHaveBeenCalled();
+    loadOlder.mockRestore();
+  });
+
+  it("confirms the revision once the boundary and the latest are seen", async () => {
+    readProgress.baseline("s1", "1", 0);
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+    document
+      .querySelector<HTMLElement>(".message-list-scroll")!
+      .dispatchEvent(new Event("scroll"));
+
+    await vi.waitFor(() => {
+      expect(readProgress.hasUnread("s1", "2")).toBe(false);
+    });
+    expect(readProgress.lastReadOrdinal("s1")).toBe(2);
+  });
+
+  it("does not confirm from the newest row alone", async () => {
+    readProgress.baseline("s1", "1", 0);
+    ui.sortNewestFirst = true;
+    // Only the newest message is on screen; the rewritten earlier
+    // message was never scrolled to.
+    virtualizerMock.visibleItems = [
+      { index: 0, key: "row-0", start: 0, end: 100 },
+    ];
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+    document
+      .querySelector<HTMLElement>(".message-list-scroll")!
+      .dispatchEvent(new Event("scroll"));
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(readProgress.hasUnread("s1", "2")).toBe(true);
+    expect(readProgress.lastReadOrdinal("s1")).toBe(0);
+  });
+
+  it("does not confirm while older history is still unloaded", async () => {
+    readProgress.baseline("s1", "1", 0);
+    messages.hasOlder = true;
+    // Scrolling near the top also asks for the previous page; stub it so
+    // the assertion is about the read gate, not about pagination.
+    vi.spyOn(messages, "loadOlder").mockResolvedValue(undefined);
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+    document
+      .querySelector<HTMLElement>(".message-list-scroll")!
+      .dispatchEvent(new Event("scroll"));
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(readProgress.hasUnread("s1", "2")).toBe(true);
+  });
+
+  it("skips rows scrolled above the viewport", async () => {
+    readProgress.baseline("s1", "1", 0);
+    // Ordinals 0 and 1 sit entirely above the scroll offset.
+    virtualizerMock.scrollOffset = 200;
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+    document
+      .querySelector<HTMLElement>(".message-list-scroll")!
+      .dispatchEvent(new Event("scroll"));
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(readProgress.hasUnread("s1", "2")).toBe(true);
+  });
+
+  it("accumulates seen ordinals across scrolls", async () => {
+    readProgress.baseline("s1", "1", 0);
+    virtualizerMock.visibleItems = [
+      { index: 0, key: "row-0", start: 0, end: 100 },
+      { index: 1, key: "row-1", start: 100, end: 200 },
+    ];
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+    const scroller = document.querySelector<HTMLElement>(
+      ".message-list-scroll",
+    )!;
+    scroller.dispatchEvent(new Event("scroll"));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(readProgress.hasUnread("s1", "2")).toBe(true);
+
+    virtualizerMock.visibleItems = [
+      { index: 2, key: "row-2", start: 200, end: 300 },
+    ];
+    virtualizerMock.scrollOffset = 200;
+    scroller.dispatchEvent(new Event("scroll"));
+
+    await vi.waitFor(() => {
+      expect(readProgress.hasUnread("s1", "2")).toBe(false);
+    });
+  });
+
+  it("advances the read ordinal without a revision change", async () => {
+    readProgress.baseline("s1", "2", 0);
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+    document
+      .querySelector<HTMLElement>(".message-list-scroll")!
+      .dispatchEvent(new Event("scroll"));
+
+    await vi.waitFor(() => {
+      expect(readProgress.lastReadOrdinal("s1")).toBe(2);
+    });
+  });
+
+  it("baselines a session that has never been seen", async () => {
+    component = mount(MessageList, { target: document.body });
+    await tick();
+    document
+      .querySelector<HTMLElement>(".message-list-scroll")!
+      .dispatchEvent(new Event("scroll"));
+
+    await vi.waitFor(() => {
+      expect(readProgress.markerFor("s1")?.token).toBe("2");
+    });
+    expect(readProgress.hasUnread("s1", "2")).toBe(false);
+  });
+
+  it("does not confirm a partially visible tool group wholesale", async () => {
+    readProgress.baseline("s1", "1", null);
+    messages.messages = [
+      makeToolMessage(0),
+      makeToolMessage(1),
+    ];
+    messages.messageCount = 2;
+    messages.activeSessionUnreadOrdinal = 0;
+    // One grouped row straddling the scroll offset.
+    virtualizerMock.visibleItems = [
+      { index: 0, key: "row-0", start: 0, end: 300 },
+    ];
+    virtualizerMock.scrollOffset = 100;
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+    document
+      .querySelector<HTMLElement>(".message-list-scroll")!
+      .dispatchEvent(new Event("scroll"));
+    await new Promise((r) => setTimeout(r, 5));
+
+    expect(readProgress.hasUnread("s1", "2")).toBe(true);
+  });
+
+  it("shows the boundary inside a grouped tool row", async () => {
+    readProgress.baseline("s1", "1", null);
+    messages.messages = [
+      makeToolMessage(0),
+      makeToolMessage(1),
+    ];
+    messages.messageCount = 2;
+    messages.activeSessionUnreadOrdinal = 1;
+    virtualizerMock.visibleItems = [
+      { index: 0, key: "row-0", start: 0, end: 300 },
+    ];
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    const divider = document.querySelector<HTMLElement>(
+      ".tool-group .unread-divider",
+    );
+    expect(divider).not.toBeNull();
+    expect(
+      (divider!.nextElementSibling as HTMLElement).dataset.messageOrdinal,
+    ).toBe("1");
+  });
+
+  it("cancels the pending read check on destroy", async () => {
+    readProgress.baseline("s1", "1", 0);
+    const cancel = vi.spyOn(window, "cancelAnimationFrame");
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+    document
+      .querySelector<HTMLElement>(".message-list-scroll")!
+      .dispatchEvent(new Event("scroll"));
+
+    unmount(component);
+    component = undefined;
+
+    expect(cancel).toHaveBeenCalled();
+    cancel.mockRestore();
   });
 });

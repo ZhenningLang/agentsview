@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     enrich_model              TEXT NOT NULL DEFAULT '',
     enrich_status             TEXT NOT NULL DEFAULT '',
     enrich_error              TEXT NOT NULL DEFAULT '',
+    transcript_revision       TEXT NOT NULL DEFAULT '0',
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -704,6 +705,11 @@ func EnsureSchema(
 			"sessions", "enrich_error",
 			`enrich_error TEXT NOT NULL DEFAULT ''`,
 			"adding sessions.enrich_error",
+		},
+		{
+			"sessions", "transcript_revision",
+			`transcript_revision TEXT NOT NULL DEFAULT '0'`,
+			"adding sessions.transcript_revision",
 		},
 		{
 			"sessions", "session_name",
@@ -1568,7 +1574,7 @@ func CheckSchemaCompat(
 			session_name, llm_title, llm_summary, llm_keywords,
 			llm_embedding, llm_embedding_dim, enriched_at,
 			enriched_msg_count, enrich_model, enrich_status,
-			enrich_error
+			enrich_error, transcript_revision
 		 FROM sessions LIMIT 0`)
 	if err != nil {
 		return fmt.Errorf(

@@ -444,6 +444,11 @@ func (db *DB) InsertMessages(msgs []Message) error {
 	if err := insertToolResultEventsTx(tx, events); err != nil {
 		return err
 	}
+	for _, sessionID := range distinctMessageSessionIDs(msgs) {
+		if err := bumpTranscriptRevisionTx(tx, sessionID); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -547,6 +552,9 @@ func (db *DB) ReplaceSessionMessages(
 func replaceSessionMessagesTx(
 	tx *sql.Tx, sessionID string, msgs []Message,
 ) error {
+	oldMsgs, err := loadSessionTranscriptTx(tx, sessionID)
+	shouldBump := err != nil || !transcriptMessagesEqual(oldMsgs, msgs)
+
 	pins, err := savePinsTx(tx, sessionID)
 	if err != nil {
 		return err
@@ -629,7 +637,255 @@ func replaceSessionMessagesTx(
 		}
 	}
 
-	return restorePinsTx(tx, sessionID, pins)
+	if err := restorePinsTx(tx, sessionID, pins); err != nil {
+		return err
+	}
+	if shouldBump {
+		return bumpTranscriptRevisionTx(tx, sessionID)
+	}
+	return nil
+}
+
+func bumpTranscriptRevisionTx(tx *sql.Tx, sessionID string) error {
+	res, err := tx.Exec(`
+		UPDATE sessions
+		SET transcript_revision = CAST(CAST(transcript_revision AS INTEGER) + 1 AS TEXT),
+		    local_modified_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+		WHERE id = ?`, sessionID)
+	if err != nil {
+		return fmt.Errorf(
+			"bumping transcript_revision for session %s: %w",
+			sessionID, err,
+		)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf(
+			"checking transcript_revision bump for session %s: %w",
+			sessionID, err,
+		)
+	}
+	if n != 1 {
+		return fmt.Errorf(
+			"bumping transcript_revision for session %s: updated %d rows, want 1",
+			sessionID, n,
+		)
+	}
+	return nil
+}
+
+func loadSessionTranscriptTx(tx *sql.Tx, sessionID string) ([]Message, error) {
+	rows, err := tx.Query(fmt.Sprintf(`
+		SELECT %s
+		FROM messages
+		WHERE session_id = ?
+		ORDER BY ordinal ASC`, selectMessageCols), sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("querying session transcript %s: %w", sessionID, err)
+	}
+	defer rows.Close()
+	msgs, err := scanMessages(rows)
+	if err != nil {
+		return nil, err
+	}
+	if err := attachTranscriptToolCallsTx(tx, msgs); err != nil {
+		return nil, err
+	}
+	return msgs, nil
+}
+
+func attachTranscriptToolCallsTx(tx *sql.Tx, msgs []Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	idToIdx := make(map[int64]int, len(msgs))
+	ids := make([]int64, len(msgs))
+	for i, msg := range msgs {
+		ids[i] = msg.ID
+		idToIdx[msg.ID] = i
+	}
+	for i := 0; i < len(ids); i += attachToolCallBatchSize {
+		end := min(i+attachToolCallBatchSize, len(ids))
+		if err := attachTranscriptToolCallsBatchTx(
+			tx, msgs, idToIdx, ids[i:end],
+		); err != nil {
+			return err
+		}
+	}
+	if err := attachTranscriptToolResultEventsTx(tx, msgs); err != nil {
+		return err
+	}
+	return nil
+}
+
+func attachTranscriptToolCallsBatchTx(
+	tx *sql.Tx,
+	msgs []Message,
+	idToIdx map[int64]int,
+	batch []int64,
+) error {
+	if len(batch) == 0 {
+		return nil
+	}
+	args := make([]any, len(batch))
+	placeholders := make([]string, len(batch))
+	for i, id := range batch {
+		args[i] = id
+		placeholders[i] = "?"
+	}
+	rows, err := tx.Query(fmt.Sprintf(`
+		SELECT message_id, session_id, tool_name, category,
+			tool_use_id, input_json, skill_name,
+			result_content_length, result_content, subagent_session_id
+		FROM tool_calls
+		WHERE message_id IN (%s)
+		ORDER BY id`, strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return fmt.Errorf("querying transcript tool_calls: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var tc ToolCall
+		var toolUseID, inputJSON, skillName sql.NullString
+		var subagentSessionID, resultContent sql.NullString
+		var resultLen sql.NullInt64
+		if err := rows.Scan(
+			&tc.MessageID, &tc.SessionID,
+			&tc.ToolName, &tc.Category,
+			&toolUseID, &inputJSON, &skillName,
+			&resultLen, &resultContent, &subagentSessionID,
+		); err != nil {
+			return fmt.Errorf("scanning transcript tool_call: %w", err)
+		}
+		if toolUseID.Valid {
+			tc.ToolUseID = toolUseID.String
+		}
+		if inputJSON.Valid {
+			tc.InputJSON = inputJSON.String
+		}
+		if skillName.Valid {
+			tc.SkillName = skillName.String
+		}
+		if resultLen.Valid {
+			tc.ResultContentLength = int(resultLen.Int64)
+		}
+		if resultContent.Valid {
+			tc.ResultContent = resultContent.String
+		}
+		if subagentSessionID.Valid {
+			tc.SubagentSessionID = subagentSessionID.String
+		}
+		if idx, ok := idToIdx[tc.MessageID]; ok {
+			msgs[idx].ToolCalls = append(msgs[idx].ToolCalls, tc)
+		}
+	}
+	return rows.Err()
+}
+
+func attachTranscriptToolResultEventsTx(tx *sql.Tx, msgs []Message) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	sessionID := msgs[0].SessionID
+	ordToIdx := make(map[int]int, len(msgs))
+	ordinals := make([]int, 0, len(msgs))
+	for i, msg := range msgs {
+		ordToIdx[msg.Ordinal] = i
+		ordinals = append(ordinals, msg.Ordinal)
+	}
+	for i := 0; i < len(ordinals); i += attachToolCallBatchSize {
+		end := min(i+attachToolCallBatchSize, len(ordinals))
+		if err := attachTranscriptToolResultEventsBatchTx(
+			tx, msgs, ordToIdx, sessionID, ordinals[i:end],
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func attachTranscriptToolResultEventsBatchTx(
+	tx *sql.Tx,
+	msgs []Message,
+	ordToIdx map[int]int,
+	sessionID string,
+	ordinals []int,
+) error {
+	if len(ordinals) == 0 {
+		return nil
+	}
+	args := []any{sessionID}
+	placeholders := make([]string, len(ordinals))
+	for i, ord := range ordinals {
+		args = append(args, ord)
+		placeholders[i] = "?"
+	}
+	rows, err := tx.Query(fmt.Sprintf(`
+		SELECT tool_call_message_ordinal, call_index,
+			tool_use_id, agent_id, subagent_session_id,
+			source, status, content, content_length,
+			timestamp, event_index
+		FROM tool_result_events
+		WHERE session_id = ? AND tool_call_message_ordinal IN (%s)
+		ORDER BY tool_call_message_ordinal, call_index, event_index`,
+		strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return fmt.Errorf("querying transcript tool_result_events: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			msgOrdinal int
+			callIndex  int
+			ev         ToolResultEvent
+			toolUseID  sql.NullString
+			agentID    sql.NullString
+			subID      sql.NullString
+			timestamp  sql.NullString
+		)
+		if err := rows.Scan(
+			&msgOrdinal, &callIndex,
+			&toolUseID, &agentID, &subID,
+			&ev.Source, &ev.Status, &ev.Content,
+			&ev.ContentLength, &timestamp, &ev.EventIndex,
+		); err != nil {
+			return fmt.Errorf("scanning transcript tool_result_event: %w", err)
+		}
+		if toolUseID.Valid {
+			ev.ToolUseID = toolUseID.String
+		}
+		if agentID.Valid {
+			ev.AgentID = agentID.String
+		}
+		if subID.Valid {
+			ev.SubagentSessionID = subID.String
+		}
+		if timestamp.Valid {
+			ev.Timestamp = timestamp.String
+		}
+		idx, ok := ordToIdx[msgOrdinal]
+		if !ok || callIndex < 0 || callIndex >= len(msgs[idx].ToolCalls) {
+			continue
+		}
+		msgs[idx].ToolCalls[callIndex].ResultEvents = append(
+			msgs[idx].ToolCalls[callIndex].ResultEvents,
+			ev,
+		)
+	}
+	return rows.Err()
+}
+
+func distinctMessageSessionIDs(msgs []Message) []string {
+	seen := make(map[string]struct{}, len(msgs))
+	ids := make([]string, 0, len(msgs))
+	for _, msg := range msgs {
+		if _, ok := seen[msg.SessionID]; ok {
+			continue
+		}
+		seen[msg.SessionID] = struct{}{}
+		ids = append(ids, msg.SessionID)
+	}
+	return ids
 }
 
 // ReplaceSessionContent atomically replaces a session's messages, signal
