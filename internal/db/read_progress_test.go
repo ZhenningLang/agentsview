@@ -73,9 +73,13 @@ func TestPhase20SQLiteMigrationAddsTranscriptRevisionWithoutResync(t *testing.T)
 func TestPhase20SQLiteSchemaProjectsTranscriptRevisionReads(t *testing.T) {
 	ctx := context.Background()
 	d := testDB(t)
+	fileHash := "phase20-file-hash"
+	localModifiedAt := "2026-08-18T00:03:00.000Z"
 	insertSession(t, d, "phase20-parent", "project-a", func(s *Session) {
 		s.StartedAt = phase20Ptr("2026-08-18T00:00:00Z")
 		s.EndedAt = phase20Ptr("2026-08-18T00:01:00Z")
+		s.FileHash = &fileHash
+		s.LocalModifiedAt = &localModifiedAt
 	})
 	insertSession(t, d, "phase20-child", "project-a", func(s *Session) {
 		s.ParentSessionID = phase20Ptr("phase20-parent")
@@ -98,27 +102,23 @@ func TestPhase20SQLiteSchemaProjectsTranscriptRevisionReads(t *testing.T) {
 	got, err := d.GetSession(ctx, "phase20-parent")
 	require.NoError(t, err)
 	require.NotNil(t, got)
-	require.NotNil(t, got.TranscriptRevision)
-	assert.Equal(t, "7", *got.TranscriptRevision)
+	assertPhase20SessionRevision(t, *got, "7", fileHash, localModifiedAt)
 
 	full, err := d.GetSessionFull(ctx, "phase20-parent")
 	require.NoError(t, err)
 	require.NotNil(t, full)
-	require.NotNil(t, full.TranscriptRevision)
-	assert.Equal(t, "7", *full.TranscriptRevision)
+	assertPhase20SessionRevision(t, *full, "7", fileHash, localModifiedAt)
 
 	page, err := d.ListSessions(ctx, SessionFilter{Limit: 10})
 	require.NoError(t, err)
 	pageRows := phase20SessionsByID(page.Sessions)
 	require.Contains(t, pageRows, "phase20-parent")
-	require.NotNil(t, pageRows["phase20-parent"].TranscriptRevision)
-	assert.Equal(t, "7", *pageRows["phase20-parent"].TranscriptRevision)
+	assertPhase20SessionRevision(t, pageRows["phase20-parent"], "7", fileHash, localModifiedAt)
 
 	children, err := d.GetChildSessions(ctx, "phase20-parent")
 	require.NoError(t, err)
 	require.Len(t, children, 1)
-	require.NotNil(t, children[0].TranscriptRevision)
-	assert.Equal(t, "3", *children[0].TranscriptRevision)
+	assertPhase20SessionRevision(t, children[0], "3", fileHash, localModifiedAt)
 
 	modified, err := d.ListSessionsModifiedBetween(
 		ctx,
@@ -130,8 +130,7 @@ func TestPhase20SQLiteSchemaProjectsTranscriptRevisionReads(t *testing.T) {
 	require.NoError(t, err)
 	modifiedRows := phase20SessionsByID(modified)
 	require.Contains(t, modifiedRows, "phase20-parent")
-	require.NotNil(t, modifiedRows["phase20-parent"].TranscriptRevision)
-	assert.Equal(t, "7", *modifiedRows["phase20-parent"].TranscriptRevision)
+	assertPhase20SessionRevision(t, modifiedRows["phase20-parent"], "7", fileHash, localModifiedAt)
 
 	index, err := d.GetSidebarSessionIndex(ctx, SessionFilter{})
 	require.NoError(t, err)
@@ -139,6 +138,16 @@ func TestPhase20SQLiteSchemaProjectsTranscriptRevisionReads(t *testing.T) {
 	require.Contains(t, indexRows, "phase20-parent")
 	require.NotNil(t, indexRows["phase20-parent"].TranscriptRevision)
 	assert.Equal(t, "7", *indexRows["phase20-parent"].TranscriptRevision)
+}
+
+func assertPhase20SessionRevision(
+	t *testing.T, s Session, want, fileHash, localModifiedAt string,
+) {
+	t.Helper()
+	require.NotNil(t, s.TranscriptRevision)
+	assert.Equal(t, want, *s.TranscriptRevision)
+	assert.NotEqual(t, fileHash, *s.TranscriptRevision)
+	assert.NotEqual(t, localModifiedAt, *s.TranscriptRevision)
 }
 
 func TestPhase20TranscriptMessagesEqualVisibleContract(t *testing.T) {

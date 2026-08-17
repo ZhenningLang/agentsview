@@ -2,6 +2,8 @@ package service_test
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -52,6 +54,64 @@ func TestDirectBackend_Get_Roundtrip(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, detail)
 	assert.Equal(t, sessionID, detail.ID)
+}
+
+func TestPhase20DirectBackendReadProgressTokenContract(t *testing.T) {
+	t.Parallel()
+	svc, env := newDirectTestSvc(t)
+	fileHash := "phase20-file-hash"
+	localModifiedAt := "2026-08-18T03:17:00.000Z"
+	dbtest.SeedSession(t, env.db, "phase20-service", "p1", func(s *db.Session) {
+		s.MessageCount = 2
+		s.UserMessageCount = 2
+		s.FileHash = &fileHash
+		s.LocalModifiedAt = &localModifiedAt
+	})
+	setPhase20ServiceRevision(t, env.db, "phase20-service", "42")
+
+	detail, err := svc.Get(context.Background(), "phase20-service")
+	require.NoError(t, err)
+	require.NotNil(t, detail)
+	require.NotNil(t, detail.TranscriptRevision)
+	assert.Equal(t, "42", *detail.TranscriptRevision)
+	assertPhase20JSONToken(t, detail, "42", fileHash, localModifiedAt)
+
+	list, err := svc.List(context.Background(), service.ListFilter{
+		IncludeOneShot: true,
+		Limit:          10,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, list)
+	require.Len(t, list.Sessions, 1)
+	require.NotNil(t, list.Sessions[0].TranscriptRevision)
+	assert.Equal(t, "42", *list.Sessions[0].TranscriptRevision)
+	assertPhase20JSONToken(t, list.Sessions[0], "42", fileHash, localModifiedAt)
+}
+
+func setPhase20ServiceRevision(t *testing.T, d *db.DB, sessionID, revision string) {
+	t.Helper()
+	require.NoError(t, d.Update(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			`UPDATE sessions SET transcript_revision = ? WHERE id = ?`,
+			revision, sessionID,
+		)
+		return err
+	}))
+}
+
+func assertPhase20JSONToken(
+	t *testing.T, value any, want, fileHash, localModifiedAt string,
+) {
+	t.Helper()
+	body, err := json.Marshal(value)
+	require.NoError(t, err)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(body, &raw))
+	got, ok := raw["transcript_revision"].(string)
+	require.True(t, ok, "transcript_revision must be a JSON string in %s", string(body))
+	assert.Equal(t, want, got)
+	assert.NotEqual(t, fileHash, got)
+	assert.NotEqual(t, localModifiedAt, got)
 }
 
 func TestDirectBackend_List_Empty(t *testing.T) {
