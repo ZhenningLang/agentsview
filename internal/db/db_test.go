@@ -2128,6 +2128,9 @@ func TestGetSessionFull(t *testing.T) {
 			Outcome:           "unknown",
 			OutcomeConfidence: "low",
 			CreatedAt:         got.CreatedAt,
+			// A session with no messages written yet sits at the column
+			// default; the counter only moves on a visible transcript write.
+			TranscriptRevision: new("0"),
 		}
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Errorf("GetSessionFull mismatch (-want +got):\n%s", diff)
@@ -2143,14 +2146,15 @@ func TestGetSessionFull(t *testing.T) {
 		requireNoError(t, err, "GetSessionFull")
 		require.NotNil(t, got, "expected non-nil session")
 		want := &Session{
-			ID:                "full-2",
-			Project:           "proj",
-			MessageCount:      1,
-			Machine:           defaultMachine,
-			Agent:             defaultAgent,
-			Outcome:           "unknown",
-			OutcomeConfidence: "low",
-			CreatedAt:         got.CreatedAt,
+			ID:                 "full-2",
+			Project:            "proj",
+			MessageCount:       1,
+			Machine:            defaultMachine,
+			Agent:              defaultAgent,
+			Outcome:            "unknown",
+			OutcomeConfidence:  "low",
+			CreatedAt:          got.CreatedAt,
+			TranscriptRevision: new("0"),
 		}
 		if diff := cmp.Diff(want, got); diff != "" {
 			t.Errorf("GetSessionFull mismatch (-want +got):\n%s", diff)
