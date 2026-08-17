@@ -579,7 +579,7 @@ func TestPhase18MessagePointForkTerminalFailureKeepsFallbackPrompt(t *testing.T)
 	assert.Equal(t, "no_terminal_found", resp.Error)
 	require.NotEmpty(t, resp.Command)
 	promptPath := phase18SinglePrompt(t, "phase18-terminal-failure", 1)
-	assert.Contains(t, resp.Command, promptPath)
+	phase18AssertCommandConsumesPrompt(t, resp.Command, promptPath)
 	assert.FileExists(t, promptPath)
 }
 
@@ -607,7 +607,7 @@ func TestPhase18MessagePointForkNoEngineCommandOnlyReturnsPrompt(t *testing.T) {
 	assert.False(t, resp.Launched)
 	require.NotEmpty(t, resp.Command)
 	promptPath := phase18SinglePrompt(t, "phase18-commandonly-remote", 1)
-	assert.Contains(t, resp.Command, promptPath)
+	phase18AssertCommandConsumesPrompt(t, resp.Command, promptPath)
 	assert.FileExists(t, promptPath)
 }
 

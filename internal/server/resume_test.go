@@ -113,6 +113,7 @@ func TestPhase18MessagePointForkPromptLifecycle(t *testing.T) {
 	cacheRoot := t.TempDir()
 	t.Setenv("HOME", cacheRoot)
 	t.Setenv("USERPROFILE", cacheRoot)
+	t.Setenv("LOCALAPPDATA", cacheRoot)
 
 	first, err := claudeMessagePointPromptPath("phase18-session", 3)
 	require.NoError(t, err)
