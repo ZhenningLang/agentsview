@@ -2,11 +2,11 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbHeatmapEntry } from './DbHeatmapEntry';
 import type { DbHeatmapLevels } from './DbHeatmapLevels';
 export type DbHeatmapResponse = {
-  entries: any[] | null;
+  entries: Array<DbHeatmapEntry> | null;
   entries_from: string;
   levels: DbHeatmapLevels;
   metric: string;
 };
-

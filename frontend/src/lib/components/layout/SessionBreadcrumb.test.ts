@@ -56,6 +56,7 @@ const openersService = OpenersService as unknown as {
 const sessionsService = SessionsService as unknown as {
   getApiV1SessionsIdDirectory: ReturnType<typeof vi.fn>;
   getApiV1SessionsIdUsage: ReturnType<typeof vi.fn>;
+  postApiV1SessionsIdResume: ReturnType<typeof vi.fn>;
 };
 
 type SessionWithTokenFlags = Session & {
@@ -168,6 +169,9 @@ beforeEach(() => {
   sessionsService.getApiV1SessionsIdUsage
     .mockReset()
     .mockResolvedValue(makeUsage());
+  sessionsService.postApiV1SessionsIdResume
+    .mockReset()
+    .mockResolvedValue({ launched: true, terminal: "terminal" });
 });
 
 afterEach(() => {
@@ -364,6 +368,29 @@ describe("SessionBreadcrumb", () => {
     const resumeBtn = document.querySelector(".resume-btn");
     expect(resumeBtn).toBeNull();
 
+    unmount(component);
+  });
+
+  it("phase18 keeps whole-session resume request body unchanged", async () => {
+    const component = mount(SessionBreadcrumb, {
+      target: document.body,
+      props: {
+        session: makeSession("claude"),
+        onBack: () => {},
+      },
+    });
+
+    await tick();
+    document.querySelector<HTMLButtonElement>(".resume-btn")!.click();
+    await tick();
+    document.querySelectorAll<HTMLButtonElement>(".open-menu-item")[0]!.click();
+    await tick();
+    await Promise.resolve();
+
+    expect(sessionsService.postApiV1SessionsIdResume).toHaveBeenCalledWith({
+      id: "run:123456789abcdef",
+      requestBody: {},
+    });
     unmount(component);
   });
 

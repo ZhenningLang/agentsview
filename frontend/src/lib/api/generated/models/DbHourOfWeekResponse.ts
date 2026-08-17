@@ -2,7 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbHourOfWeekCell } from './DbHourOfWeekCell';
 export type DbHourOfWeekResponse = {
-  cells: any[] | null;
+  cells: Array<DbHourOfWeekCell> | null;
 };
-

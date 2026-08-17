@@ -3,6 +3,5 @@
 /* tslint:disable */
 /* eslint-disable */
 export type OrdinalsResponse = {
-  ordinals: any[] | null;
+  ordinals: Array<number> | null;
 };
-

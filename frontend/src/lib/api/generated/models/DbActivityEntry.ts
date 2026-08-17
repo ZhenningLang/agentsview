@@ -12,4 +12,3 @@ export type DbActivityEntry = {
   tool_calls: number;
   user_messages: number;
 };
-

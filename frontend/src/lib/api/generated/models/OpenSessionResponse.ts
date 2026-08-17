@@ -7,4 +7,3 @@ export type OpenSessionResponse = {
   opener: string;
   path: string;
 };
-

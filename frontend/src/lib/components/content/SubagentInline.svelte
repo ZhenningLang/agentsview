@@ -133,7 +133,11 @@
         <div class="subagent-status subagent-error">{error}</div>
       {:else if messages && messages.length > 0}
         {#each messages as message}
-          <MessageContent {message} isSubagentContext={true} />
+          <MessageContent
+            {message}
+            session={tokenSourceSession}
+            isSubagentContext={true}
+          />
         {/each}
       {:else if messages}
         <div class="subagent-status">No messages</div>

@@ -6,4 +6,3 @@ export type DbToolTrendEntry = {
   by_category: Record<string, number>;
   date: string;
 };
-

@@ -8,4 +8,3 @@ export type PingInfo = {
   service?: string;
   version?: string;
 };
-

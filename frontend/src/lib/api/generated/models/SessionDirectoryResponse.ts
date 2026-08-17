@@ -5,4 +5,3 @@
 export type SessionDirectoryResponse = {
   path: string;
 };
-

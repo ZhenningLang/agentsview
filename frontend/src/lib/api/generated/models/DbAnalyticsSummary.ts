@@ -17,4 +17,3 @@ export type DbAnalyticsSummary = {
   total_output_tokens: number;
   total_sessions: number;
 };
-

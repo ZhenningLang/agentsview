@@ -9,4 +9,3 @@ export type DbStats = {
   project_count: number;
   session_count: number;
 };
-

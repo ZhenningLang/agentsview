@@ -9,4 +9,3 @@ export type DbSignalsToolHealth = {
   total_failure_signals: number;
   total_retries: number;
 };
-

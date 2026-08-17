@@ -572,6 +572,7 @@
               <ToolCallGroup
                 messages={item.messages}
                 timestamp={item.timestamp}
+                session={sessions.activeSession}
                 highlightQuery={highlightQuery}
                 isCurrentHighlight={item.ordinals.includes(inSessionSearch.currentOrdinal ?? -1)}
               />

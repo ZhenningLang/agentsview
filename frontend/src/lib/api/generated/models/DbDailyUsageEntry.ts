@@ -2,17 +2,22 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbAgentBreakdown } from './DbAgentBreakdown';
+import type { DbMachineBreakdown } from './DbMachineBreakdown';
+import type { DbModelBreakdown } from './DbModelBreakdown';
+import type { DbProjectBreakdown } from './DbProjectBreakdown';
 export type DbDailyUsageEntry = {
-  agentBreakdowns?: any[] | null;
+  agentBreakdowns?: Array<DbAgentBreakdown> | null;
   cacheCreationTokens: number;
   cacheReadTokens: number;
   date: string;
   hasCost: boolean;
   inputTokens: number;
-  modelBreakdowns?: any[] | null;
-  modelsUsed: any[] | null;
+  machineBreakdowns?: Array<DbMachineBreakdown> | null;
+  modelBreakdowns?: Array<DbModelBreakdown> | null;
+  modelsUsed: Array<string> | null;
   outputTokens: number;
-  projectBreakdowns?: any[] | null;
+  projectBreakdowns?: Array<DbProjectBreakdown> | null;
   totalCost: number;
   unpricedModels?: Array<string> | null;
 };

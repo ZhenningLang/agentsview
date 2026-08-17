@@ -6,4 +6,3 @@ export type DbDistributionBucket = {
   count: number;
   label: string;
 };
-

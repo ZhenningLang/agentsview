@@ -8,4 +8,3 @@ export type FormFile = {
   IsSet: boolean;
   Size: number;
 };
-

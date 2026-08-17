@@ -6,4 +6,3 @@ export type DbAgentSummary = {
   messages: number;
   sessions: number;
 };
-

@@ -10,4 +10,3 @@ export type ModelTotal = {
   model: string;
   outputTokens: number;
 };
-

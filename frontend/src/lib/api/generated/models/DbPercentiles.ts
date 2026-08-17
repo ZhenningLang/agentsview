@@ -6,4 +6,3 @@ export type DbPercentiles = {
   p50: number;
   p90: number;
 };
-

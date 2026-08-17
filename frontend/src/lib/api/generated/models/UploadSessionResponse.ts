@@ -9,4 +9,3 @@ export type UploadSessionResponse = {
   session_id: string;
   sessions: number;
 };
-

@@ -2,8 +2,8 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbSecretFindingRow } from './DbSecretFindingRow';
 export type ServiceSecretFindingList = {
-  findings: any[] | null;
+  findings: Array<DbSecretFindingRow> | null;
   next_cursor?: number;
 };
-

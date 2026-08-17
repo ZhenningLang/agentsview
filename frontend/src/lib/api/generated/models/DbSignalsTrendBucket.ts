@@ -11,4 +11,3 @@ export type DbSignalsTrendBucket = {
   errored: number;
   session_count: number;
 };
-

@@ -2,10 +2,12 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbToolAgentBreakdown } from './DbToolAgentBreakdown';
+import type { DbToolCategoryCount } from './DbToolCategoryCount';
+import type { DbToolTrendEntry } from './DbToolTrendEntry';
 export type DbToolsAnalyticsResponse = {
-  by_agent: any[] | null;
-  by_category: any[] | null;
+  by_agent: Array<DbToolAgentBreakdown> | null;
+  by_category: Array<DbToolCategoryCount> | null;
   total_calls: number;
-  trend: any[] | null;
+  trend: Array<DbToolTrendEntry> | null;
 };
-

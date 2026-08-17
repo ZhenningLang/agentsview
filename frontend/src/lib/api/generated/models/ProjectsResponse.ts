@@ -2,7 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbProjectInfo } from './DbProjectInfo';
 export type ProjectsResponse = {
-  projects: any[] | null;
+  projects: Array<DbProjectInfo> | null;
 };
-

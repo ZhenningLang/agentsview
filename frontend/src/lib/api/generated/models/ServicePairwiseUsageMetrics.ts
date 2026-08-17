@@ -2,17 +2,15 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export type PairwiseDelta = {
+export type ServicePairwiseUsageMetrics = {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   costPerSession?: number;
-  costRelativeChange?: number;
   hasCost: boolean;
   inputTokens: number;
   outputTokens: number;
   sessionCount: number;
   tokensPerSession?: number;
-  tokensRelativeChange?: number;
   totalCost: number;
   totalTokens: number;
   unpricedModels?: Array<string> | null;

@@ -9,6 +9,7 @@ import type { DbHourOfWeekResponse } from '../models/DbHourOfWeekResponse';
 import type { DbProjectsAnalyticsResponse } from '../models/DbProjectsAnalyticsResponse';
 import type { DbSessionShapeResponse } from '../models/DbSessionShapeResponse';
 import type { DbSignalsAnalyticsResponse } from '../models/DbSignalsAnalyticsResponse';
+import type { DbSpeedTrendResponse } from '../models/DbSpeedTrendResponse';
 import type { DbToolsAnalyticsResponse } from '../models/DbToolsAnalyticsResponse';
 import type { DbTopSessionsResponse } from '../models/DbTopSessionsResponse';
 import type { DbVelocityResponse } from '../models/DbVelocityResponse';
@@ -648,6 +649,64 @@ export class AnalyticsService {
         'include_one_shot': includeOneShot,
         'include_automated': includeAutomated,
         'termination': termination,
+      },
+      errors: {
+        400: `Bad Request`,
+        401: `Unauthorized`,
+        403: `Forbidden`,
+        404: `Not Found`,
+        409: `Conflict`,
+        422: `Unprocessable Entity`,
+        500: `Internal Server Error`,
+        501: `Not Implemented`,
+        502: `Bad Gateway`,
+        503: `Service Unavailable`,
+        504: `Gateway Timeout`,
+      },
+    });
+  }
+  /**
+   * Get approximate output speed trend
+   * @returns DbSpeedTrendResponse OK
+   * @throws ApiError
+   */
+  public static getApiV1AnalyticsSpeedTrend({
+    since,
+    until,
+    bucket = 'hour',
+    groupBy = 'agent',
+    agent,
+  }: {
+    /**
+     * Range start RFC3339 timestamp
+     */
+    since?: string,
+    /**
+     * Range end RFC3339 timestamp
+     */
+    until?: string,
+    /**
+     * Time bucket
+     */
+    bucket?: '15m' | 'hour' | 'day',
+    /**
+     * Series grouping
+     */
+    groupBy?: 'agent' | 'model',
+    /**
+     * Filter by agent
+     */
+    agent?: string,
+  }): CancelablePromise<DbSpeedTrendResponse> {
+    return __request(OpenAPI, {
+      method: 'GET',
+      url: '/api/v1/analytics/speed-trend',
+      query: {
+        'since': since,
+        'until': until,
+        'bucket': bucket,
+        'group_by': groupBy,
+        'agent': agent,
       },
       errors: {
         400: `Bad Request`,

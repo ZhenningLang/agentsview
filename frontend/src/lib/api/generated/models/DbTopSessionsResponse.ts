@@ -2,8 +2,8 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbTopSession } from './DbTopSession';
 export type DbTopSessionsResponse = {
   metric: string;
-  sessions: any[] | null;
+  sessions: Array<DbTopSession> | null;
 };
-

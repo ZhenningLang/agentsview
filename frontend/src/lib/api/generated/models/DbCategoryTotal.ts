@@ -7,4 +7,3 @@ export type DbCategoryTotal = {
   category: string;
   duration_ms: number;
 };
-

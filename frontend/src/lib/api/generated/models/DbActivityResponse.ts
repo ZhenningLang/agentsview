@@ -2,8 +2,8 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbActivityEntry } from './DbActivityEntry';
 export type DbActivityResponse = {
   granularity: string;
-  series: any[] | null;
+  series: Array<DbActivityEntry> | null;
 };
-

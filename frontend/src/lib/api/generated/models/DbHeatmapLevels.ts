@@ -8,4 +8,3 @@ export type DbHeatmapLevels = {
   l3: number;
   l4: number;
 };
-

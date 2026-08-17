@@ -76,6 +76,8 @@ export class SessionsService {
     termination,
     minToolFailures,
     hasSecret,
+    orderBy = 'recent',
+    descending,
   }: {
     /**
      * Filter by project
@@ -161,6 +163,14 @@ export class SessionsService {
      * Filter sessions with secret findings
      */
     hasSecret?: boolean,
+    /**
+     * Sort order: comma-separated keys, each optionally key:asc or key:desc. Valid keys: recent, started, messages, user-messages, output-tokens, peak-context, failures, retries, edit-churn, compactions, context-pressure, health, secrets, id.
+     */
+    orderBy?: string,
+    /**
+     * Default sort direction for keys without explicit :asc/:desc
+     */
+    descending?: boolean,
   }): CancelablePromise<ServiceSessionList> {
     return __request(OpenAPI, {
       method: 'GET',
@@ -187,6 +197,8 @@ export class SessionsService {
         'termination': termination,
         'min_tool_failures': minToolFailures,
         'has_secret': hasSecret,
+        'order_by': orderBy,
+        'descending': descending,
       },
       errors: {
         400: `Bad Request`,
@@ -230,6 +242,8 @@ export class SessionsService {
     termination,
     minToolFailures,
     hasSecret,
+    orderBy = 'recent',
+    descending,
   }: {
     /**
      * Filter by project
@@ -315,6 +329,14 @@ export class SessionsService {
      * Filter sessions with secret findings
      */
     hasSecret?: boolean,
+    /**
+     * Sort order: comma-separated keys, each optionally key:asc or key:desc. Valid keys: recent, started, messages, user-messages, output-tokens, peak-context, failures, retries, edit-churn, compactions, context-pressure, health, secrets, id.
+     */
+    orderBy?: string,
+    /**
+     * Default sort direction for keys without explicit :asc/:desc
+     */
+    descending?: boolean,
   }): CancelablePromise<DbSidebarSessionIndex> {
     return __request(OpenAPI, {
       method: 'GET',
@@ -341,6 +363,8 @@ export class SessionsService {
         'termination': termination,
         'min_tool_failures': minToolFailures,
         'has_secret': hasSecret,
+        'order_by': orderBy,
+        'descending': descending,
       },
       errors: {
         400: `Bad Request`,
@@ -507,7 +531,7 @@ export class SessionsService {
   }
   /**
    * List child sessions
-   * @returns any[] OK
+   * @returns DbSession OK
    * @throws ApiError
    */
   public static getApiV1SessionsIdChildren({
@@ -517,7 +541,7 @@ export class SessionsService {
      * Session ID
      */
     id: string,
-  }): CancelablePromise<any[] | null> {
+  }): CancelablePromise<Array<DbSession> | null> {
     return __request(OpenAPI, {
       method: 'GET',
       url: '/api/v1/sessions/{id}/children',

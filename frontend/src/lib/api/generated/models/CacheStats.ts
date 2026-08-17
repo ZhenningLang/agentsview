@@ -10,4 +10,3 @@ export type CacheStats = {
   savingsVsUncached: number;
   uncachedInputTokens: number;
 };
-

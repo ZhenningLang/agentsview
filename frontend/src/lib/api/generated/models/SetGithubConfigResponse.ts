@@ -6,4 +6,3 @@ export type SetGithubConfigResponse = {
   success: boolean;
   username: string;
 };
-

@@ -2,7 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbInsight } from './DbInsight';
 export type InsightsResponse = {
-  insights: any[] | null;
+  insights: Array<DbInsight> | null;
 };
-

@@ -7,4 +7,3 @@ export type TerminalResponse = {
   custom_bin?: string;
   mode: string;
 };
-

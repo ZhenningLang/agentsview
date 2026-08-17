@@ -13,4 +13,3 @@ export type DbContentMatch = {
   timestamp: string;
   tool_name?: string;
 };
-

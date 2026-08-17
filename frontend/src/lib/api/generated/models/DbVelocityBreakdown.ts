@@ -8,4 +8,3 @@ export type DbVelocityBreakdown = {
   overview: DbVelocityOverview;
   sessions: number;
 };
-

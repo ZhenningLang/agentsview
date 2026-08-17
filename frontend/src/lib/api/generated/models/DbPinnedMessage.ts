@@ -16,4 +16,3 @@ export type DbPinnedMessage = {
   session_id: string;
   session_project?: string;
 };
-

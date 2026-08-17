@@ -3,6 +3,5 @@
 /* tslint:disable */
 /* eslint-disable */
 export type MachinesResponse = {
-  machines: any[] | null;
+  machines: Array<string> | null;
 };
-

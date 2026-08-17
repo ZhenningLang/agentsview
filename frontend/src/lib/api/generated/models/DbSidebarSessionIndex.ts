@@ -2,8 +2,8 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbSidebarSessionIndexRow } from './DbSidebarSessionIndexRow';
 export type DbSidebarSessionIndex = {
-  sessions: any[] | null;
+  sessions: Array<DbSidebarSessionIndexRow> | null;
   total: number;
 };
-

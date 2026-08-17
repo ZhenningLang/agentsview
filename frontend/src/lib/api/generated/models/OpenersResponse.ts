@@ -2,7 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { Opener } from './Opener';
 export type OpenersResponse = {
-  openers: any[] | null;
+  openers: Array<Opener> | null;
 };
-

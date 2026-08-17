@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mount, tick, unmount } from "svelte";
-import type { Message } from "../../api/types.js";
+import type { Message, Session } from "../../api/types.js";
 // @ts-ignore
 import MessageContent from "./MessageContent.svelte";
 
@@ -23,6 +23,34 @@ const renderMermaidMock = vi.hoisted(() =>
     '<svg class="fake-diagram" xmlns="http://www.w3.org/2000/svg"><text>ok</text></svg>',
   ),
 );
+
+const phase18State = vi.hoisted(() => ({
+  activeSession: null as Session | null,
+  sessions: [] as Session[],
+  readOnly: false,
+  remote: false,
+  resume: vi.fn().mockResolvedValue({
+    launched: true,
+    terminal: "terminal",
+    command: "",
+  }),
+}));
+
+vi.mock("../../api/runtime.js", () => ({
+  configureGeneratedClient: vi.fn(),
+  isRemoteConnection: () => phase18State.remote,
+}));
+
+vi.mock("../../api/generated/index", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../api/generated/index")>();
+  return {
+    ...actual,
+    SessionsService: {
+      postApiV1SessionsIdResume: phase18State.resume,
+    },
+  };
+});
 
 vi.mock("../../stores/messages.svelte.js", () => ({
   messages: {
@@ -60,8 +88,20 @@ vi.mock("../../stores/pins.svelte.js", () => ({
 
 vi.mock("../../stores/sessions.svelte.js", () => ({
   sessions: {
-    sessions: [],
-    activeSession: null,
+    get sessions() {
+      return phase18State.sessions;
+    },
+    get activeSession() {
+      return phase18State.activeSession;
+    },
+  },
+}));
+
+vi.mock("../../stores/sync.svelte.js", () => ({
+  sync: {
+    get readOnly() {
+      return phase18State.readOnly;
+    },
   },
 }));
 
@@ -107,14 +147,175 @@ function makeMessage(
   };
 }
 
+function makeSession(
+  overrides: Partial<Session> = {},
+): Session {
+  return {
+    id: "session-1",
+    project: "proj",
+    machine: "local",
+    agent: "claude",
+    first_message: "hello",
+    started_at: "2026-02-20T12:30:00Z",
+    ended_at: "2026-02-20T12:31:00Z",
+    message_count: 2,
+    user_message_count: 1,
+    total_output_tokens: 0,
+    peak_context_tokens: 0,
+    is_automated: false,
+    created_at: "2026-02-20T12:30:00Z",
+    ...overrides,
+  };
+}
+
 afterEach(() => {
   document.body.innerHTML = "";
   vi.clearAllMocks();
   uiState.codeVisible = true;
   uiState.theme = "light";
+  phase18State.activeSession = null;
+  phase18State.sessions = [];
+  phase18State.readOnly = false;
+  phase18State.remote = false;
+  phase18State.resume.mockResolvedValue({
+    launched: true,
+    terminal: "terminal",
+    command: "",
+  });
 });
 
 describe("MessageContent", () => {
+  it("phase18 sends a message-point fork request from a Claude root message", async () => {
+    phase18State.activeSession = makeSession({ id: "session-1", agent: "claude" });
+    const component = mount(MessageContent, {
+      target: document.body,
+      props: {
+        message: makeMessage({ session_id: "session-1", ordinal: 3 }),
+      },
+    });
+
+    await tick();
+    document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Fork from this message"]',
+    )!.click();
+    await tick();
+    await Promise.resolve();
+
+    expect(phase18State.resume).toHaveBeenCalledWith({
+      id: "session-1",
+      requestBody: {
+        from_ordinal: 3,
+        fork_session: true,
+      },
+    });
+    unmount(component);
+  });
+
+  it("phase18 copies a command for local read-only message-point fork", async () => {
+    phase18State.activeSession = makeSession({ id: "session-1", agent: "claude" });
+    phase18State.readOnly = true;
+    phase18State.remote = false;
+    phase18State.resume.mockResolvedValue({
+      launched: false,
+      command: "claude < prompt",
+    });
+    const component = mount(MessageContent, {
+      target: document.body,
+      props: {
+        message: makeMessage({ session_id: "session-1", ordinal: 5 }),
+      },
+    });
+
+    await tick();
+    document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Fork from this message"]',
+    )!.click();
+    await tick();
+    await Promise.resolve();
+
+    expect(phase18State.resume).toHaveBeenCalledWith({
+      id: "session-1",
+      requestBody: {
+        command_only: true,
+        from_ordinal: 5,
+        fork_session: true,
+      },
+    });
+    expect(copyToClipboardMock).toHaveBeenCalledWith("claude < prompt");
+    unmount(component);
+  });
+
+  it("phase18 hides the action for remote read-only message-point fork", async () => {
+    phase18State.activeSession = makeSession({ id: "session-1", agent: "claude" });
+    phase18State.readOnly = true;
+    phase18State.remote = true;
+    const component = mount(MessageContent, {
+      target: document.body,
+      props: { message: makeMessage({ session_id: "session-1" }) },
+    });
+
+    await tick();
+    expect(document.querySelector(
+      'button[aria-label="Fork from this message"]',
+    )).toBeNull();
+    expect(phase18State.resume).not.toHaveBeenCalled();
+    unmount(component);
+  });
+
+  it("phase18 uses explicit embedded child ownership instead of active parent", async () => {
+    phase18State.activeSession = makeSession({ id: "parent", agent: "claude" });
+    let component = mount(MessageContent, {
+      target: document.body,
+      props: {
+        message: makeMessage({ session_id: "child", ordinal: 1 }),
+        session: makeSession({ id: "child", agent: "codex" }),
+        isSubagentContext: true,
+      },
+    });
+
+    await tick();
+    expect(document.querySelector(
+      'button[aria-label="Fork from this message"]',
+    )).toBeNull();
+    unmount(component);
+    document.body.innerHTML = "";
+
+    phase18State.activeSession = makeSession({ id: "parent", agent: "codex" });
+    component = mount(MessageContent, {
+      target: document.body,
+      props: {
+        message: makeMessage({ session_id: "child", ordinal: 2 }),
+        session: makeSession({ id: "child", agent: "claude" }),
+        isSubagentContext: true,
+      },
+    });
+
+    await tick();
+    expect(document.querySelector(
+      'button[aria-label="Fork from this message"]',
+    )).not.toBeNull();
+    unmount(component);
+  });
+
+  it("phase18 does not fall back to active parent while embedded session metadata is missing", async () => {
+    phase18State.activeSession = makeSession({ id: "parent", agent: "claude" });
+    const component = mount(MessageContent, {
+      target: document.body,
+      props: {
+        message: makeMessage({ session_id: "child", ordinal: 4 }),
+        session: null,
+        isSubagentContext: true,
+      },
+    });
+
+    await tick();
+    expect(document.querySelector(
+      'button[aria-label="Fork from this message"]',
+    )).toBeNull();
+    expect(phase18State.resume).not.toHaveBeenCalled();
+    unmount(component);
+  });
+
   it("renders compact token totals when both token metrics are reported", async () => {
     const component = mount(MessageContent, {
       target: document.body,

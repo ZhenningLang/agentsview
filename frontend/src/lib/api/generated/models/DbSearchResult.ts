@@ -12,4 +12,3 @@ export type DbSearchResult = {
   session_id: string;
   snippet: string;
 };
-

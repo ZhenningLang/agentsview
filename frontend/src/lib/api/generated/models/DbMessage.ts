@@ -2,6 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
+import type { DbToolCall } from './DbToolCall';
 export type DbMessage = {
   claude_message_id?: string;
   claude_request_id?: string;
@@ -28,6 +29,5 @@ export type DbMessage = {
   thinking_text: string;
   timestamp: string;
   token_usage?: any;
-  tool_calls?: any[] | null;
+  tool_calls?: Array<DbToolCall> | null;
 };
-

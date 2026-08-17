@@ -11,4 +11,3 @@ export type DbSignalsContextHealth = {
   sessions_with_context_data: number;
   sessions_with_mid_task_compaction: number;
 };
-

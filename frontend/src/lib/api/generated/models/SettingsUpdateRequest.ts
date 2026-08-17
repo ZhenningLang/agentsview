@@ -8,4 +8,3 @@ export type SettingsUpdateRequest = {
   require_auth?: boolean;
   terminal?: TerminalResponse;
 };
-

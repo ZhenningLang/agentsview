@@ -7,4 +7,3 @@ export type DbToolCategoryCount = {
   count: number;
   pct: number;
 };
-

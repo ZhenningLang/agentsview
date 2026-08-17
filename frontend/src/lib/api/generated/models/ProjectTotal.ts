@@ -10,4 +10,3 @@ export type ProjectTotal = {
   outputTokens: number;
   project: string;
 };
-

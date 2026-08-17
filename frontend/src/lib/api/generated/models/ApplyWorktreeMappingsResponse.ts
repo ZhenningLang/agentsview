@@ -7,4 +7,3 @@ export type ApplyWorktreeMappingsResponse = {
   matched_sessions: number;
   updated_sessions: number;
 };
-

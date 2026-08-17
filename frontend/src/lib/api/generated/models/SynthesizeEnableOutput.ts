@@ -2,8 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export type PairwiseSide = {
-  dimension: 'model' | 'project';
-  empty?: boolean;
-  value: string;
+export type SynthesizeEnableOutput = {
+  available: boolean;
+  enabled: boolean;
 };

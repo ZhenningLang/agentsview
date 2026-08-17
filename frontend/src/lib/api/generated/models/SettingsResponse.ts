@@ -4,7 +4,7 @@
 /* eslint-disable */
 import type { TerminalResponse } from './TerminalResponse';
 export type SettingsResponse = {
-  agent_dirs: Record<string, any[] | null>;
+  agent_dirs: Record<string, Array<string> | null>;
   auth_token?: string;
   github_configured: boolean;
   host: string;
@@ -12,4 +12,3 @@ export type SettingsResponse = {
   require_auth: boolean;
   terminal: TerminalResponse;
 };
-
