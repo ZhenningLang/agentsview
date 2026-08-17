@@ -309,6 +309,21 @@ func TestPhase24PostgresUsageBranchFilter(t *testing.T) {
 	assert.Equal(t, 0, counts.Total)
 }
 
+func TestPhase24PostgresBranchIndexDefinitionAndIdempotency(t *testing.T) {
+	ctx := context.Background()
+	_, store := prepareUsageSchema(t, "agentsview_phase24_branch_index_test")
+
+	first := phase24PostgresBranchIndexDefs(t, store)
+	require.Len(t, first, 1)
+	assert.Contains(t, first[0], "idx_sessions_project_git_branch")
+	assert.Contains(t, first[0], "USING btree (project, git_branch)")
+	assert.Contains(t, first[0], "WHERE (git_branch <> ''::text)")
+
+	require.NoError(t, EnsureSchema(ctx, store.DB(), "agentsview_phase24_branch_index_test"), "repeat EnsureSchema")
+	second := phase24PostgresBranchIndexDefs(t, store)
+	assert.Equal(t, first, second)
+}
+
 func newPhase24PostgresBranchStore(t *testing.T) *Store {
 	t.Helper()
 	_, store := prepareUsageSchema(t, "agentsview_phase24_branch_filter_test")
@@ -402,4 +417,25 @@ func pgSidebarSessionIDs(sessions []db.SidebarSessionIndexRow) []string {
 		ids[i] = session.ID
 	}
 	return ids
+}
+
+func phase24PostgresBranchIndexDefs(t *testing.T, store *Store) []string {
+	t.Helper()
+	rows, err := store.DB().QueryContext(context.Background(), `
+		SELECT indexdef FROM pg_indexes
+		WHERE schemaname = current_schema()
+		  AND indexname = 'idx_sessions_project_git_branch'
+		ORDER BY indexdef
+	`)
+	require.NoError(t, err, "query branch index definitions")
+	defer rows.Close()
+
+	var defs []string
+	for rows.Next() {
+		var def string
+		require.NoError(t, rows.Scan(&def), "scan branch index definition")
+		defs = append(defs, def)
+	}
+	require.NoError(t, rows.Err(), "iterate branch index definitions")
+	return defs
 }

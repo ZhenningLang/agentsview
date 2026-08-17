@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -34,6 +35,79 @@ func TestPhase24BranchPredicateFailClosedAndParameterized(t *testing.T) {
 	assert.Equal(t, "1 = 0", BranchPairPredicate("project", "git_branch", "not-a-token", func(v string) string {
 		return "?"
 	}))
+}
+
+func TestPhase24BranchPredicateHandlesBlankMixedAndMalformedTokens(t *testing.T) {
+	for _, token := range []string{"", JoinBranchFilterTokens("", "")} {
+		pred := BranchPairPredicate("project", "git_branch", token, func(v string) string {
+			return "?"
+		})
+		assert.Equal(t, "1 = 0", pred, "blank token %q must fail closed", token)
+	}
+
+	b := NewQueryBuilder(PostgresQueryDialect(), 0)
+	pred := BranchPairPredicate("s.project", "s.git_branch", JoinBranchFilterTokens(
+		EncodeBranchFilterToken("alpha", "main"),
+		"garbage-token",
+	), func(v string) string { return b.Add(v) })
+	assert.Equal(t, "(s.project = $1 AND s.git_branch = $2)", pred)
+	assert.Equal(t, []any{"alpha", "main"}, b.Args())
+
+	malformed := strings.Repeat("garbage-token", 8192)
+	assert.Equal(t, "1 = 0", BranchPairPredicate("project", "git_branch", malformed, func(v string) string {
+		return "?"
+	}))
+}
+
+func TestPhase24BranchPredicateSQLiteAndDuckDBPlaceholders(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		dialect QueryDialect
+	}{
+		{name: "sqlite", dialect: SQLiteQueryDialect()},
+		{name: "duckdb", dialect: DuckDBQueryDialect()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := NewQueryBuilder(tc.dialect, 0)
+			pred := BranchPairPredicate("s.project", "s.git_branch", JoinBranchFilterTokens(
+				EncodeBranchFilterToken("alpha,repo", "feat,x"),
+				EncodeBranchFilterToken("beta", "main"),
+			), func(v string) string { return b.Add(v) })
+
+			assert.Equal(t, "((s.project = ? AND s.git_branch = ?) OR (s.project = ? AND s.git_branch = ?))", pred)
+			assert.Equal(t, []any{"alpha,repo", "feat,x", "beta", "main"}, b.Args())
+		})
+	}
+}
+
+func TestPhase24SQLiteBranchIndexDefinitionAndIdempotency(t *testing.T) {
+	d := testDB(t)
+
+	var firstSQL string
+	err := d.getReader().QueryRow(`
+		SELECT sql FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_sessions_project_git_branch'
+	`).Scan(&firstSQL)
+	require.NoError(t, err, "probe branch index sql")
+	assert.Equal(t, "CREATE INDEX idx_sessions_project_git_branch\n\t\t ON sessions(project, git_branch) WHERE git_branch != ''", firstSQL)
+
+	require.NoError(t, d.createPartialIndexesLocked(d.getWriter()), "repeat partial index creation")
+
+	var count int
+	err = d.getReader().QueryRow(`
+		SELECT count(*) FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_sessions_project_git_branch'
+	`).Scan(&count)
+	require.NoError(t, err, "count branch indexes")
+	assert.Equal(t, 1, count)
+
+	var secondSQL string
+	err = d.getReader().QueryRow(`
+		SELECT sql FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_sessions_project_git_branch'
+	`).Scan(&secondSQL)
+	require.NoError(t, err, "probe branch index sql after repeat")
+	assert.Equal(t, firstSQL, secondSQL)
 }
 
 func TestPhase24BranchSessionFilterSQLiteBranchPairs(t *testing.T) {
