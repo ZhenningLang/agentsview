@@ -2575,7 +2575,7 @@ func BuildSkillsAnalytics(
 		if row.Project != "" {
 			acc.projectCounts[row.Project] += row.Count
 		}
-		if row.LastUsedAt > acc.lastUsedAt {
+		if skillTimestampAfter(row.LastUsedAt, acc.lastUsedAt) {
 			acc.lastUsedAt = row.LastUsedAt
 		}
 		if row.Date != "" {
@@ -2628,6 +2628,34 @@ func BuildSkillsAnalytics(
 	})
 
 	return resp
+}
+
+func skillTimestampAfter(candidate, current string) bool {
+	candidateTime, candidateOK := parseSkillTimestamp(candidate)
+	currentTime, currentOK := parseSkillTimestamp(current)
+	switch {
+	case candidateOK && currentOK:
+		return candidateTime.After(currentTime)
+	case candidateOK:
+		return true
+	case currentOK:
+		return false
+	default:
+		return candidate > current
+	}
+}
+
+func parseSkillTimestamp(value string) (time.Time, bool) {
+	if value == "" {
+		return time.Time{}, false
+	}
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return t, true
+	}
+	if t, err := time.Parse(time.RFC3339, value); err == nil {
+		return t, true
+	}
+	return time.Time{}, false
 }
 
 func skillAgentBreakdowns(
@@ -2946,9 +2974,8 @@ func (db *DB) GetAnalyticsTools(
 func (db *DB) GetAnalyticsSkills(
 	ctx context.Context, f AnalyticsFilter, granularity string,
 ) (SkillsAnalyticsResponse, error) {
-	loc := f.location()
 	dateCol := "COALESCE(NULLIF(started_at, ''), created_at)"
-	where, args := f.buildWhere(dateCol)
+	where, args := f.buildWhereWithoutDate()
 
 	var timeIDs map[string]bool
 	if f.HasTimeFilter() {
@@ -2970,7 +2997,6 @@ func (db *DB) GetAnalyticsSkills(
 	defer sessRows.Close()
 
 	type sessInfo struct {
-		date    string
 		ts      string
 		agent   string
 		project string
@@ -2986,15 +3012,10 @@ func (db *DB) GetAnalyticsSkills(
 			return SkillsAnalyticsResponse{},
 				fmt.Errorf("scanning skill session: %w", err)
 		}
-		date := localDate(ts, loc)
-		if !inDateRange(date, f.From, f.To) {
-			continue
-		}
 		if timeIDs != nil && !timeIDs[id] {
 			continue
 		}
 		sessionMap[id] = sessInfo{
-			date:    date,
 			ts:      ts,
 			agent:   agent,
 			project: project,

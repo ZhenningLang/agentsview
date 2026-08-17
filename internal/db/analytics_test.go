@@ -1470,6 +1470,67 @@ func TestPhase23AnalyticsSkillsAndModelFilter(t *testing.T) {
 	})
 }
 
+func TestPhase23SkillsAggregationChronologicalLastUsed(t *testing.T) {
+	resp := BuildSkillsAnalytics([]SkillAnalyticsRow{
+		{
+			SessionID: "p23-old", SkillName: "assist-learn",
+			LastUsedAt: "2024-06-10T09:00:00Z", Date: "2024-06-10",
+			Count: 1,
+		},
+		{
+			SessionID: "p23-new", SkillName: "assist-learn",
+			LastUsedAt: "2024-06-10T09:00:00.500Z", Date: "2024-06-10",
+			Count: 1,
+		},
+	}, "2024-06-10", "2024-06-10", "day")
+
+	require.Len(t, resp.BySkill, 1)
+	assert.Equal(t, "2024-06-10T09:00:00.500Z", resp.BySkill[0].LastUsedAt)
+}
+
+func TestPhase23SkillsBackendParitySQLiteLongSessionMessageDate(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	insertSession(t, d, "p23-sqlite-long", "p23-project", func(s *Session) {
+		s.StartedAt = Ptr("2024-05-31T23:00:00Z")
+		s.EndedAt = Ptr("2024-06-01T00:10:00Z")
+		s.CreatedAt = "2024-05-31T23:00:00Z"
+		s.MessageCount = 2
+		s.UserMessageCount = 1
+		s.Agent = "claude"
+	})
+	msg := asstMsgAt("p23-sqlite-long", 1, "used skill", "2024-06-01T00:05:00Z")
+	msg.Model = "model-a"
+	msg.HasToolUse = true
+	msg.ToolCalls = []ToolCall{{
+		SessionID: "p23-sqlite-long", ToolName: "Skill", Category: "Task",
+		SkillName: "assist-learn",
+	}}
+	insertMessages(t, d,
+		userMsgAt("p23-sqlite-long", 0, "prompt", "2024-05-31T23:59:00Z"),
+		msg,
+	)
+
+	resp, err := d.GetAnalyticsSkills(ctx, AnalyticsFilter{
+		From: "2024-06-01", To: "2024-06-01", Timezone: "UTC", Model: "model-a",
+	}, "day")
+	require.NoError(t, err)
+	require.Len(t, resp.BySkill, 1)
+	assert.Equal(t, "assist-learn", resp.BySkill[0].SkillName)
+	assert.Equal(t, 1, resp.TotalSkillCalls)
+	assert.Equal(t, "2024-06-01T00:05:00Z", resp.BySkill[0].LastUsedAt)
+	require.Len(t, resp.Trend, 1)
+	assert.Equal(t, 1, resp.Trend[0].BySkill["assist-learn"])
+}
+
+func TestPhase23SkillTrendBucketsEmptyState(t *testing.T) {
+	resp := BuildSkillsAnalytics(nil, "2024-06-01", "2024-06-03", "day")
+	assert.Empty(t, resp.BySkill)
+	assert.Empty(t, resp.Trend)
+	assert.Equal(t, 0, resp.TotalSkillCalls)
+}
+
 func TestAnalyticsToolsToolCallsQueryAggregatesInSQL(t *testing.T) {
 	q := analyticsToolsQuery("(?,?)", "", false)
 	normalized := strings.Join(strings.Fields(strings.ToLower(q)), " ")

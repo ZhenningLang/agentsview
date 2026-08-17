@@ -569,7 +569,7 @@ func (s *Store) getAnalyticsActivityFilteredByModelTime(
 ) (db.ActivityResponse, error) {
 	loc := analyticsLocation(f)
 	pb := &paramBuilder{}
-	where := buildAnalyticsWhere(f, pgDateCol, pb)
+	where := buildAnalyticsWhereWithoutDate(f, pb)
 	var timeIDs map[string]bool
 	if f.HasTimeFilter() {
 		var err error
@@ -2304,9 +2304,8 @@ func (s *Store) GetAnalyticsTools(
 func (s *Store) GetAnalyticsSkills(
 	ctx context.Context, f db.AnalyticsFilter, granularity string,
 ) (db.SkillsAnalyticsResponse, error) {
-	loc := analyticsLocation(f)
 	pb := &paramBuilder{}
-	where := buildAnalyticsWhere(f, pgDateCol, pb)
+	where := buildAnalyticsWhereWithoutDate(f, pb)
 
 	var timeIDs map[string]bool
 	if f.HasTimeFilter() {
@@ -2328,7 +2327,6 @@ func (s *Store) GetAnalyticsSkills(
 	defer sessRows.Close()
 
 	type sessInfo struct {
-		date    string
 		ts      string
 		agent   string
 		project string
@@ -2346,15 +2344,10 @@ func (s *Store) GetAnalyticsSkills(
 				fmt.Errorf("scanning skill session: %w", err)
 		}
 		tsText := scanDateCol(ts)
-		date := localDate(tsText, loc)
-		if !inDateRange(date, f.From, f.To) {
-			continue
-		}
 		if timeIDs != nil && !timeIDs[id] {
 			continue
 		}
 		sessionMap[id] = sessInfo{
-			date:    date,
 			ts:      tsText,
 			agent:   agent,
 			project: project,
@@ -2381,10 +2374,12 @@ func (s *Store) GetAnalyticsSkills(
 			preds = appendPGAnalyticsCSVFilter(
 				preds, "m.model", f.Model, chunkPB,
 			)
+			msgTSExpr := `COALESCE(TO_CHAR(m.timestamp AT TIME ZONE 'UTC', ` +
+				`'YYYY-MM-DD"T"HH24:MI:SS"Z"'), '')`
 			q := `SELECT tc.session_id,
 					TRIM(COALESCE(tc.skill_name, '')),
 					COUNT(*),
-					m.timestamp
+					` + msgTSExpr + `
 				FROM tool_calls tc
 				LEFT JOIN messages m
 					ON m.session_id = tc.session_id
@@ -2392,7 +2387,7 @@ func (s *Store) GetAnalyticsSkills(
 				WHERE ` + strings.Join(preds, " AND ") + `
 				GROUP BY tc.session_id,
 					TRIM(COALESCE(tc.skill_name, '')),
-					m.timestamp`
+					` + msgTSExpr
 			rows, qErr := s.pg.QueryContext(
 				ctx, q, chunkPB.args...,
 			)
