@@ -116,7 +116,7 @@ func TestPhase24PostgresSidebarBranchFilter(t *testing.T) {
 		GitBranch: db.EncodeBranchFilterToken("alpha", "main"),
 	})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"pg-p24-alpha-main"}, pgSessionIDs(index.Sessions))
+	assert.Equal(t, []string{"pg-p24-alpha-main"}, pgSidebarSessionIDs(index.Sessions))
 
 	index, err = store.GetSidebarSessionIndex(ctx, db.SessionFilter{})
 	require.NoError(t, err)
@@ -126,7 +126,7 @@ func TestPhase24PostgresSidebarBranchFilter(t *testing.T) {
 		"pg-p24-alpha-unknown",
 		"pg-p24-alpha-comma",
 		"pg-p24-beta-main",
-	}, pgSessionIDs(index.Sessions))
+	}, pgSidebarSessionIDs(index.Sessions))
 }
 
 func TestPhase24PostgresAnalyticsBranchFilter(t *testing.T) {
@@ -161,6 +161,118 @@ func TestPhase24PostgresAnalyticsBranchFilter(t *testing.T) {
 	summary, err = store.GetAnalyticsSummary(ctx, invalid)
 	require.NoError(t, err)
 	assert.Equal(t, 0, summary.TotalSessions)
+}
+
+func TestPhase24PostgresAnalyticsPerConsumerBranchFilter(t *testing.T) {
+	ctx := context.Background()
+	store := newPhase24PostgresBranchStore(t)
+	base := db.AnalyticsFilter{From: "2026-08-17", To: "2026-08-17", Timezone: "UTC"}
+	alpha := base
+	alpha.GitBranch = db.EncodeBranchFilterToken("alpha", "main")
+	beta := base
+	beta.GitBranch = db.EncodeBranchFilterToken("beta", "main")
+
+	cases := []struct {
+		name                         string
+		wantAlpha, wantBeta, wantAll int
+		call                         func(context.Context, *Store, db.AnalyticsFilter) (int, error)
+	}{
+		{"activity", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsActivity(ctx, f, "day")
+			if err != nil {
+				return 0, err
+			}
+			count := 0
+			for _, entry := range r.Series {
+				count += entry.Sessions
+			}
+			return count, nil
+		}},
+		{"heatmap", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsHeatmap(ctx, f, "sessions")
+			if err != nil {
+				return 0, err
+			}
+			count := 0
+			for _, entry := range r.Entries {
+				count += entry.Value
+			}
+			return count, nil
+		}},
+		{"hour-of-week", 2, 2, 10, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsHourOfWeek(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			count := 0
+			for _, cell := range r.Cells {
+				count += cell.Messages
+			}
+			return count, nil
+		}},
+		{"session-shape", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsSessionShape(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			return r.Count, nil
+		}},
+		{"signals", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsSignals(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			return r.ScoredSessions + r.UnscoredSessions, nil
+		}},
+		{"skills", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsSkills(ctx, f, "day")
+			if err != nil {
+				return 0, err
+			}
+			return r.TotalSkillCalls, nil
+		}},
+		{"tools", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsTools(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			return r.TotalCalls, nil
+		}},
+		{"top-sessions", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsTopSessions(ctx, f, "messages")
+			if err != nil {
+				return 0, err
+			}
+			return len(r.Sessions), nil
+		}},
+		{"velocity", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsVelocity(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			count := 0
+			for _, row := range r.ByAgent {
+				count += row.Sessions
+			}
+			return count, nil
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			alphaCount, err := tc.call(ctx, store, alpha)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantAlpha, alphaCount, "alpha branch result")
+
+			betaCount, err := tc.call(ctx, store, beta)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantBeta, betaCount, "beta branch result")
+
+			unfilteredCount, err := tc.call(ctx, store, base)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantAll, unfilteredCount, "unfiltered result")
+		})
+	}
 }
 
 func TestPhase24PostgresUsageBranchFilter(t *testing.T) {
@@ -239,35 +351,55 @@ func phase24InsertPostgresBranchSession(
 		INSERT INTO sessions (
 			id, machine, project, agent, first_message, started_at, ended_at,
 			created_at, message_count, user_message_count, relationship_type,
-			git_branch
+			git_branch, health_score, health_grade, outcome, outcome_confidence,
+			tool_failure_signal_count, tool_retry_count, edit_churn_count,
+			compaction_count, mid_task_compaction_count, context_pressure_max
 		) VALUES (
 			$1, 'local', $2, 'claude', 'phase24 seed',
 			'2026-08-17T00:00:00Z'::timestamptz,
 			'2026-08-17T00:01:00Z'::timestamptz,
 			'2026-08-17T00:00:00Z'::timestamptz,
-			2, 2, 'root', $3
+			2, 2, 'root', $3, 80, 'B', 'completed', 'high',
+			1, 1, 1, 1, 1, 0.5
 		)`, id, project, branch)
 	require.NoError(t, err, "insert session %s", id)
 	_, err = store.DB().ExecContext(ctx, `
 		INSERT INTO messages (
 			session_id, ordinal, role, content, timestamp,
-			content_length, model, token_usage
+			content_length, model, token_usage, has_tool_use
 		) VALUES
 			($1, 0, 'user', 'prompt',
 			 '2026-08-17T00:00:00Z'::timestamptz, 6,
-			 'phase24-test-model', '{}'),
+			 'phase24-test-model', '{}', false),
 			($1, 1, 'assistant', $2,
 			 '2026-08-17T00:01:00Z'::timestamptz, length($2),
 			 'phase24-test-model',
-			 jsonb_build_object('input_tokens', $3::int, 'output_tokens', $4::int)::text)
+			 jsonb_build_object('input_tokens', $3::int, 'output_tokens', $4::int)::text,
+			 true)
 		`, id, content, input, output)
 	require.NoError(t, err, "insert messages %s", id)
+	_, err = store.DB().ExecContext(ctx, `
+		INSERT INTO tool_calls (
+			session_id, message_ordinal, call_index, tool_name, category,
+			tool_use_id, skill_name, input_json
+		) VALUES (
+			$1, 1, 0, 'Skill', 'Task', $2, $3, '{}'
+		)`, id, "tool-"+id, "phase24-"+project)
+	require.NoError(t, err, "insert tool_call %s", id)
 }
 
 func pgContentMatchSessionIDs(matches []db.ContentMatch) []string {
 	ids := make([]string, len(matches))
 	for i, match := range matches {
 		ids[i] = match.SessionID
+	}
+	return ids
+}
+
+func pgSidebarSessionIDs(sessions []db.SidebarSessionIndexRow) []string {
+	ids := make([]string, len(sessions))
+	for i, session := range sessions {
+		ids[i] = session.ID
 	}
 	return ids
 }

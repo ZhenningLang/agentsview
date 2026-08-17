@@ -163,6 +163,118 @@ func TestPhase24DuckDBAnalyticsBranchFilter(t *testing.T) {
 	assert.Equal(t, 0, summary.TotalSessions)
 }
 
+func TestPhase24DuckDBAnalyticsPerConsumerBranchFilter(t *testing.T) {
+	ctx := context.Background()
+	store := newPhase24DuckDBBranchStore(t)
+	base := db.AnalyticsFilter{From: "2026-08-17", To: "2026-08-17", Timezone: "UTC"}
+	alpha := base
+	alpha.GitBranch = db.EncodeBranchFilterToken("alpha", "main")
+	beta := base
+	beta.GitBranch = db.EncodeBranchFilterToken("beta", "main")
+
+	cases := []struct {
+		name                         string
+		wantAlpha, wantBeta, wantAll int
+		call                         func(context.Context, *Store, db.AnalyticsFilter) (int, error)
+	}{
+		{"activity", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsActivity(ctx, f, "day")
+			if err != nil {
+				return 0, err
+			}
+			count := 0
+			for _, entry := range r.Series {
+				count += entry.Sessions
+			}
+			return count, nil
+		}},
+		{"heatmap", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsHeatmap(ctx, f, "sessions")
+			if err != nil {
+				return 0, err
+			}
+			count := 0
+			for _, entry := range r.Entries {
+				count += entry.Value
+			}
+			return count, nil
+		}},
+		{"hour-of-week", 2, 2, 10, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsHourOfWeek(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			count := 0
+			for _, cell := range r.Cells {
+				count += cell.Messages
+			}
+			return count, nil
+		}},
+		{"session-shape", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsSessionShape(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			return r.Count, nil
+		}},
+		{"signals", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsSignals(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			return r.ScoredSessions + r.UnscoredSessions, nil
+		}},
+		{"skills", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsSkills(ctx, f, "day")
+			if err != nil {
+				return 0, err
+			}
+			return r.TotalSkillCalls, nil
+		}},
+		{"tools", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsTools(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			return r.TotalCalls, nil
+		}},
+		{"top-sessions", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsTopSessions(ctx, f, "messages")
+			if err != nil {
+				return 0, err
+			}
+			return len(r.Sessions), nil
+		}},
+		{"velocity", 1, 1, 5, func(ctx context.Context, store *Store, f db.AnalyticsFilter) (int, error) {
+			r, err := store.GetAnalyticsVelocity(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			count := 0
+			for _, row := range r.ByAgent {
+				count += row.Sessions
+			}
+			return count, nil
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			alphaCount, err := tc.call(ctx, store, alpha)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantAlpha, alphaCount, "alpha branch result")
+
+			betaCount, err := tc.call(ctx, store, beta)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantBeta, betaCount, "beta branch result")
+
+			unfilteredCount, err := tc.call(ctx, store, base)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantAll, unfilteredCount, "unfiltered result")
+		})
+	}
+}
+
 func TestPhase24DuckDBUsageBranchFilter(t *testing.T) {
 	ctx := context.Background()
 	store := newPhase24DuckDBBranchStore(t)
@@ -240,26 +352,48 @@ func phase24WriteBranchSession(
 	started := "2026-08-17T00:00:00.000Z"
 	ended := "2026-08-17T00:01:00.000Z"
 	usage := []byte(`{"input_tokens":` + strconv.Itoa(input) + `,"output_tokens":` + strconv.Itoa(output) + `}`)
+	health := 80
+	grade := "B"
+	pressure := 0.5
 	_, err := local.WriteSessionBatchAtomic([]db.SessionBatchWrite{{
 		Session: db.Session{
-			ID:               id,
-			Project:          project,
-			Machine:          "local",
-			Agent:            "claude",
-			StartedAt:        &started,
-			EndedAt:          &ended,
-			CreatedAt:        started,
-			MessageCount:     2,
-			UserMessageCount: 2,
-			RelationshipType: "root",
-			GitBranch:        branch,
-			DataVersion:      db.CurrentDataVersion(),
+			ID:                     id,
+			Project:                project,
+			Machine:                "local",
+			Agent:                  "claude",
+			StartedAt:              &started,
+			EndedAt:                &ended,
+			CreatedAt:              started,
+			MessageCount:           2,
+			UserMessageCount:       2,
+			RelationshipType:       "root",
+			GitBranch:              branch,
+			HealthScore:            &health,
+			HealthGrade:            &grade,
+			Outcome:                "completed",
+			OutcomeConfidence:      "high",
+			ToolFailureSignalCount: 1,
+			ToolRetryCount:         1,
+			EditChurnCount:         1,
+			CompactionCount:        1,
+			MidTaskCompactionCount: 1,
+			ContextPressureMax:     &pressure,
+			DataVersion:            db.CurrentDataVersion(),
 		},
 		Messages: []db.Message{
 			{SessionID: id, Ordinal: 0, Role: "user", Content: "prompt", Timestamp: started},
 			{
 				SessionID: id, Ordinal: 1, Role: "assistant", Content: content,
 				Timestamp: ended, Model: "phase24-test-model", TokenUsage: usage,
+				HasToolUse: true,
+				ToolCalls: []db.ToolCall{{
+					SessionID: id,
+					ToolName:  "Skill",
+					Category:  "Task",
+					ToolUseID: "tool-" + id,
+					SkillName: "phase24-" + project,
+					InputJSON: "{}",
+				}},
 			},
 		},
 		ReplaceMessages: true,
