@@ -157,3 +157,80 @@ describe("ToolCallGroup", () => {
     unmount(component);
   });
 });
+
+describe("Phase 20 ToolCallGroup unread boundary", () => {
+  let component: ReturnType<typeof mount> | undefined;
+
+  afterEach(() => {
+    if (component) {
+      unmount(component);
+      component = undefined;
+    }
+  });
+
+  function render(unreadOrdinal?: number | null) {
+    component = mount(ToolCallGroup, {
+      target: document.body,
+      props: {
+        messages: [4, 5, 6].map((ordinal) =>
+          makeToolMessage({
+            id: ordinal + 1,
+            ordinal,
+            tool_calls: [{
+              tool_name: "Bash",
+              tool_use_id: `toolu-${ordinal}`,
+              input_json: `{"command":"pwd"}`,
+              result_content: "ok",
+            }],
+          })
+        ),
+        timestamp: "2026-02-20T12:31:00Z",
+        unreadOrdinal,
+      },
+    });
+  }
+
+  function childOrdinals(): number[] {
+    return [
+      ...document.querySelectorAll<HTMLElement>("[data-message-ordinal]"),
+    ].map((el) => Number(el.dataset.messageOrdinal));
+  }
+
+  it("tags every child message with its ordinal", async () => {
+    render();
+    await tick();
+
+    // Without per-child ordinals a partially visible group row cannot be
+    // confirmed child by child.
+    expect(childOrdinals()).toEqual([4, 5, 6]);
+  });
+
+  it("renders no boundary when the group holds no unread ordinal", async () => {
+    render(9);
+    await tick();
+
+    expect(document.querySelector(".unread-divider")).toBeNull();
+  });
+
+  it("renders no boundary when no ordinal is supplied", async () => {
+    render(null);
+    await tick();
+
+    expect(document.querySelector(".unread-divider")).toBeNull();
+  });
+
+  it("places the boundary directly before the unread child", async () => {
+    render(5);
+    await tick();
+
+    const divider = document.querySelector<HTMLElement>(".unread-divider");
+    expect(divider).not.toBeNull();
+    expect(divider!.textContent).toContain("New messages");
+    expect(divider!.getAttribute("aria-label")).toBe(
+      "Read progress boundary",
+    );
+
+    const next = divider!.nextElementSibling as HTMLElement | null;
+    expect(next?.dataset.messageOrdinal).toBe("5");
+  });
+});

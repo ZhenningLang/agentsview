@@ -13,6 +13,7 @@ import SessionList from "./SessionList.svelte";
 import sessionFilterControlSource from "../filters/SessionFilterControl.svelte?raw";
 import { sessions } from "../../stores/sessions.svelte.js";
 import type { Session } from "../../api/types.js";
+import { readProgress } from "../../stores/read-progress.svelte.js";
 import { starred } from "../../stores/starred.svelte.js";
 import { ITEM_HEIGHT, OVERSCAN } from "./session-list-utils.js";
 
@@ -345,6 +346,164 @@ describe("SessionList visible hydration", () => {
     expect(document.body.textContent).toContain("Starred child");
     expect(document.body.textContent).not.toContain("Root");
     expect(document.body.textContent).not.toContain("Unstarred");
+  });
+
+  describe("Phase 20 unread indicator", () => {
+    beforeEach(() => {
+      readProgress.reset();
+      vi.spyOn(sessions, "hydrateVisibleSessions").mockResolvedValue(
+        undefined,
+      );
+    });
+
+    afterEach(() => {
+      readProgress.reset();
+    });
+
+    function unreadLabels(): HTMLElement[] {
+      return [
+        ...document.querySelectorAll<HTMLElement>(
+          '[aria-label="Unread messages"]',
+        ),
+      ];
+    }
+
+    it("shows nothing for a session the browser has never seen", async () => {
+      sessions.sessions = [
+        makeSession({
+          id: "fresh",
+          display_name: "Fresh",
+          transcript_revision: "4",
+        }),
+      ];
+
+      component = mount(SessionList, { target: document.body });
+      await tick();
+
+      expect(unreadLabels()).toHaveLength(0);
+    });
+
+    it("shows nothing when the stored revision still matches", async () => {
+      readProgress.baseline("same", "4", 3);
+      sessions.sessions = [
+        makeSession({
+          id: "same",
+          display_name: "Same",
+          transcript_revision: "4",
+        }),
+      ];
+
+      component = mount(SessionList, { target: document.body });
+      await tick();
+
+      expect(unreadLabels()).toHaveLength(0);
+    });
+
+    it("marks a row whose revision moved past the stored marker", async () => {
+      readProgress.baseline("moved", "4", 3);
+      sessions.sessions = [
+        makeSession({
+          id: "moved",
+          display_name: "Moved",
+          transcript_revision: "5",
+        }),
+      ];
+
+      component = mount(SessionList, { target: document.body });
+      await tick();
+
+      const labels = unreadLabels();
+      expect(labels).toHaveLength(1);
+      expect(labels[0]!.closest(".session-item")).not.toBeNull();
+    });
+
+    it("surfaces an unread child on the collapsed parent row", async () => {
+      readProgress.baseline("child", "1", 0);
+      sessions.sessions = [
+        makeSession({
+          id: "root",
+          display_name: "Root",
+          transcript_revision: "1",
+        }),
+        makeSession({
+          id: "child",
+          parent_session_id: "root",
+          display_name: "Child",
+          transcript_revision: "2",
+        }),
+      ];
+      readProgress.baseline("root", "1", 0);
+
+      component = mount(SessionList, { target: document.body });
+      await tick();
+
+      // The child has no row of its own while the chain is collapsed;
+      // dropping its unread state here would hide it entirely.
+      expect(document.body.textContent).not.toContain("Child");
+      expect(unreadLabels()).toHaveLength(1);
+    });
+
+    it("does not borrow a group indicator once the chain is expanded", async () => {
+      readProgress.baseline("child", "1", 0);
+      readProgress.baseline("root", "1", 0);
+      sessions.sessions = [
+        makeSession({
+          id: "root",
+          display_name: "Root",
+          transcript_revision: "1",
+        }),
+        makeSession({
+          id: "child",
+          parent_session_id: "root",
+          display_name: "Child",
+          transcript_revision: "2",
+        }),
+      ];
+
+      component = mount(SessionList, { target: document.body });
+      await tick();
+
+      document
+        .querySelector<HTMLButtonElement>(".tree-toggle")!
+        .click();
+      await tick();
+      await tick();
+
+      expect(document.body.textContent).toContain("Child");
+      const labels = unreadLabels();
+      expect(labels).toHaveLength(1);
+      // The badge belongs to the child's own row now, not the parent's.
+      expect(
+        labels[0]!.closest(".session-item")?.textContent,
+      ).toContain("Child");
+    });
+
+    it("baselines rows as they become visible", async () => {
+      sessions.sessions = [
+        makeSession({
+          id: "seen",
+          display_name: "Seen",
+          transcript_revision: "4",
+        }),
+      ];
+
+      component = mount(SessionList, { target: document.body });
+      await tick();
+
+      expect(readProgress.markerFor("seen")?.token).toBe("4");
+    });
+
+    it("keeps rows without a revision out of the unread state", async () => {
+      readProgress.baseline("no-token", "4", 0);
+      sessions.sessions = [
+        makeSession({ id: "no-token", display_name: "No token" }),
+      ];
+
+      component = mount(SessionList, { target: document.body });
+      await tick();
+
+      expect(unreadLabels()).toHaveLength(0);
+    });
   });
 
   it("uses is_teammate for the collapsed group teammate hint", async () => {

@@ -1,8 +1,10 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import {
     sessions,
     type SessionGroupInput,
   } from "../../stores/sessions.svelte.js";
+  import { readProgress } from "../../stores/read-progress.svelte.js";
   import { starred } from "../../stores/starred.svelte.js";
   import { ui } from "../../stores/ui.svelte.js";
   import { formatRelativeTime, truncate } from "../../utils/format.js";
@@ -106,6 +108,40 @@
   );
 
   let isStarred = $derived(starred.isStarred(session.id));
+
+  /** Seeing a row in the sidebar establishes its read baseline. Without
+   *  this a first visit would either light up the whole archive or never
+   *  detect a later change at all.
+   *
+   *  The write is untracked and skipped for sessions that already have a
+   *  marker: baseline reads the same store it writes, so a tracked call
+   *  would re-trigger itself, and re-touching known rows would rewrite
+   *  storage on every scroll. */
+  $effect(() => {
+    const id = session.id;
+    const revision = session.transcript_revision;
+    untrack(() => {
+      if (readProgress.markerFor(id)) return;
+      readProgress.baseline(id, revision);
+    });
+  });
+
+  /** Unread state for this row. A collapsed chain hides its children, so
+   *  the parent row also reports their unread state — otherwise the only
+   *  signal for a changed child would be invisible. */
+  let hasUnread = $derived.by(() => {
+    if (
+      readProgress.hasUnread(session.id, session.transcript_revision)
+    ) {
+      return true;
+    }
+    if (expanded || !groupSessions) return false;
+    return groupSessions.some(
+      (s) =>
+        s.id !== session.id &&
+        readProgress.hasUnread(s.id, s.transcript_revision),
+    );
+  });
 
   let childCount = $derived(
     continuationCount > 1 ? continuationCount - 1 : 0,
@@ -299,6 +335,14 @@
       {/if}
       <span class="session-time">{timeStr}</span>
       <span class="session-count">{session.user_message_count}</span>
+      {#if hasUnread}
+        <span
+          class="unread-dot"
+          role="img"
+          aria-label="Unread messages"
+          title="Unread messages"
+        ></span>
+      {/if}
       {#if hasSubagents}
         <UserRoundIcon class="group-hint-icon" size="9" strokeWidth="2" aria-hidden="true" />
       {/if}
@@ -547,6 +591,14 @@
 
   .session-count::before {
     content: "\2022 ";
+  }
+
+  .unread-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent-blue);
+    flex-shrink: 0;
   }
 
   .continuation-badge {
