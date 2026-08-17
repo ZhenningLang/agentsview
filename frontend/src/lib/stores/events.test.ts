@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { events, EVENTS_STORE_HEAL_INTERVAL_MS } from "./events.svelte.js";
 
 // Minimal EventSource stub. Tests control when events fire and
 // assert on the number of instances created.
@@ -55,7 +56,6 @@ afterEach(() => {
 
 describe("events store", () => {
   it("opens a single EventSource on first subscribe", async () => {
-    const { events } = await import("./events.svelte.js");
     const unsub1 = events.subscribe(() => {});
     const unsub2 = events.subscribe(() => {});
     expect(FakeEventSource.instances).toHaveLength(1);
@@ -64,7 +64,6 @@ describe("events store", () => {
   });
 
   it("closes the EventSource when the last subscriber leaves", async () => {
-    const { events } = await import("./events.svelte.js");
     const unsub = events.subscribe(() => {});
     const es = FakeEventSource.instances[0]!;
     expect(es.closed).toBe(false);
@@ -73,7 +72,6 @@ describe("events store", () => {
   });
 
   it("delivers events to every subscriber", async () => {
-    const { events } = await import("./events.svelte.js");
     const received: string[] = [];
     const unsub1 = events.subscribe((e) => received.push(`a:${e.scope}`));
     const unsub2 = events.subscribe((e) => received.push(`b:${e.scope}`));
@@ -84,7 +82,6 @@ describe("events store", () => {
   });
 
   it("tracks duplicate subscriptions independently", async () => {
-    const { events } = await import("./events.svelte.js");
     const fn = vi.fn();
     const unsub1 = events.subscribe(fn);
     const unsub2 = events.subscribe(fn);
@@ -109,9 +106,6 @@ describe("events store", () => {
 
   it("self-heals a closed EventSource after a transient failure", async () => {
     vi.useFakeTimers();
-    const { events, EVENTS_STORE_HEAL_INTERVAL_MS } = await import(
-      "./events.svelte.js"
-    );
     const received: string[] = [];
     const unsub = events.subscribe((e) => received.push(e.scope));
     const first = FakeEventSource.instances[0]!;
@@ -139,9 +133,6 @@ describe("events store", () => {
 
   it("does not heal after a permanent failure (never opened)", async () => {
     vi.useFakeTimers();
-    const { events, EVENTS_STORE_HEAL_INTERVAL_MS } = await import(
-      "./events.svelte.js"
-    );
     const unsub = events.subscribe(() => {});
     const first = FakeEventSource.instances[0]!;
 
@@ -163,7 +154,6 @@ describe("events store", () => {
   });
 
   it("reopens the EventSource after a transient close on new subscribe", async () => {
-    const { events } = await import("./events.svelte.js");
     const received: string[] = [];
     const unsub = events.subscribe((e) => received.push(e.scope));
     const first = FakeEventSource.instances[0]!;
@@ -192,7 +182,6 @@ describe("events store", () => {
 
   it("debounces rapid events into one callback per debounce window", async () => {
     vi.useFakeTimers();
-    const { events } = await import("./events.svelte.js");
     const received: string[] = [];
     const unsub = events.subscribeDebounced(
       (e) => received.push(e.scope),
