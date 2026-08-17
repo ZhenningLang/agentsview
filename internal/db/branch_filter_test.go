@@ -133,6 +133,73 @@ func TestPhase24SidebarBranchFilterSQLite(t *testing.T) {
 	assert.ElementsMatch(t, []string{"alpha-main", "beta-main"}, phase24SidebarSessionIDs(index.Sessions))
 }
 
+func TestPhase24UsageBranchFilterSQLite(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	seedPhase24BranchSession(t, d, "alpha-main", "alpha", "main")
+	seedPhase24BranchSession(t, d, "beta-main", "beta", "main")
+	seedPhase24UsageEvent(t, d, "alpha-main", 100, 50, 0.02)
+	seedPhase24UsageEvent(t, d, "beta-main", 200, 75, 0.04)
+
+	alpha := UsageFilter{
+		From:      "2026-08-17",
+		To:        "2026-08-17",
+		Timezone:  "UTC",
+		GitBranch: EncodeBranchFilterToken("alpha", "main"),
+	}
+	daily, err := d.GetDailyUsage(ctx, alpha)
+	require.NoError(t, err)
+	assert.Equal(t, 100, daily.Totals.InputTokens)
+	assert.Equal(t, 50, daily.Totals.OutputTokens)
+	assert.InDelta(t, 0.02, daily.Totals.TotalCost, 1e-9)
+	assert.Equal(t, 1, daily.SessionCounts.Total)
+	assert.Equal(t, 1, daily.SessionCounts.ByProject["alpha"])
+
+	counts, err := d.GetUsageSessionCounts(ctx, alpha)
+	require.NoError(t, err)
+	assert.Equal(t, 1, counts.Total)
+	assert.Equal(t, 1, counts.ByProject["alpha"])
+
+	usage, err := d.GetSessionUsage(ctx, "alpha-main")
+	require.NoError(t, err)
+	require.NotNil(t, usage)
+	assert.InDelta(t, 0.02, usage.CostUSD, 1e-9)
+	assert.Equal(t, []string{"gpt-5.4"}, usage.Models)
+
+	events, err := d.GetUsageEvents(ctx, "alpha-main")
+	require.NoError(t, err)
+	require.Len(t, events, 1)
+	assert.Equal(t, 100, events[0].InputTokens)
+	assert.Equal(t, 50, events[0].OutputTokens)
+
+	beta := alpha
+	beta.GitBranch = EncodeBranchFilterToken("beta", "main")
+	daily, err = d.GetDailyUsage(ctx, beta)
+	require.NoError(t, err)
+	assert.Equal(t, 200, daily.Totals.InputTokens)
+	assert.Equal(t, 75, daily.Totals.OutputTokens)
+	assert.InDelta(t, 0.04, daily.Totals.TotalCost, 1e-9)
+	assert.Equal(t, 1, daily.SessionCounts.Total)
+	assert.Equal(t, 1, daily.SessionCounts.ByProject["beta"])
+
+	unfiltered := alpha
+	unfiltered.GitBranch = ""
+	daily, err = d.GetDailyUsage(ctx, unfiltered)
+	require.NoError(t, err)
+	assert.Equal(t, 300, daily.Totals.InputTokens)
+	assert.Equal(t, 125, daily.Totals.OutputTokens)
+	assert.InDelta(t, 0.06, daily.Totals.TotalCost, 1e-9)
+	assert.Equal(t, 2, daily.SessionCounts.Total)
+	assert.Equal(t, 1, daily.SessionCounts.ByProject["alpha"])
+	assert.Equal(t, 1, daily.SessionCounts.ByProject["beta"])
+
+	counts, err = d.GetUsageSessionCounts(ctx, unfiltered)
+	require.NoError(t, err)
+	assert.Equal(t, 2, counts.Total)
+	assert.Equal(t, 1, counts.ByProject["alpha"])
+	assert.Equal(t, 1, counts.ByProject["beta"])
+}
+
 func seedPhase24BranchSession(t *testing.T, d *DB, id, project, branch string) {
 	t.Helper()
 	started := "2026-08-17T00:00:00Z"
@@ -149,6 +216,25 @@ func seedPhase24BranchSession(t *testing.T, d *DB, id, project, branch string) {
 		RelationshipType: "root",
 		GitBranch:        branch,
 	}), "upsert %s", id)
+}
+
+func seedPhase24UsageEvent(t *testing.T, d *DB, sessionID string, input, output int, cost float64) {
+	t.Helper()
+	ordinal := 3
+	err := d.ReplaceSessionUsageEvents(sessionID, []UsageEvent{{
+		SessionID:      sessionID,
+		MessageOrdinal: &ordinal,
+		Source:         "session",
+		Model:          "gpt-5.4",
+		InputTokens:    input,
+		OutputTokens:   output,
+		CostUSD:        &cost,
+		CostStatus:     "estimated",
+		CostSource:     "hermes",
+		OccurredAt:     "2026-08-17T00:00:30Z",
+		DedupKey:       "session:" + sessionID,
+	}})
+	require.NoError(t, err, "ReplaceSessionUsageEvents %s", sessionID)
 }
 
 func phase24SessionIDs(sessions []Session) []string {
