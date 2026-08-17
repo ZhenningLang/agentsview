@@ -398,7 +398,10 @@ func writeOneSessionBatchTx(
 
 	msgs := write.Messages
 	var pins []savedPin
+	shouldBump := false
 	if write.ReplaceMessages {
+		oldMsgs, err := loadSessionTranscriptTx(tx, write.Session.ID)
+		shouldBump = err != nil || !transcriptMessagesEqual(oldMsgs, msgs)
 		pins, err = savePinsTx(tx, write.Session.ID)
 		if err != nil {
 			return 0, err
@@ -412,6 +415,7 @@ func writeOneSessionBatchTx(
 			return 0, err
 		}
 		msgs = messagesAfterOrdinal(msgs, maxOrd)
+		shouldBump = len(msgs) > 0
 	}
 
 	if len(msgs) > 0 {
@@ -430,6 +434,11 @@ func writeOneSessionBatchTx(
 	}
 	if write.ReplaceMessages {
 		if err := restorePinsTx(tx, write.Session.ID, pins); err != nil {
+			return 0, err
+		}
+	}
+	if shouldBump {
+		if err := bumpTranscriptRevisionTx(tx, write.Session.ID); err != nil {
 			return 0, err
 		}
 	}

@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -138,6 +139,255 @@ func TestPhase20SQLiteSchemaProjectsTranscriptRevisionReads(t *testing.T) {
 	require.Contains(t, indexRows, "phase20-parent")
 	require.NotNil(t, indexRows["phase20-parent"].TranscriptRevision)
 	assert.Equal(t, "7", *indexRows["phase20-parent"].TranscriptRevision)
+}
+
+func TestPhase20TranscriptMessagesEqualVisibleContract(t *testing.T) {
+	base := phase20Transcript("s1", 0, "hello")
+	sameVisible := phase20Transcript("s1", 0, "hello")
+	sameVisible[0].ID = 99
+	sameVisible[0].ContentLength = 500
+	sameVisible[0].TokenUsage = []byte(`{"raw":"ignored"}`)
+	sameVisible[0].ClaudeMessageID = "ignored-message-id"
+	sameVisible[0].ClaudeRequestID = "ignored-request-id"
+	sameVisible[0].SourceType = "ignored-source-type"
+	sameVisible[0].SourceUUID = "ignored-source-uuid"
+	sameVisible[0].SourceParentUUID = "ignored-parent-uuid"
+	sameVisible[0].IsSidechain = true
+	sameVisible[0].ToolCalls[0].MessageID = 123
+	sameVisible[0].ToolCalls[0].SessionID = "ignored-session"
+	sameVisible[0].ToolCalls[0].ResultContentLength = 999
+	sameVisible[0].ToolCalls[0].ResultEvents[0].ContentLength = 999
+	assert.True(t, transcriptMessagesEqual(base, sameVisible),
+		"row ids, derived lengths, raw token payload and source bookkeeping are not visible transcript changes")
+
+	cases := []struct {
+		name string
+		edit func([]Message) []Message
+	}{
+		{
+			name: "missing ordinal",
+			edit: func(msgs []Message) []Message { return nil },
+		},
+		{
+			name: "duplicate ordinal",
+			edit: func(msgs []Message) []Message {
+				return append(msgs, msgs[0])
+			},
+		},
+		{
+			name: "message content",
+			edit: func(msgs []Message) []Message {
+				msgs[0].Content = "changed"
+				return msgs
+			},
+		},
+		{
+			name: "thinking text",
+			edit: func(msgs []Message) []Message {
+				msgs[0].ThinkingText = "changed thinking"
+				return msgs
+			},
+		},
+		{
+			name: "token presence",
+			edit: func(msgs []Message) []Message {
+				msgs[0].HasOutputTokens = false
+				return msgs
+			},
+		},
+		{
+			name: "tool input",
+			edit: func(msgs []Message) []Message {
+				msgs[0].ToolCalls[0].InputJSON = `{"path":"changed"}`
+				return msgs
+			},
+		},
+		{
+			name: "tool order",
+			edit: func(msgs []Message) []Message {
+				msgs[0].ToolCalls = append(msgs[0].ToolCalls, ToolCall{
+					ToolName: "Bash", Category: "Bash",
+				})
+				msgs[0].ToolCalls[0], msgs[0].ToolCalls[1] = msgs[0].ToolCalls[1], msgs[0].ToolCalls[0]
+				return msgs
+			},
+		},
+		{
+			name: "result event content",
+			edit: func(msgs []Message) []Message {
+				msgs[0].ToolCalls[0].ResultEvents[0].Content = "changed event"
+				return msgs
+			},
+		},
+		{
+			name: "result event order",
+			edit: func(msgs []Message) []Message {
+				msgs[0].ToolCalls[0].ResultEvents = append(
+					msgs[0].ToolCalls[0].ResultEvents,
+					ToolResultEvent{Source: "stderr", Status: "ok", Content: "second"},
+				)
+				msgs[0].ToolCalls[0].ResultEvents[0], msgs[0].ToolCalls[0].ResultEvents[1] =
+					msgs[0].ToolCalls[0].ResultEvents[1], msgs[0].ToolCalls[0].ResultEvents[0]
+				return msgs
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := tc.edit(phase20Transcript("s1", 0, "hello"))
+			assert.False(t, transcriptMessagesEqual(base, changed))
+		})
+	}
+}
+
+func TestPhase20SQLiteRevisionInsertMessagesBumpsDistinctSessionsOnce(t *testing.T) {
+	d := testDB(t)
+	insertSession(t, d, "phase20-insert-a", "project-a")
+	insertSession(t, d, "phase20-insert-b", "project-a")
+
+	require.NoError(t, d.InsertMessages([]Message{
+		phase20Msg("phase20-insert-a", 0, "a0"),
+		phase20Msg("phase20-insert-a", 1, "a1"),
+		phase20Msg("phase20-insert-b", 0, "b0"),
+	}))
+
+	assert.Equal(t, "1", phase20Revision(t, d, "phase20-insert-a"))
+	assert.Equal(t, "1", phase20Revision(t, d, "phase20-insert-b"))
+}
+
+func TestPhase20SQLiteRevisionReplaceSessionMessagesVisibleChangesOnly(t *testing.T) {
+	d := testDB(t)
+	insertSession(t, d, "phase20-replace", "project-a")
+
+	base := phase20Transcript("phase20-replace", 0, "hello")
+	require.NoError(t, d.ReplaceSessionMessages("phase20-replace", base))
+	assert.Equal(t, "1", phase20Revision(t, d, "phase20-replace"))
+
+	sameVisible := phase20Transcript("phase20-replace", 0, "hello")
+	sameVisible[0].ID = 42
+	sameVisible[0].ContentLength = 999
+	sameVisible[0].TokenUsage = []byte(`{"raw":"ignored"}`)
+	sameVisible[0].SourceUUID = "ignored-source-uuid"
+	require.NoError(t, d.ReplaceSessionMessages("phase20-replace", sameVisible))
+	assert.Equal(t, "1", phase20Revision(t, d, "phase20-replace"))
+
+	changed := phase20Transcript("phase20-replace", 0, "changed")
+	require.NoError(t, d.ReplaceSessionMessages("phase20-replace", changed))
+	assert.Equal(t, "2", phase20Revision(t, d, "phase20-replace"))
+
+	changedTool := phase20Transcript("phase20-replace", 0, "changed")
+	changedTool[0].ToolCalls[0].ResultEvents[0].Content = "changed tool event"
+	require.NoError(t, d.ReplaceSessionMessages("phase20-replace", changedTool))
+	assert.Equal(t, "3", phase20Revision(t, d, "phase20-replace"))
+}
+
+func TestPhase20SQLiteRevisionReplaceSessionContentSharesMessageSemantics(t *testing.T) {
+	d := testDB(t)
+	insertSession(t, d, "phase20-content", "project-a")
+	signals := SessionSignalUpdate{Outcome: "completed", OutcomeConfidence: "high"}
+
+	base := []Message{phase20Msg("phase20-content", 0, "hello")}
+	require.NoError(t, d.ReplaceSessionContent("phase20-content", base, signals, nil))
+	assert.Equal(t, "1", phase20Revision(t, d, "phase20-content"))
+
+	newSignals := SessionSignalUpdate{Outcome: "errored", OutcomeConfidence: "low"}
+	findings := []SecretFinding{{
+		RuleName: "phase20-rule", Confidence: "low", LocationKind: "message",
+		MessageOrdinal: 0, MatchStart: 0, MatchEnd: 4, MatchIndex: 0,
+		RedactedMatch: "redacted", RulesVersion: "phase20-rules",
+	}}
+	require.NoError(t, d.ReplaceSessionContent("phase20-content", base, newSignals, findings))
+	assert.Equal(t, "1", phase20Revision(t, d, "phase20-content"))
+
+	changed := []Message{phase20Msg("phase20-content", 0, "changed")}
+	require.NoError(t, d.ReplaceSessionContent("phase20-content", changed, newSignals, nil))
+	assert.Equal(t, "2", phase20Revision(t, d, "phase20-content"))
+}
+
+func TestPhase20SQLiteRevisionWriteSessionBatchAppendAndReplace(t *testing.T) {
+	d := testDB(t)
+
+	result, err := d.WriteSessionBatch([]SessionBatchWrite{{
+		Session: phase20Session("phase20-batch-empty"),
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 1, result.WrittenSessions)
+	assert.Equal(t, "0", phase20Revision(t, d, "phase20-batch-empty"))
+
+	result, err = d.WriteSessionBatch([]SessionBatchWrite{{
+		Session:  phase20Session("phase20-batch-append"),
+		Messages: []Message{phase20Msg("phase20-batch-append", 0, "a0")},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 1, result.WrittenSessions)
+	assert.Equal(t, "1", phase20Revision(t, d, "phase20-batch-append"))
+
+	result, err = d.WriteSessionBatch([]SessionBatchWrite{{
+		Session:  phase20Session("phase20-batch-append"),
+		Messages: []Message{phase20Msg("phase20-batch-append", 0, "a0")},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 1, result.WrittenSessions)
+	assert.Equal(t, "1", phase20Revision(t, d, "phase20-batch-append"))
+
+	result, err = d.WriteSessionBatch([]SessionBatchWrite{{
+		Session: phase20Session("phase20-batch-append"),
+		Messages: []Message{
+			phase20Msg("phase20-batch-append", 0, "a0"),
+			phase20Msg("phase20-batch-append", 1, "a1"),
+		},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 1, result.WrittenSessions)
+	assert.Equal(t, "2", phase20Revision(t, d, "phase20-batch-append"))
+
+	result, err = d.WriteSessionBatch([]SessionBatchWrite{{
+		Session:         phase20Session("phase20-batch-append"),
+		Messages:        []Message{phase20Msg("phase20-batch-append", 0, "a0"), phase20Msg("phase20-batch-append", 1, "a1")},
+		ReplaceMessages: true,
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 1, result.WrittenSessions)
+	assert.Equal(t, "2", phase20Revision(t, d, "phase20-batch-append"))
+
+	result, err = d.WriteSessionBatch([]SessionBatchWrite{{
+		Session:         phase20Session("phase20-batch-append"),
+		Messages:        []Message{phase20Msg("phase20-batch-append", 0, "rewritten")},
+		ReplaceMessages: true,
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 1, result.WrittenSessions)
+	assert.Equal(t, "3", phase20Revision(t, d, "phase20-batch-append"))
+}
+
+func TestPhase20SQLiteRevisionWriteSessionBatchAtomicRollsBackBump(t *testing.T) {
+	d := testDB(t)
+
+	result, err := d.WriteSessionBatchAtomic([]SessionBatchWrite{{
+		Session: phase20Session("phase20-atomic"),
+		Messages: []Message{
+			phase20Msg("phase20-atomic", 0, "a0"),
+			phase20Msg("phase20-atomic", 1, "a1"),
+		},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 1, result.WrittenSessions)
+	assert.Equal(t, "1", phase20Revision(t, d, "phase20-atomic"))
+
+	sentinel := errors.New("phase20 rollback sentinel")
+	result, err = d.WriteSessionBatchAtomic([]SessionBatchWrite{{
+		Session: phase20Session("phase20-atomic"),
+		Messages: []Message{
+			phase20Msg("phase20-atomic", 0, "a0"),
+			phase20Msg("phase20-atomic", 1, "a1"),
+			phase20Msg("phase20-atomic", 2, "a2"),
+		},
+	}}, func() error { return sentinel })
+	require.ErrorIs(t, err, sentinel)
+	assert.Equal(t, 0, result.WrittenSessions)
+	assert.Equal(t, "1", phase20Revision(t, d, "phase20-atomic"))
+	assert.Equal(t, 1, d.MaxOrdinal("phase20-atomic"))
 }
 
 func createPhase20CurrentArchiveWithoutTranscriptRevision(t *testing.T, path string) {
@@ -294,6 +544,60 @@ func phase20SessionsByID(sessions []Session) map[string]Session {
 }
 
 func phase20Ptr[T any](v T) *T { return &v }
+
+func phase20Session(id string) Session {
+	return Session{
+		ID: id, Project: "project-a", Machine: defaultMachine,
+		Agent: defaultAgent, MessageCount: 1,
+	}
+}
+
+func phase20Msg(sessionID string, ordinal int, content string) Message {
+	return Message{
+		SessionID: sessionID, Ordinal: ordinal, Role: "assistant",
+		Content: content, ContentLength: len(content), Timestamp: tsZero,
+	}
+}
+
+func phase20Transcript(sessionID string, ordinal int, content string) []Message {
+	msg := phase20Msg(sessionID, ordinal, content)
+	msg.ID = 10
+	msg.ThinkingText = "thinking"
+	msg.HasThinking = true
+	msg.HasToolUse = true
+	msg.IsSystem = true
+	msg.Model = "model-a"
+	msg.ContextTokens = 11
+	msg.OutputTokens = 7
+	msg.HasContextTokens = true
+	msg.HasOutputTokens = true
+	msg.SourceSubtype = "compact"
+	msg.IsCompactBoundary = true
+	msg.ToolCalls = []ToolCall{{
+		MessageID: 10, SessionID: sessionID, ToolName: "Read",
+		Category: "Read", ToolUseID: "toolu_1",
+		InputJSON: `{"path":"a.go"}`, SkillName: "assist-learn",
+		ResultContent: "result", ResultContentLength: 6,
+		SubagentSessionID: "child-session",
+		ResultEvents: []ToolResultEvent{{
+			ToolUseID: "toolu_1", AgentID: "agent-a",
+			SubagentSessionID: "child-session", Source: "stdout",
+			Status: "ok", Content: "event", ContentLength: 5,
+			Timestamp: tsZeroS1, EventIndex: 0,
+		}},
+	}}
+	return []Message{msg}
+}
+
+func phase20Revision(t *testing.T, d *DB, sessionID string) string {
+	t.Helper()
+	var revision string
+	require.NoError(t, d.getReader().QueryRow(
+		`SELECT transcript_revision FROM sessions WHERE id = ?`,
+		sessionID,
+	).Scan(&revision))
+	return revision
+}
 
 func phase20SidebarRowsByID(
 	sessions []SidebarSessionIndexRow,
