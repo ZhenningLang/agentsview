@@ -76,15 +76,15 @@ func TestPhase20SQLiteSchemaProjectsTranscriptRevisionReads(t *testing.T) {
 	fileHash := "phase20-file-hash"
 	localModifiedAt := "2026-08-18T00:03:00.000Z"
 	insertSession(t, d, "phase20-parent", "project-a", func(s *Session) {
-		s.StartedAt = phase20Ptr("2026-08-18T00:00:00Z")
-		s.EndedAt = phase20Ptr("2026-08-18T00:01:00Z")
+		s.StartedAt = new("2026-08-18T00:00:00Z")
+		s.EndedAt = new("2026-08-18T00:01:00Z")
 		s.FileHash = &fileHash
 		s.LocalModifiedAt = &localModifiedAt
 	})
 	insertSession(t, d, "phase20-child", "project-a", func(s *Session) {
-		s.ParentSessionID = phase20Ptr("phase20-parent")
+		s.ParentSessionID = new("phase20-parent")
 		s.RelationshipType = "subagent"
-		s.StartedAt = phase20Ptr("2026-08-18T00:02:00Z")
+		s.StartedAt = new("2026-08-18T00:02:00Z")
 	})
 	_, err := d.getWriter().Exec(
 		`UPDATE sessions
@@ -619,8 +619,6 @@ func phase20SessionsByID(sessions []Session) map[string]Session {
 	}
 	return rows
 }
-
-func phase20Ptr[T any](v T) *T { return &v }
 
 func phase20Session(id string) Session {
 	return Session{
