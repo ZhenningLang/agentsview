@@ -867,6 +867,10 @@ func (db *DB) migrateColumns() error {
 			"ALTER TABLE sessions ADD COLUMN enrich_error TEXT NOT NULL DEFAULT ''",
 		},
 		{
+			"sessions", "transcript_revision",
+			"ALTER TABLE sessions ADD COLUMN transcript_revision TEXT NOT NULL DEFAULT '0'",
+		},
+		{
 			"worktree_project_mappings", "layout",
 			"ALTER TABLE worktree_project_mappings ADD COLUMN layout TEXT NOT NULL " +
 				"DEFAULT 'explicit'",

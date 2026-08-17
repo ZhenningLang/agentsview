@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     enriched_msg_count INTEGER NOT NULL DEFAULT 0,
     enrich_model TEXT NOT NULL DEFAULT '',
     enrich_status TEXT NOT NULL DEFAULT '',
-    enrich_error TEXT NOT NULL DEFAULT ''
+    enrich_error TEXT NOT NULL DEFAULT '',
+    transcript_revision TEXT NOT NULL DEFAULT '0'
 );
 
 -- Messages table with ordinal for efficient range queries

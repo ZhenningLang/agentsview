@@ -48,7 +48,7 @@ const sessionBaseCols = `id, project, machine, agent,
 	llm_title, llm_summary, llm_keywords,
 	llm_embedding_dim, enriched_at, enriched_msg_count,
 	enrich_model, enrich_status, enrich_error,
-	data_version,
+	transcript_revision, data_version,
 	cwd, git_branch, source_session_id, source_version,
 	parser_malformed_lines, is_truncated,
 	deleted_at, termination_status, created_at`
@@ -75,7 +75,7 @@ const sessionPruneCols = `id, project, machine, agent,
 	llm_title, llm_summary, llm_keywords,
 	llm_embedding_dim, enriched_at, enriched_msg_count,
 	enrich_model, enrich_status, enrich_error,
-	data_version,
+	transcript_revision, data_version,
 	cwd, git_branch, source_session_id, source_version,
 	parser_malformed_lines, is_truncated,
 	deleted_at, termination_status, file_path, file_size, created_at`
@@ -101,7 +101,7 @@ const sessionFullCols = `id, project, machine, agent,
 	llm_title, llm_summary, llm_keywords,
 	llm_embedding_dim, enriched_at, enriched_msg_count,
 	enrich_model, enrich_status, enrich_error,
-	data_version,
+	transcript_revision, data_version,
 	cwd, git_branch, source_session_id, source_version,
 	parser_malformed_lines, is_truncated,
 	deleted_at, termination_status, file_path, file_size, file_mtime,
@@ -130,7 +130,7 @@ const sessionSyncCols = `id, project, machine, agent,
 	llm_title, llm_summary, llm_keywords, llm_embedding,
 	llm_embedding_dim, enriched_at, enriched_msg_count,
 	enrich_model, enrich_status, enrich_error,
-	data_version,
+	transcript_revision, data_version,
 	cwd, git_branch, source_session_id, source_version,
 	parser_malformed_lines, is_truncated,
 	deleted_at, termination_status, file_path, file_size, file_mtime,
@@ -174,6 +174,7 @@ func scanSessionRow(rs rowScanner) (Session, error) {
 		&s.LLMTitle, &s.LLMSummary, &s.LLMKeywords,
 		&s.LLMEmbeddingDim, &s.EnrichedAt, &s.EnrichedMsgCount,
 		&s.EnrichModel, &s.EnrichStatus, &s.EnrichError,
+		&s.TranscriptRevision,
 		&s.DataVersion,
 		&s.Cwd, &s.GitBranch,
 		&s.SourceSessionID, &s.SourceVersion,
@@ -233,6 +234,7 @@ type Session struct {
 	EnrichModel            string   `json:"enrich_model"`
 	EnrichStatus           string   `json:"enrich_status"`
 	EnrichError            string   `json:"enrich_error"`
+	TranscriptRevision     *string  `json:"transcript_revision,omitempty"`
 	DataVersion            int      `json:"-"`
 	Cwd                    string   `json:"cwd,omitempty"`
 	GitBranch              string   `json:"git_branch,omitempty"`
@@ -446,22 +448,23 @@ type SessionPage struct {
 }
 
 type SidebarSessionIndexRow struct {
-	ID                string  `json:"id"`
-	ParentSessionID   *string `json:"parent_session_id,omitempty"`
-	RelationshipType  string  `json:"relationship_type,omitempty"`
-	Project           string  `json:"project"`
-	Machine           string  `json:"machine"`
-	Agent             string  `json:"agent"`
-	DisplayName       *string `json:"display_name,omitempty"`
-	LLMTitle          string  `json:"llm_title"`
-	StartedAt         *string `json:"started_at"`
-	EndedAt           *string `json:"ended_at"`
-	CreatedAt         string  `json:"created_at"`
-	TerminationStatus *string `json:"termination_status,omitempty"`
-	MessageCount      int     `json:"message_count"`
-	UserMessageCount  int     `json:"user_message_count"`
-	IsAutomated       bool    `json:"is_automated"`
-	IsTeammate        bool    `json:"is_teammate"`
+	ID                 string  `json:"id"`
+	ParentSessionID    *string `json:"parent_session_id,omitempty"`
+	RelationshipType   string  `json:"relationship_type,omitempty"`
+	Project            string  `json:"project"`
+	Machine            string  `json:"machine"`
+	Agent              string  `json:"agent"`
+	DisplayName        *string `json:"display_name,omitempty"`
+	LLMTitle           string  `json:"llm_title"`
+	StartedAt          *string `json:"started_at"`
+	EndedAt            *string `json:"ended_at"`
+	CreatedAt          string  `json:"created_at"`
+	TerminationStatus  *string `json:"termination_status,omitempty"`
+	TranscriptRevision *string `json:"transcript_revision,omitempty"`
+	MessageCount       int     `json:"message_count"`
+	UserMessageCount   int     `json:"user_message_count"`
+	IsAutomated        bool    `json:"is_automated"`
+	IsTeammate         bool    `json:"is_teammate"`
 }
 
 type SidebarSessionIndex struct {
@@ -573,6 +576,7 @@ func (db *DB) GetSidebarSessionIndex(
 			ended_at,
 			created_at,
 			termination_status,
+			transcript_revision,
 			message_count,
 			user_message_count,
 			is_automated,
@@ -610,6 +614,7 @@ func (db *DB) GetSidebarSessionIndex(
 			&row.EndedAt,
 			&row.CreatedAt,
 			&row.TerminationStatus,
+			&row.TranscriptRevision,
 			&row.MessageCount,
 			&row.UserMessageCount,
 			&row.IsAutomated,
@@ -682,6 +687,7 @@ func (db *DB) GetSessionFull(
 		&s.LLMTitle, &s.LLMSummary, &s.LLMKeywords,
 		&s.LLMEmbeddingDim, &s.EnrichedAt, &s.EnrichedMsgCount,
 		&s.EnrichModel, &s.EnrichStatus, &s.EnrichError,
+		&s.TranscriptRevision,
 		&s.DataVersion,
 		&s.Cwd, &s.GitBranch,
 		&s.SourceSessionID, &s.SourceVersion,
@@ -1811,6 +1817,7 @@ func (db *DB) FindPruneCandidates(
 			&s.LLMTitle, &s.LLMSummary, &s.LLMKeywords,
 			&s.LLMEmbeddingDim, &s.EnrichedAt, &s.EnrichedMsgCount,
 			&s.EnrichModel, &s.EnrichStatus, &s.EnrichError,
+			&s.TranscriptRevision,
 			&s.DataVersion,
 			&s.Cwd, &s.GitBranch,
 			&s.SourceSessionID, &s.SourceVersion,
@@ -2091,6 +2098,7 @@ func (db *DB) ListSessionsModifiedBetween(
 			&s.LLMTitle, &s.LLMSummary, &s.LLMKeywords, &s.LLMEmbedding,
 			&s.LLMEmbeddingDim, &s.EnrichedAt, &s.EnrichedMsgCount,
 			&s.EnrichModel, &s.EnrichStatus, &s.EnrichError,
+			&s.TranscriptRevision,
 			&s.DataVersion,
 			&s.Cwd, &s.GitBranch,
 			&s.SourceSessionID, &s.SourceVersion,
