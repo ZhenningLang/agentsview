@@ -168,23 +168,27 @@ func (d *DB) CopyOrphanedDataFromExcluding(
 			"counting orphaned sessions: %w", err,
 		)
 	}
-	if count == 0 {
-		return 0, nil
-	}
-
 	t := time.Now()
 
-	// Use a transaction so all three inserts are atomic.
-	// Partial orphan copies would leave dangling sessions
-	// without messages or tool_calls.
+	// Use a transaction so orphan copy and matching-session
+	// revision reconciliation are atomic. Partial orphan copies
+	// would leave dangling sessions without messages or tool_calls;
+	// partial revision reconciliation would make full resync unread
+	// markers disagree with the swapped database.
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin orphan tx: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := copySessionDataForIDs(ctx, tx, "_orphaned_ids"); err != nil {
-		return 0, fmt.Errorf("copying orphaned data: %w", err)
+	if count > 0 {
+		if err := copySessionDataForIDs(ctx, tx, "_orphaned_ids"); err != nil {
+			return 0, fmt.Errorf("copying orphaned data: %w", err)
+		}
+	}
+
+	if err := reconcileTranscriptRevisionsForMatchingSessions(ctx, tx); err != nil {
+		return 0, fmt.Errorf("reconciling transcript revisions: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -556,6 +560,9 @@ func orphanSessionCols(ctx context.Context, tx *sql.Tx) string {
 	if oldDBHasColumn(ctx, tx, "sessions", "deleted_at") {
 		cols = append(cols, "deleted_at")
 	}
+	if oldDBHasColumn(ctx, tx, "sessions", "transcript_revision") {
+		cols = append(cols, "transcript_revision")
+	}
 	cols = append(cols, "created_at")
 	for _, c := range []string{
 		"total_output_tokens", "peak_context_tokens",
@@ -580,6 +587,232 @@ func orphanSessionCols(ctx context.Context, tx *sql.Tx) string {
 		}
 	}
 	return strings.Join(cols, ", ")
+}
+
+func reconcileTranscriptRevisionsForMatchingSessions(
+	ctx context.Context,
+	tx *sql.Tx,
+) error {
+	if !canCompareOldTranscript(ctx, tx) {
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE _matching_session_ids AS
+		SELECT main.sessions.id
+		FROM main.sessions
+		JOIN old_db.sessions old_s ON old_s.id = main.sessions.id`); err != nil {
+		return fmt.Errorf("identifying matching sessions: %w", err)
+	}
+	defer func() {
+		_, _ = tx.ExecContext(
+			context.WithoutCancel(ctx),
+			"DROP TABLE IF EXISTS _matching_session_ids",
+		)
+	}()
+
+	if err := createTranscriptCompareTable(ctx, tx, "main"); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = tx.ExecContext(
+			context.WithoutCancel(ctx),
+			"DROP TABLE IF EXISTS _main_transcript_compare",
+		)
+	}()
+	if err := createTranscriptCompareTable(ctx, tx, "old_db"); err != nil {
+		return err
+	}
+	defer func() {
+		_, _ = tx.ExecContext(
+			context.WithoutCancel(ctx),
+			"DROP TABLE IF EXISTS _old_db_transcript_compare",
+		)
+	}()
+
+	if _, err := tx.ExecContext(ctx, `
+		CREATE TEMP TABLE _changed_transcript_ids AS
+		SELECT id FROM _matching_session_ids
+		WHERE EXISTS (
+			SELECT 1 FROM (
+				SELECT * FROM _main_transcript_compare
+				WHERE session_id = id
+				EXCEPT
+				SELECT * FROM _old_db_transcript_compare
+				WHERE session_id = id
+			)
+		) OR EXISTS (
+			SELECT 1 FROM (
+				SELECT * FROM _old_db_transcript_compare
+				WHERE session_id = id
+				EXCEPT
+				SELECT * FROM _main_transcript_compare
+				WHERE session_id = id
+			)
+		)`); err != nil {
+		return fmt.Errorf("identifying changed transcripts: %w", err)
+	}
+	defer func() {
+		_, _ = tx.ExecContext(
+			context.WithoutCancel(ctx),
+			"DROP TABLE IF EXISTS _changed_transcript_ids",
+		)
+	}()
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE main.sessions AS s
+		SET transcript_revision = CASE
+			WHEN s.id IN (SELECT id FROM _changed_transcript_ids)
+				THEN CAST(CAST(old_s.transcript_revision AS INTEGER) + 1 AS TEXT)
+			ELSE old_s.transcript_revision
+		END
+		FROM old_db.sessions AS old_s
+		WHERE s.id = old_s.id
+		  AND s.id IN (SELECT id FROM _matching_session_ids)`); err != nil {
+		return fmt.Errorf("updating matching transcript revisions: %w", err)
+	}
+	return nil
+}
+
+func createTranscriptCompareTable(ctx context.Context, tx *sql.Tx, schema string) error {
+	table := "_main_transcript_compare"
+	if schema == "old_db" {
+		table = "_old_db_transcript_compare"
+	}
+	messages := schema + ".messages"
+	toolCalls := schema + ".tool_calls"
+	toolEvents := schema + ".tool_result_events"
+	query := `
+		CREATE TEMP TABLE ` + table + ` AS
+		SELECT
+			'message' AS row_kind,
+			m.session_id,
+			m.ordinal,
+			0 AS item_index,
+			0 AS sub_index,
+			m.role AS c1,
+			m.content AS c2,
+			m.thinking_text AS c3,
+			m.timestamp AS c4,
+			CAST(m.has_thinking AS TEXT) AS c5,
+			CAST(m.has_tool_use AS TEXT) AS c6,
+			CAST(m.is_system AS TEXT) AS c7,
+			m.model AS c8,
+			CAST(m.context_tokens AS TEXT) AS c9,
+			CAST(m.output_tokens AS TEXT) AS c10,
+			CAST(m.has_context_tokens AS TEXT) AS c11,
+			CAST(m.has_output_tokens AS TEXT) AS c12,
+			m.source_subtype AS c13,
+			CAST(m.is_compact_boundary AS TEXT) AS c14,
+			'' AS c15,
+			'' AS c16,
+			'' AS c17,
+			'' AS c18
+		FROM ` + messages + ` m
+		WHERE m.session_id IN (SELECT id FROM _matching_session_ids)
+		UNION ALL
+		SELECT
+			'tool_call' AS row_kind,
+			tc.session_id,
+			m.ordinal,
+			ROW_NUMBER() OVER (
+				PARTITION BY tc.session_id, m.ordinal
+				ORDER BY tc.id
+			) - 1 AS item_index,
+			0 AS sub_index,
+			tc.tool_name AS c1,
+			tc.category AS c2,
+			tc.tool_use_id AS c3,
+			tc.input_json AS c4,
+			tc.skill_name AS c5,
+			tc.result_content AS c6,
+			tc.subagent_session_id AS c7,
+			'' AS c8,
+			'' AS c9,
+			'' AS c10,
+			'' AS c11,
+			'' AS c12,
+			'' AS c13,
+			'' AS c14,
+			'' AS c15,
+			'' AS c16,
+			'' AS c17,
+			'' AS c18
+		FROM ` + toolCalls + ` tc
+		JOIN ` + messages + ` m ON m.id = tc.message_id
+		WHERE tc.session_id IN (SELECT id FROM _matching_session_ids)
+		UNION ALL
+		SELECT
+			'tool_result_event' AS row_kind,
+			e.session_id,
+			e.tool_call_message_ordinal AS ordinal,
+			e.call_index AS item_index,
+			e.event_index AS sub_index,
+			e.tool_use_id AS c1,
+			e.agent_id AS c2,
+			e.subagent_session_id AS c3,
+			e.source AS c4,
+			e.status AS c5,
+			e.content AS c6,
+			e.timestamp AS c7,
+			'' AS c8,
+			'' AS c9,
+			'' AS c10,
+			'' AS c11,
+			'' AS c12,
+			'' AS c13,
+			'' AS c14,
+			'' AS c15,
+			'' AS c16,
+			'' AS c17,
+			'' AS c18
+		FROM ` + toolEvents + ` e
+		WHERE e.session_id IN (SELECT id FROM _matching_session_ids)`
+	if _, err := tx.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("creating %s: %w", table, err)
+	}
+	return nil
+}
+
+func canCompareOldTranscript(ctx context.Context, tx *sql.Tx) bool {
+	for _, table := range []string{"sessions", "messages", "tool_calls", "tool_result_events"} {
+		if !oldDBHasTable(ctx, tx, table) {
+			return false
+		}
+	}
+	if !oldDBHasColumn(ctx, tx, "sessions", "transcript_revision") {
+		return false
+	}
+	for _, c := range []string{
+		"session_id", "ordinal", "role", "content",
+		"thinking_text", "timestamp", "has_thinking", "has_tool_use",
+		"is_system", "model", "context_tokens", "output_tokens",
+		"has_context_tokens", "has_output_tokens", "source_subtype",
+		"is_compact_boundary",
+	} {
+		if !oldDBHasColumn(ctx, tx, "messages", c) {
+			return false
+		}
+	}
+	for _, c := range []string{
+		"session_id", "message_id", "tool_name", "category",
+		"tool_use_id", "input_json", "skill_name", "result_content",
+		"subagent_session_id",
+	} {
+		if !oldDBHasColumn(ctx, tx, "tool_calls", c) {
+			return false
+		}
+	}
+	for _, c := range []string{
+		"session_id", "tool_call_message_ordinal", "call_index",
+		"tool_use_id", "agent_id", "subagent_session_id", "source",
+		"status", "content", "timestamp", "event_index",
+	} {
+		if !oldDBHasColumn(ctx, tx, "tool_result_events", c) {
+			return false
+		}
+	}
+	return true
 }
 
 func copySessionDataForIDs(

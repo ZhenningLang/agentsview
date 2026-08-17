@@ -5378,6 +5378,99 @@ func TestResyncAllReconcilesLiveForkAndPreservesMissingSource(t *testing.T) {
 	assertMessageContent(t, env.db, "missing-source", "archived prompt", "archived reply")
 }
 
+func TestPhase20ResyncAllTranscriptRevisionReconciliation(t *testing.T) {
+	env := setupTestEnv(t)
+	unchangedPath := env.writeClaudeSession(
+		t, "phase20", "phase20-unchanged.jsonl",
+		testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsEarly, "unchanged prompt").
+			AddClaudeAssistant(tsEarlyS1, "unchanged reply").
+			String(),
+	)
+	rewritePath := env.writeClaudeSession(
+		t, "phase20", "phase20-rewrite.jsonl",
+		testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsEarly, "old prompt").
+			AddClaudeAssistant(tsEarlyS1, "old reply").
+			String(),
+	)
+	env.writeClaudeSession(
+		t, "phase20", "phase20-rename.jsonl",
+		testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsEarly, "rename prompt").
+			AddClaudeAssistant(tsEarlyS1, "rename reply").
+			String(),
+	)
+	orphanPath := env.writeClaudeSession(
+		t, "phase20", "phase20-orphan.jsonl",
+		testjsonl.NewSessionBuilder().
+			AddClaudeUser(tsEarly, "orphan prompt").
+			AddClaudeAssistant(tsEarlyS1, "orphan reply").
+			String(),
+	)
+
+	runSyncAndAssert(t, env.engine, sync.SyncStats{TotalSessions: 4, Synced: 4, Skipped: 0})
+	setPhase20TranscriptRevision(t, env.db, "phase20-unchanged", "7")
+	setPhase20TranscriptRevision(t, env.db, "phase20-rewrite", "11")
+	setPhase20TranscriptRevision(t, env.db, "phase20-rename", "13")
+	setPhase20TranscriptRevision(t, env.db, "phase20-orphan", "17")
+	customName := "Phase 20 renamed session"
+	require.NoError(t, env.db.RenameSession("phase20-rename", &customName))
+
+	unchangedInfo, err := os.Stat(unchangedPath)
+	require.NoError(t, err)
+	rewriteReplacement := testjsonl.NewSessionBuilder().
+		AddClaudeUser(tsEarly, "new prompt").
+		AddClaudeAssistant(tsEarlyS1, "new reply").
+		String()
+	require.NoError(t, os.WriteFile(rewritePath, []byte(rewriteReplacement), 0o644))
+	require.NoError(t, os.Chtimes(rewritePath, time.Now(), time.Now()))
+	require.NoError(t, os.Chtimes(unchangedPath, unchangedInfo.ModTime(), unchangedInfo.ModTime()))
+	require.NoError(t, os.Remove(orphanPath))
+
+	stats := env.engine.ResyncAll(context.Background(), nil)
+	require.False(t, stats.Aborted, "ResyncAll aborted: %+v", stats)
+	assert.Equal(t, 1, stats.OrphanedCopied, "orphan copy count")
+
+	assertPhase20TranscriptRevision(t, env.db, "phase20-unchanged", "7")
+	assertPhase20TranscriptRevision(t, env.db, "phase20-rewrite", "12")
+	assertPhase20TranscriptRevision(t, env.db, "phase20-rename", "13")
+	assertPhase20TranscriptRevision(t, env.db, "phase20-orphan", "17")
+	assertMessageContent(t, env.db, "phase20-rewrite", "new prompt", "new reply")
+	assertMessageContent(t, env.db, "phase20-orphan", "orphan prompt", "orphan reply")
+	renamed, err := env.db.GetSession(context.Background(), "phase20-rename")
+	require.NoError(t, err)
+	require.NotNil(t, renamed)
+	require.NotNil(t, renamed.DisplayName)
+	assert.Equal(t, customName, *renamed.DisplayName)
+}
+
+func setPhase20TranscriptRevision(
+	t *testing.T, database *db.DB, sessionID, revision string,
+) {
+	t.Helper()
+	require.NoError(t, database.Update(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			`UPDATE sessions SET transcript_revision = ? WHERE id = ?`,
+			revision, sessionID,
+		)
+		return err
+	}))
+}
+
+func assertPhase20TranscriptRevision(
+	t *testing.T, database *db.DB, sessionID, want string,
+) {
+	t.Helper()
+	var got string
+	require.NoError(t, database.Reader().QueryRowContext(
+		context.Background(),
+		`SELECT transcript_revision FROM sessions WHERE id = ?`,
+		sessionID,
+	).Scan(&got))
+	assert.Equal(t, want, got, "transcript_revision for %s", sessionID)
+}
+
 func TestRemoteSyncReconcilesForkSourceSnapshot(t *testing.T) {
 	database := dbtest.OpenTestDB(t)
 	firstRoot := t.TempDir()
