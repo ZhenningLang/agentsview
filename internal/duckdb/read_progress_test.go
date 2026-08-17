@@ -87,6 +87,110 @@ func TestPhase20DuckDBSchemaAndReadProgressProjection(t *testing.T) {
 	assert.Equal(t, "1", *indexRows[session.ID].TranscriptRevision)
 }
 
+// TestPhase20DuckDBTranscriptRevisionMigratesMirrorMissingTheColumn covers the
+// mirror that already exists on disk when this phase ships. EnsureSchema has to
+// add the column additively and leave the mirrored rows alone; recreating the
+// mirror would throw away a backfill the user already paid for.
+//
+// The fixture drops the column from a real mirror rather than hand-writing an
+// old DDL, so it stays honest as the rest of the schema moves.
+func TestPhase20DuckDBTranscriptRevisionMigratesMirrorMissingTheColumn(t *testing.T) {
+	ctx := context.Background()
+	local := newLocalDB(t)
+	session := syncSession(
+		"phase20-duck-migrated", "alpha", "phase20 migrated",
+		"2026-08-17T03:32:00.000Z", 1,
+	)
+	revision := "3"
+	session.TranscriptRevision = &revision
+	_, err := local.WriteSessionBatchAtomic([]db.SessionBatchWrite{{
+		Session:         session,
+		Messages:        []db.Message{syncMessage(session.ID, 0, "user", "phase20", "2026-08-17T03:32:00.000Z")},
+		DataVersion:     1,
+		ReplaceMessages: true,
+	}})
+	require.NoError(t, err)
+	setPhase20DuckLocalRevision(t, local, session.ID, revision)
+
+	path := filepath.Join(t.TempDir(), "phase20-migration.duckdb")
+	syncer := newTestSync(t, path, local, SyncOptions{})
+	first, err := syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, first.SessionsPushed)
+
+	// Rewind the mirror to what a release before this phase left behind.
+	// DuckDB refuses to alter a table that still has index dependents, so the
+	// indexes come off first. EnsureSchema recreates them along with the
+	// column, which is also what a real upgrade does.
+	for _, index := range []string{
+		"idx_sessions_ended", "idx_sessions_project", "idx_sessions_machine",
+		"idx_sessions_parent", "idx_sessions_started", "idx_sessions_agent",
+		"idx_sessions_termination_status",
+	} {
+		_, err = syncer.DB().ExecContext(ctx, "DROP INDEX IF EXISTS "+index)
+		require.NoError(t, err)
+	}
+	_, err = syncer.DB().ExecContext(ctx,
+		`ALTER TABLE sessions DROP COLUMN transcript_revision`)
+	require.NoError(t, err)
+	_, err = syncer.DB().ExecContext(ctx,
+		`UPDATE sync_metadata SET value = '5' WHERE key = ?`,
+		schemaVersionMetadataKey,
+	)
+	require.NoError(t, err)
+
+	require.NoError(t, EnsureSchema(ctx, syncer.DB()))
+
+	var schemaVersion string
+	require.NoError(t, syncer.DB().QueryRowContext(ctx,
+		`SELECT value FROM sync_metadata WHERE key = ?`,
+		schemaVersionMetadataKey,
+	).Scan(&schemaVersion))
+	assert.Equal(t, "6", schemaVersion)
+
+	var dataType string
+	var columnDefault sql.NullString
+	require.NoError(t, syncer.DB().QueryRowContext(ctx, `
+		SELECT data_type, column_default
+		FROM information_schema.columns
+		WHERE table_name = 'sessions' AND column_name = 'transcript_revision'`,
+	).Scan(&dataType, &columnDefault))
+	assert.Equal(t, "VARCHAR", dataType)
+	// The additive path deliberately leaves no DDL default behind: the mirror
+	// backfills the value from SQLite and the read path normalises a NULL to
+	// "0", so a default here would only mask a column that was never filled.
+	t.Logf("migrated column default = %v", columnDefault)
+
+	// The mirrored row predates the column and survived the migration.
+	store := NewStoreFromDB(syncer.DB())
+	migrated, err := store.GetSession(ctx, session.ID)
+	require.NoError(t, err)
+	require.NotNil(t, migrated)
+	require.NotNil(t, migrated.TranscriptRevision)
+	assert.Equal(t, "0", *migrated.TranscriptRevision)
+
+	// And the next push carries the local revision onto the migrated column.
+	second, err := syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, second.SessionsPushed)
+	pushed, err := store.GetSession(ctx, session.ID)
+	require.NoError(t, err)
+	require.NotNil(t, pushed)
+	require.NotNil(t, pushed.TranscriptRevision)
+	assert.Equal(t, "3", *pushed.TranscriptRevision)
+}
+
+func setPhase20DuckLocalRevision(t *testing.T, local *db.DB, sessionID, revision string) {
+	t.Helper()
+	require.NoError(t, local.Update(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			`UPDATE sessions SET transcript_revision = ? WHERE id = ?`,
+			revision, sessionID,
+		)
+		return err
+	}))
+}
+
 func TestPhase20DuckDBScopedMarkersDoNotCrossTargetOrFilter(t *testing.T) {
 	ctx := context.Background()
 	local := newLocalDB(t)

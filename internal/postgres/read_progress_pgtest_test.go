@@ -81,6 +81,82 @@ func TestPhase20PostgresTranscriptRevisionSchemaPushRead(t *testing.T) {
 	assert.Equal(t, "7", *indexRows[session.ID].TranscriptRevision)
 }
 
+// TestPhase20PostgresTranscriptRevisionMigratesSchemaMissingTheColumn covers
+// the shape every existing PostgreSQL target is in on the first push after
+// this phase ships: the schema and its rows already exist, and the column does
+// not. The migration has to add it in place. Recreating the table would drop
+// the mirror, and failing would leave the target unpushable.
+//
+// The fixture drops the column from a freshly created schema rather than
+// hand-writing an old DDL, so it stays honest as the rest of the schema moves.
+func TestPhase20PostgresTranscriptRevisionMigratesSchemaMissingTheColumn(t *testing.T) {
+	pgURL := testPGURL(t)
+	const schema = "agentsview_phase20_read_progress_migration"
+	cleanPhase20PGSchema(t, pgURL, schema)
+	t.Cleanup(func() { cleanPhase20PGSchema(t, pgURL, schema) })
+
+	ctx := context.Background()
+	local := testDB(t)
+	session := phase20PGSession("phase20-pg-migrated", "alpha", 1)
+	seedPhase20PGLocalSession(t, local, session, true)
+
+	syncer := newPhase20PGSync(t, pgURL, schema, local, SyncOptions{})
+	first, err := syncer.Push(ctx, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, first.SessionsPushed)
+
+	// Rewind the target to what a release before this phase left behind.
+	_, err = syncer.DB().ExecContext(ctx,
+		`ALTER TABLE sessions DROP COLUMN transcript_revision`)
+	require.NoError(t, err)
+	require.Error(t, CheckSchemaCompat(ctx, syncer.DB()),
+		"the compat probe has to notice the missing column, or this fixture proves nothing")
+
+	// A fresh Sync, the way the next `pg push` invocation starts: the first
+	// syncer caches that it already ensured the schema.
+	migrated := newPhase20PGSync(t, pgURL, schema, local, SyncOptions{})
+	require.NoError(t, migrated.EnsureSchema(ctx))
+	require.NoError(t, CheckSchemaCompat(ctx, migrated.DB()))
+
+	var columnDefault string
+	require.NoError(t, migrated.DB().QueryRowContext(ctx, `
+		SELECT column_default
+		FROM information_schema.columns
+		WHERE table_schema = $1
+		  AND table_name = 'sessions'
+		  AND column_name = 'transcript_revision'`,
+		schema,
+	).Scan(&columnDefault))
+	assert.Equal(t, "'0'::text", columnDefault)
+
+	// The row that predates the column survived and reads the default.
+	store := &Store{pg: migrated.DB()}
+	existing, err := store.GetSession(ctx, session.ID)
+	require.NoError(t, err)
+	require.NotNil(t, existing)
+	require.NotNil(t, existing.TranscriptRevision)
+	assert.Equal(t, "0", *existing.TranscriptRevision)
+
+	// And a later local bump still reaches the migrated column.
+	setPhase20PGTranscriptRevision(t, local, session.ID, "9")
+	second, err := migrated.Push(ctx, true, nil)
+	require.NoError(t, err)
+	require.Equal(t, 1, second.SessionsPushed)
+
+	pushed, err := store.GetSession(ctx, session.ID)
+	require.NoError(t, err)
+	require.NotNil(t, pushed)
+	require.NotNil(t, pushed.TranscriptRevision)
+	assert.Equal(t, "9", *pushed.TranscriptRevision)
+
+	index, err := store.GetSidebarSessionIndex(ctx, db.SessionFilter{})
+	require.NoError(t, err)
+	indexRows := phase20PGSidebarRowsByID(index.Sessions)
+	require.Contains(t, indexRows, session.ID)
+	require.NotNil(t, indexRows[session.ID].TranscriptRevision)
+	assert.Equal(t, "9", *indexRows[session.ID].TranscriptRevision)
+}
+
 func TestPhase20PostgresTranscriptRevisionScopedMarkersDoNotCrossTargetOrFilter(t *testing.T) {
 	pgURL := testPGURL(t)
 	const schemaA = "agentsview_phase20_read_progress_scope_a"

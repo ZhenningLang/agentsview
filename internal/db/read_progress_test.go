@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -250,6 +252,63 @@ func TestPhase20TranscriptMessagesEqualVisibleContract(t *testing.T) {
 	}
 }
 
+// TestPhase20TranscriptMessagesEqualIsOrdinalAware locks the comparison
+// key to the ordinal instead of the slice position. The frontend read
+// boundary indexes by ordinal, so an index-based comparator would make
+// the revision owner and the browser disagree: a transcript reordered
+// without any visible edit would bump the revision and show a phantom
+// unread, and every ordinal-keyed case below has to keep its verdict
+// even when the two slices are not aligned position by position.
+func TestPhase20TranscriptMessagesEqualIsOrdinalAware(t *testing.T) {
+	transcript := func(ordinals ...int) []Message {
+		msgs := make([]Message, 0, len(ordinals))
+		for _, ordinal := range ordinals {
+			msgs = append(
+				msgs,
+				phase20Transcript("s1", ordinal, fmt.Sprintf("m%d", ordinal))[0],
+			)
+		}
+		return msgs
+	}
+
+	t.Run("same ordinals in a different slice order are unchanged", func(t *testing.T) {
+		assert.True(t, transcriptMessagesEqual(
+			transcript(0, 1, 2),
+			transcript(2, 0, 1),
+		), "slice position is not visible to a reader; only ordinals are")
+	})
+
+	t.Run("shifted ordinal is changed", func(t *testing.T) {
+		assert.False(t, transcriptMessagesEqual(
+			transcript(0, 1, 2),
+			transcript(0, 1, 3),
+		))
+	})
+
+	t.Run("reordered with a rewritten message is changed", func(t *testing.T) {
+		rewritten := transcript(2, 0, 1)
+		rewritten[1].Content = "rewritten"
+		assert.False(t, transcriptMessagesEqual(transcript(0, 1, 2), rewritten))
+	})
+
+	t.Run("duplicate ordinal at equal length is changed", func(t *testing.T) {
+		assert.False(t, transcriptMessagesEqual(
+			transcript(0, 1, 2),
+			transcript(0, 1, 1),
+		))
+		assert.False(t, transcriptMessagesEqual(
+			transcript(0, 1, 1),
+			transcript(0, 1, 2),
+		))
+	})
+
+	t.Run("missing ordinal at equal length is changed", func(t *testing.T) {
+		gapped := transcript(0, 1, 2)
+		gapped = append(gapped[:1], gapped[2:]...)
+		assert.False(t, transcriptMessagesEqual(transcript(0, 1), gapped))
+	})
+}
+
 func TestPhase20SQLiteRevisionInsertMessagesBumpsDistinctSessionsOnce(t *testing.T) {
 	d := testDB(t)
 	insertSession(t, d, "phase20-insert-a", "project-a")
@@ -370,6 +429,214 @@ func TestPhase20SQLiteRevisionWriteSessionBatchAppendAndReplace(t *testing.T) {
 	assert.Equal(t, "3", phase20Revision(t, d, "phase20-batch-append"))
 }
 
+// TestPhase20SQLiteRevisionReplaceSessionMessagesFieldContract drives the
+// visible/derived split through a real writer rather than through the
+// comparator alone. Each case starts from an identical rewrite, which must not
+// move the counter, so a "visible" field that silently fails to persist would
+// show up as a bump on the no-op instead of passing by accident.
+func TestPhase20SQLiteRevisionReplaceSessionMessagesFieldContract(t *testing.T) {
+	const id = "phase20-field-contract"
+
+	visible := []struct {
+		name string
+		edit func([]Message)
+	}{
+		{"message content", func(m []Message) { m[0].Content = "changed" }},
+		{"thinking text", func(m []Message) { m[0].ThinkingText = "changed thinking" }},
+		{"thinking flag", func(m []Message) { m[0].HasThinking = false }},
+		{"system flag", func(m []Message) { m[0].IsSystem = false }},
+		{"model", func(m []Message) { m[0].Model = "model-b" }},
+		{"context token presence", func(m []Message) { m[0].HasContextTokens = false }},
+		{"output token presence", func(m []Message) { m[0].HasOutputTokens = false }},
+		{"context token count", func(m []Message) { m[0].ContextTokens = 12 }},
+		{"output token count", func(m []Message) { m[0].OutputTokens = 8 }},
+		{"source subtype", func(m []Message) { m[0].SourceSubtype = "resume" }},
+		{"compact boundary", func(m []Message) { m[0].IsCompactBoundary = false }},
+		{"tool name", func(m []Message) { m[0].ToolCalls[0].ToolName = "Bash" }},
+		{"tool input", func(m []Message) { m[0].ToolCalls[0].InputJSON = `{"path":"b.go"}` }},
+		{"tool skill name", func(m []Message) { m[0].ToolCalls[0].SkillName = "guard-review" }},
+		{"tool result content", func(m []Message) { m[0].ToolCalls[0].ResultContent = "changed result" }},
+		{"tool subagent session", func(m []Message) { m[0].ToolCalls[0].SubagentSessionID = "other-child" }},
+		{"result event content", func(m []Message) { m[0].ToolCalls[0].ResultEvents[0].Content = "changed event" }},
+		{"result event status", func(m []Message) { m[0].ToolCalls[0].ResultEvents[0].Status = "error" }},
+		{"result event source", func(m []Message) { m[0].ToolCalls[0].ResultEvents[0].Source = "stderr" }},
+		{
+			name: "shifted ordinal at equal length",
+			edit: func(m []Message) { m[0].Ordinal = 7 },
+		},
+	}
+
+	derived := []struct {
+		name string
+		edit func([]Message)
+	}{
+		{"message row id", func(m []Message) { m[0].ID = 4242 }},
+		{"content length", func(m []Message) { m[0].ContentLength = 999 }},
+		{"raw token payload", func(m []Message) { m[0].TokenUsage = []byte(`{"raw":"ignored"}`) }},
+		{"claude message id", func(m []Message) { m[0].ClaudeMessageID = "msg_ignored" }},
+		{"claude request id", func(m []Message) { m[0].ClaudeRequestID = "req_ignored" }},
+		{"source bookkeeping", func(m []Message) {
+			m[0].SourceType = "ignored-type"
+			m[0].SourceUUID = "ignored-uuid"
+			m[0].SourceParentUUID = "ignored-parent"
+		}},
+		{"sidechain flag", func(m []Message) { m[0].IsSidechain = true }},
+		{"tool row bookkeeping", func(m []Message) {
+			m[0].ToolCalls[0].MessageID = 4242
+			m[0].ToolCalls[0].SessionID = "ignored-session"
+		}},
+		{"tool result length", func(m []Message) { m[0].ToolCalls[0].ResultContentLength = 999 }},
+		{"result event length", func(m []Message) { m[0].ToolCalls[0].ResultEvents[0].ContentLength = 999 }},
+	}
+
+	seed := func(t *testing.T) *DB {
+		t.Helper()
+		d := testDB(t)
+		insertSession(t, d, id, "project-a")
+		require.NoError(t, d.ReplaceSessionMessages(id, phase20Transcript(id, 0, "hello")))
+		require.Equal(t, "1", phase20Revision(t, d, id))
+		require.NoError(t, d.ReplaceSessionMessages(id, phase20Transcript(id, 0, "hello")))
+		require.Equal(t, "1", phase20Revision(t, d, id),
+			"an identical rewrite must not move the counter")
+		return d
+	}
+
+	for _, tc := range visible {
+		t.Run("bumps on "+tc.name, func(t *testing.T) {
+			d := seed(t)
+			next := phase20Transcript(id, 0, "hello")
+			tc.edit(next)
+			require.NoError(t, d.ReplaceSessionMessages(id, next))
+			assert.Equal(t, "2", phase20Revision(t, d, id))
+		})
+	}
+
+	for _, tc := range derived {
+		t.Run("ignores "+tc.name, func(t *testing.T) {
+			d := seed(t)
+			next := phase20Transcript(id, 0, "hello")
+			tc.edit(next)
+			require.NoError(t, d.ReplaceSessionMessages(id, next))
+			assert.Equal(t, "1", phase20Revision(t, d, id))
+		})
+	}
+}
+
+// TestPhase20SQLiteRevisionBumpsConservativelyWhenTheOldTranscriptFailsToLoad
+// covers the one path where the writer cannot answer "did anything visible
+// change?": the stored transcript is unreadable. Guessing "unchanged" there
+// would hide a real rewrite behind a stale marker, so the writer bumps.
+//
+// The corruption is a tool_calls row whose result_content_length holds text
+// instead of a number, which SQLite's dynamic typing stores happily and the
+// transcript scan then rejects.
+func TestPhase20SQLiteRevisionBumpsConservativelyWhenTheOldTranscriptFailsToLoad(t *testing.T) {
+	d := testDB(t)
+	const id = "phase20-load-failure"
+	insertSession(t, d, id, "project-a")
+	require.NoError(t, d.ReplaceSessionMessages(id, phase20Transcript(id, 0, "hello")))
+	require.Equal(t, "1", phase20Revision(t, d, id))
+
+	require.NoError(t, d.Update(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			`UPDATE tool_calls SET result_content_length = 'not-a-number'
+			 WHERE session_id = ?`, id)
+		return err
+	}))
+	require.NoError(t, d.Update(func(tx *sql.Tx) error {
+		_, loadErr := loadSessionTranscriptTx(tx, id)
+		require.Error(t, loadErr, "the fixture has to make the transcript load fail")
+		return nil
+	}))
+
+	// Identical content: without the failure this rewrite would be a no-op.
+	require.NoError(t, d.ReplaceSessionMessages(id, phase20Transcript(id, 0, "hello")))
+	assert.Equal(t, "2", phase20Revision(t, d, id),
+		"an unreadable old transcript must be treated as changed")
+}
+
+// TestPhase20SQLiteRevisionMetadataWritersDoNotBump pins the other half of the
+// contract: everything that touches a session row without touching what the
+// reader sees leaves the counter alone. A bump here would light up the sidebar
+// on a rename or on a routine sync bookkeeping write.
+func TestPhase20SQLiteRevisionMetadataWritersDoNotBump(t *testing.T) {
+	d := testDB(t)
+	const id = "phase20-metadata-writers"
+	insertSession(t, d, id, "project-a")
+	require.NoError(t, d.ReplaceSessionMessages(id, phase20Transcript(id, 0, "hello")))
+	require.Equal(t, "1", phase20Revision(t, d, id))
+
+	fileHash := "phase20-new-file-hash"
+	modified := "2026-08-18T04:00:00.000Z"
+	refreshed := phase20Session(id)
+	refreshed.FileHash = &fileHash
+	refreshed.LocalModifiedAt = &modified
+	require.NoError(t, d.UpsertSession(refreshed))
+	assert.Equal(t, "1", phase20Revision(t, d, id), "file metadata is not transcript content")
+
+	displayName := "manual rename"
+	require.NoError(t, d.RenameSession(id, &displayName))
+	assert.Equal(t, "1", phase20Revision(t, d, id), "a rename is not transcript content")
+
+	updateSignals(t, d, id, SessionSignalUpdate{
+		Outcome: "completed", OutcomeConfidence: "high",
+	})
+	assert.Equal(t, "1", phase20Revision(t, d, id), "signals are not transcript content")
+
+	require.NoError(t, d.ReplaceSessionContent(id, []Message{phase20Msg(id, 0, "hello")},
+		SessionSignalUpdate{Outcome: "errored", OutcomeConfidence: "low"}, nil))
+	assert.Equal(t, "2", phase20Revision(t, d, id),
+		"the control: a real content change still bumps after all that metadata churn")
+}
+
+// TestPhase20SQLiteRevisionWriteSessionBatchOrdinalGapCountsAsChanged covers
+// the batch writer's replacement path for a transcript whose ordinals moved
+// without its length changing. Duplicate ordinals cannot be exercised through a
+// writer -- messages carries UNIQUE(session_id, ordinal) -- so that half of the
+// contract is pinned on the comparator by
+// TestPhase20TranscriptMessagesEqualIsOrdinalAware.
+func TestPhase20SQLiteRevisionWriteSessionBatchOrdinalGapCountsAsChanged(t *testing.T) {
+	d := testDB(t)
+	const id = "phase20-batch-ordinals"
+
+	result, err := d.WriteSessionBatch([]SessionBatchWrite{{
+		Session: phase20Session(id),
+		Messages: []Message{
+			phase20Msg(id, 0, "a0"),
+			phase20Msg(id, 1, "a1"),
+		},
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 1, result.WrittenSessions)
+	require.Equal(t, "1", phase20Revision(t, d, id))
+
+	result, err = d.WriteSessionBatch([]SessionBatchWrite{{
+		Session: phase20Session(id),
+		Messages: []Message{
+			phase20Msg(id, 0, "a0"),
+			phase20Msg(id, 1, "a1"),
+		},
+		ReplaceMessages: true,
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 1, result.WrittenSessions)
+	require.Equal(t, "1", phase20Revision(t, d, id),
+		"the same ordinals with the same content are not a change")
+
+	result, err = d.WriteSessionBatch([]SessionBatchWrite{{
+		Session: phase20Session(id),
+		Messages: []Message{
+			phase20Msg(id, 0, "a0"),
+			phase20Msg(id, 2, "a1"),
+		},
+		ReplaceMessages: true,
+	}})
+	require.NoError(t, err)
+	require.Equal(t, 1, result.WrittenSessions)
+	assert.Equal(t, "2", phase20Revision(t, d, id),
+		"the same message count over a different ordinal set is a change")
+}
+
 func TestPhase20SQLiteRevisionWriteSessionBatchAtomicRollsBackBump(t *testing.T) {
 	d := testDB(t)
 
@@ -454,6 +721,216 @@ func TestPhase20OrphanCopyReconcilesMatchingTranscriptRevisionsWhenNoOrphans(t *
 	assert.Equal(t, "7", phase20Revision(t, dst, "phase20-unchanged"))
 	assert.Equal(t, "12", phase20Revision(t, dst, "phase20-rewrite"))
 	assert.Equal(t, "13", phase20Revision(t, dst, "phase20-rename"))
+}
+
+// TestPhase20ResyncTranscriptRevisionReconciliationComparesToolsAndEvents
+// pins the comparison surface of the reconciliation query. The query was
+// rewritten from a per-session correlated difference into a single
+// balanced multiset difference for cost reasons, and the rows it folds
+// together still have to distinguish tool call input from tool result
+// event content, both of which are visible in the transcript.
+func TestPhase20ResyncTranscriptRevisionReconciliationComparesToolsAndEvents(t *testing.T) {
+	src := testDB(t)
+	dst := testDB(t)
+	ids := []string{"phase20-tool-change", "phase20-event-change", "phase20-tool-same"}
+	for _, id := range ids {
+		insertSession(t, src, id, "proj")
+		insertSession(t, dst, id, "proj")
+	}
+	toolMsg := func(id, input, event string) Message {
+		msg := phase20Msg(id, 0, "body")
+		msg.HasToolUse = true
+		msg.ToolCalls = []ToolCall{{
+			ToolName: "Read", Category: "Read", ToolUseID: "toolu_1",
+			InputJSON: input, ResultContent: "result",
+			ResultEvents: []ToolResultEvent{{
+				ToolUseID: "toolu_1", Source: "stdout", Status: "ok",
+				Content: event, EventIndex: 0,
+			}},
+		}}
+		return msg
+	}
+	insertMessages(t, src,
+		toolMsg("phase20-tool-change", `{"path":"old.go"}`, "event"),
+		toolMsg("phase20-event-change", `{"path":"a.go"}`, "old event"),
+		toolMsg("phase20-tool-same", `{"path":"a.go"}`, "event"),
+	)
+	insertMessages(t, dst,
+		toolMsg("phase20-tool-change", `{"path":"new.go"}`, "event"),
+		toolMsg("phase20-event-change", `{"path":"a.go"}`, "new event"),
+		toolMsg("phase20-tool-same", `{"path":"a.go"}`, "event"),
+	)
+	for _, id := range ids {
+		setPhase20Revision(t, src, id, "5")
+		setPhase20Revision(t, dst, id, "1")
+	}
+	require.NoError(t, src.CloseConnections())
+
+	copied, err := dst.CopyOrphanedDataFrom(src.Path())
+	require.NoError(t, err)
+	assert.Equal(t, 0, copied)
+	assert.Equal(t, "6", phase20Revision(t, dst, "phase20-tool-change"),
+		"tool call input is visible transcript content")
+	assert.Equal(t, "6", phase20Revision(t, dst, "phase20-event-change"),
+		"tool result event content is visible transcript content")
+	assert.Equal(t, "5", phase20Revision(t, dst, "phase20-tool-same"))
+}
+
+// TestPhase20ResyncTranscriptRevisionReconciliationScalesWithArchiveSize
+// guards the cost shape of the resync reconciliation, not its result.
+//
+// The reconciliation runs on every ResyncAll, inside the window where the
+// original database is already quiesced and the swap has not happened, so
+// a per-session comparison against the whole archive is not a slow path,
+// it is an outage. A comparison that pairs every session with every other
+// session's rows grows with the square of the session count: multiplying
+// the sessions by phase20ReconcileScaleFactor would multiply the time by
+// its square. This asserts the observed growth stays well under that.
+//
+// The fixtures are far smaller than the archives this repository targets
+// (15483 sessions / 748394 messages); they only need to be big enough for
+// the quadratic term to dominate the fixed setup cost.
+func TestPhase20ResyncTranscriptRevisionReconciliationScalesWithArchiveSize(t *testing.T) {
+	if testing.Short() {
+		t.Skip("scale regression builds several thousand sessions")
+	}
+	const (
+		baseSessions       = 300
+		scaleFactor        = 4
+		messagesPerSession = 10
+		// Linear growth lands near scaleFactor, quadratic near its
+		// square (16). Allow twice the linear expectation so ordinary
+		// timing noise cannot fail the test.
+		maxGrowth = 2.0 * scaleFactor
+	)
+
+	base := phase20MeasureReconcile(t, baseSessions, messagesPerSession)
+	scaled := phase20MeasureReconcile(
+		t, baseSessions*scaleFactor, messagesPerSession,
+	)
+	growth := float64(scaled) / float64(base)
+	t.Logf(
+		"reconcile %d sessions in %s, %d sessions in %s, growth %.2fx",
+		baseSessions, base, baseSessions*scaleFactor, scaled, growth,
+	)
+	assert.Less(t, growth, maxGrowth,
+		"reconciliation grew %.2fx for %dx the sessions; "+
+			"a per-session scan of the whole archive would grow ~%dx",
+		growth, scaleFactor, scaleFactor*scaleFactor)
+}
+
+// phase20MeasureReconcile builds a source archive and an already parsed
+// destination holding the same sessions with identical transcripts, then
+// returns how long the orphan copy plus revision reconciliation took. It
+// also asserts the reconciliation result so a fast but wrong query cannot
+// satisfy the growth bound.
+func phase20MeasureReconcile(
+	t *testing.T, sessions, messagesPerSession int,
+) time.Duration {
+	t.Helper()
+	src := testDB(t)
+	dst := testDB(t)
+	content := strings.Repeat("transcript body ", 12)
+
+	srcMsgs := make([]Message, 0, sessions*messagesPerSession)
+	dstMsgs := make([]Message, 0, sessions*messagesPerSession)
+	ids := make([]string, 0, sessions)
+	for i := range sessions {
+		id := fmt.Sprintf("phase20-scale-%05d", i)
+		ids = append(ids, id)
+		insertSession(t, src, id, "proj")
+		insertSession(t, dst, id, "proj")
+		for ordinal := range messagesPerSession {
+			msg := phase20Msg(id, ordinal, content)
+			srcMsgs = append(srcMsgs, msg)
+			dstMsgs = append(dstMsgs, msg)
+		}
+	}
+	insertMessages(t, src, srcMsgs...)
+	insertMessages(t, dst, dstMsgs...)
+	for _, id := range ids {
+		setPhase20Revision(t, src, id, "5")
+		setPhase20Revision(t, dst, id, "1")
+	}
+	require.NoError(t, src.CloseConnections())
+
+	start := time.Now()
+	copied, err := dst.CopyOrphanedDataFrom(src.Path())
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Equal(t, 0, copied)
+	assert.Equal(t, "5", phase20Revision(t, dst, ids[0]),
+		"unchanged transcripts inherit the archived revision")
+	assert.Equal(t, "5", phase20Revision(t, dst, ids[len(ids)-1]),
+		"unchanged transcripts inherit the archived revision")
+	return elapsed
+}
+
+// TestPhase20OrphanCopyLegacyArchiveSchemaSkipsTranscriptRevisionReconciliation
+// covers the shape every existing user hits on their first resync after
+// upgrading: the archive being replaced predates the column, so there is
+// nothing to reconcile against. The reconciliation has to step aside quietly.
+// Failing here would abort the resync with the original database already
+// quiesced, and guessing a revision would fabricate unread state for the whole
+// archive.
+func TestPhase20OrphanCopyLegacyArchiveSchemaSkipsTranscriptRevisionReconciliation(t *testing.T) {
+	dst := testDB(t)
+	srcPath := filepath.Join(t.TempDir(), "legacy-archive.db")
+	createPhase20CurrentArchiveWithoutTranscriptRevision(t, srcPath)
+	addPhase20LegacyArchiveSession(t, srcPath, "phase20-legacy-orphan", "orphan answer")
+
+	// The archive and the fresh parse share one session, so reconciliation
+	// would run over it if the old schema were comparable at all.
+	insertSession(t, dst, "phase20-session", "project-a")
+	insertMessages(t, dst, userMsg("phase20-session", 0, "reparsed answer"))
+	setPhase20Revision(t, dst, "phase20-session", "4")
+
+	copied, err := dst.CopyOrphanedDataFrom(srcPath)
+	require.NoError(t, err,
+		"an archive without the column must be skipped, not fail the resync")
+	assert.Equal(t, 1, copied)
+
+	assert.Equal(t, "4", phase20Revision(t, dst, "phase20-session"),
+		"an incomparable archive leaves the freshly computed revision alone")
+	assert.Equal(t, "0", phase20Revision(t, dst, "phase20-legacy-orphan"),
+		"an orphan carried over from a column-less archive lands on the default")
+
+	ctx := context.Background()
+	orphan, err := dst.GetAllMessages(ctx, "phase20-legacy-orphan")
+	require.NoError(t, err)
+	require.Len(t, orphan, 1)
+	assert.Equal(t, "orphan answer", orphan[0].Content)
+	matching, err := dst.GetAllMessages(ctx, "phase20-session")
+	require.NoError(t, err)
+	require.Len(t, matching, 1)
+	assert.Equal(t, "reparsed answer", matching[0].Content)
+}
+
+// addPhase20LegacyArchiveSession appends one more session to an archive built
+// by createPhase20CurrentArchiveWithoutTranscriptRevision, so the fixture can
+// carry both a session that matches the fresh parse and one that is orphaned.
+func addPhase20LegacyArchiveSession(t *testing.T, path, sessionID, content string) {
+	t.Helper()
+	conn, err := sql.Open("sqlite3", makeDSN(path, false))
+	require.NoError(t, err)
+	conn.SetMaxOpenConns(1)
+	defer func() { require.NoError(t, conn.Close()) }()
+
+	_, err = conn.Exec(`
+		INSERT INTO sessions (
+			id, project, machine, agent, first_message, message_count
+		) VALUES (?, 'project-a', 'local', 'claude', 'archived prompt', 1)`,
+		sessionID,
+	)
+	require.NoError(t, err)
+	_, err = conn.Exec(`
+		INSERT INTO messages (
+			session_id, ordinal, role, content, content_length, timestamp
+		) VALUES (?, 0, 'assistant', ?, ?, ?)`,
+		sessionID, content, len(content), tsZero,
+	)
+	require.NoError(t, err)
 }
 
 func setPhase20Revision(t *testing.T, d *DB, sessionID, revision string) {

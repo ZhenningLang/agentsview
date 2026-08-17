@@ -393,6 +393,7 @@ describe("Phase 20 MessageList read progress", () => {
     ui.followLatest = false;
     ui.sortNewestFirst = false;
     ui.selectedOrdinal = null;
+    ui.showAllBlocks();
     rafSpy = vi
       .spyOn(window, "requestAnimationFrame")
       .mockImplementation((cb: FrameRequestCallback) => {
@@ -412,6 +413,7 @@ describe("Phase 20 MessageList read progress", () => {
     sessions.sessions = [];
     sessions.activeSessionId = null;
     ui.sortNewestFirst = false;
+    ui.showAllBlocks();
     document.body.innerHTML = "";
   });
 
@@ -489,6 +491,62 @@ describe("Phase 20 MessageList read progress", () => {
     expect(divider).toHaveLength(1);
     const row = divider[0]!.closest(".virtual-row") as HTMLElement;
     expect(row.lastElementChild).toBe(divider[0]);
+  });
+
+  it("labels the newest-first boundary as earlier, not new", async () => {
+    readProgress.baseline("s1", "1", 2);
+    ui.sortNewestFirst = true;
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    // Newest-first puts the divider below the boundary message, so what
+    // sits below it is the already-read remainder, not the new run.
+    const divider = dividers();
+    expect(divider).toHaveLength(1);
+    expect(divider[0]!.textContent).toContain("Earlier messages");
+    expect(divider[0]!.textContent).not.toContain("New messages");
+  });
+
+  it("confirms the revision when every item is filtered out", async () => {
+    readProgress.baseline("s1", "1", 0);
+    // Hiding both text roles leaves the transcript with nothing to
+    // display, so there is no ordinal to traverse and no scroll surface
+    // to traverse it with.
+    ui.setBlockVisible("user", false);
+    ui.setBlockVisible("assistant", false);
+    virtualizerMock.visibleItems = [];
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    await vi.waitFor(() => {
+      expect(readProgress.hasUnread("s1", "2")).toBe(false);
+    });
+    expect(document.querySelectorAll(".virtual-row")).toHaveLength(0);
+    expect(dividers()).toHaveLength(0);
+  });
+
+  it("confirms a fully filtered transcript without a scroll event", async () => {
+    readProgress.baseline("s1", "1", 0);
+    ui.setBlockVisible("user", false);
+    ui.setBlockVisible("assistant", false);
+    virtualizerMock.visibleItems = [];
+    // loadOlder is unreachable with no virtual items, so an unloaded
+    // tail must not strand the marker either.
+    messages.hasOlder = true;
+    const loadOlder = vi
+      .spyOn(messages, "loadOlder")
+      .mockResolvedValue(undefined);
+
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    await vi.waitFor(() => {
+      expect(readProgress.hasUnread("s1", "2")).toBe(false);
+    });
+    expect(loadOlder).not.toHaveBeenCalled();
+    loadOlder.mockRestore();
   });
 
   it("confirms the revision once the boundary and the latest are seen", async () => {

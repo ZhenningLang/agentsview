@@ -239,6 +239,17 @@ func TestDuckSessionFingerprintFieldsDiffer(t *testing.T) {
 			},
 		},
 		{
+			// Without this the mirror would skip a session whose only
+			// change is the read-progress token, and the browser would
+			// never see the transcript move.
+			name: "transcript revision change",
+			modify: func(s db.Session) db.Session {
+				revision := "2"
+				s.TranscriptRevision = &revision
+				return s
+			},
+		},
+		{
 			name: "llm embedding change",
 			modify: func(s db.Session) db.Session {
 				s.LLMEmbedding = []byte{0x00, 0x00, 0x80, 0x3f}

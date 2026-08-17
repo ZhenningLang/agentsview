@@ -610,46 +610,23 @@ func reconcileTranscriptRevisionsForMatchingSessions(
 			"DROP TABLE IF EXISTS _matching_session_ids",
 		)
 	}()
-
-	if err := createTranscriptCompareTable(ctx, tx, "main"); err != nil {
-		return err
-	}
-	defer func() {
-		_, _ = tx.ExecContext(
-			context.WithoutCancel(ctx),
-			"DROP TABLE IF EXISTS _main_transcript_compare",
-		)
-	}()
-	if err := createTranscriptCompareTable(ctx, tx, "old_db"); err != nil {
-		return err
-	}
-	defer func() {
-		_, _ = tx.ExecContext(
-			context.WithoutCancel(ctx),
-			"DROP TABLE IF EXISTS _old_db_transcript_compare",
-		)
-	}()
-
 	if _, err := tx.ExecContext(ctx, `
-		CREATE TEMP TABLE _changed_transcript_ids AS
-		SELECT id FROM _matching_session_ids
-		WHERE EXISTS (
-			SELECT 1 FROM (
-				SELECT * FROM _main_transcript_compare
-				WHERE session_id = id
-				EXCEPT
-				SELECT * FROM _old_db_transcript_compare
-				WHERE session_id = id
-			)
-		) OR EXISTS (
-			SELECT 1 FROM (
-				SELECT * FROM _old_db_transcript_compare
-				WHERE session_id = id
-				EXCEPT
-				SELECT * FROM _main_transcript_compare
-				WHERE session_id = id
-			)
-		)`); err != nil {
+		CREATE INDEX _matching_session_ids_id
+		ON _matching_session_ids(id)`); err != nil {
+		return fmt.Errorf("indexing matching sessions: %w", err)
+	}
+
+	var matching int
+	if err := tx.QueryRowContext(ctx,
+		"SELECT count(*) FROM _matching_session_ids",
+	).Scan(&matching); err != nil {
+		return fmt.Errorf("counting matching sessions: %w", err)
+	}
+	if matching == 0 {
+		return nil
+	}
+
+	if _, err := tx.ExecContext(ctx, changedTranscriptIDsQuery()); err != nil {
 		return fmt.Errorf("identifying changed transcripts: %w", err)
 	}
 	defer func() {
@@ -658,7 +635,15 @@ func reconcileTranscriptRevisionsForMatchingSessions(
 			"DROP TABLE IF EXISTS _changed_transcript_ids",
 		)
 	}()
+	if _, err := tx.ExecContext(ctx, `
+		CREATE INDEX _changed_transcript_ids_id
+		ON _changed_transcript_ids(id)`); err != nil {
+		return fmt.Errorf("indexing changed transcripts: %w", err)
+	}
 
+	// The UPDATE below joins main.sessions to old_db.sessions on the
+	// primary key and probes both ID tables through the indexes above,
+	// so it stays linear in the number of matching sessions.
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE main.sessions AS s
 		SET transcript_revision = CASE
@@ -674,17 +659,56 @@ func reconcileTranscriptRevisionsForMatchingSessions(
 	return nil
 }
 
-func createTranscriptCompareTable(ctx context.Context, tx *sql.Tx, schema string) error {
-	table := "_main_transcript_compare"
-	if schema == "old_db" {
-		table = "_old_db_transcript_compare"
+// changedTranscriptIDsQuery builds the statement that materializes the
+// session IDs whose visible transcript differs between the freshly parsed
+// database and the archive being replaced.
+//
+// It is a single balanced multiset difference: every comparable row from
+// both sides is tagged with +1 / -1, grouped on the full visible key, and
+// only groups that do not cancel out survive. Both sides are therefore
+// scanned once and sorted once, which is what keeps the cost near-linear
+// in the number of archived rows.
+//
+// The earlier shape (two materialized compare tables plus a per-session
+// correlated EXCEPT) was quadratic in session count: every one of the
+// S matching sessions rescanned both full compare tables. On the archive
+// sizes this repository targets (15483 sessions / 748394 messages) that
+// runs inside the resync window where the original database is already
+// quiesced and the swap has not happened yet, so it has to stay linear.
+// Not materializing the compare tables also keeps whole-archive message
+// content, tool input and tool result payloads out of temp storage.
+func changedTranscriptIDsQuery() string {
+	return `
+		CREATE TEMP TABLE _changed_transcript_ids AS
+		SELECT DISTINCT session_id AS id FROM (
+			SELECT session_id
+			FROM (
+				` + transcriptCompareSelect("main", 1) + `
+				UNION ALL
+				` + transcriptCompareSelect("old_db", -1) + `
+			)
+			GROUP BY
+				row_kind, session_id, ordinal, item_index, sub_index,
+				c1, c2, c3, c4, c5, c6, c7, c8, c9,
+				c10, c11, c12, c13, c14, c15, c16, c17, c18
+			HAVING sum(side) <> 0
+		)`
+}
+
+// transcriptCompareSelect projects one schema's messages, tool calls and
+// tool result events into a single comparable row shape. side is +1 for
+// the freshly parsed database and -1 for the archive being replaced.
+func transcriptCompareSelect(schema string, side int) string {
+	sideValue := "1"
+	if side < 0 {
+		sideValue = "-1"
 	}
 	messages := schema + ".messages"
 	toolCalls := schema + ".tool_calls"
 	toolEvents := schema + ".tool_result_events"
-	query := `
-		CREATE TEMP TABLE ` + table + ` AS
+	return `
 		SELECT
+			` + sideValue + ` AS side,
 			'message' AS row_kind,
 			m.session_id,
 			m.ordinal,
@@ -712,6 +736,7 @@ func createTranscriptCompareTable(ctx context.Context, tx *sql.Tx, schema string
 		WHERE m.session_id IN (SELECT id FROM _matching_session_ids)
 		UNION ALL
 		SELECT
+			` + sideValue + `,
 			'tool_call' AS row_kind,
 			tc.session_id,
 			m.ordinal,
@@ -743,6 +768,7 @@ func createTranscriptCompareTable(ctx context.Context, tx *sql.Tx, schema string
 		WHERE tc.session_id IN (SELECT id FROM _matching_session_ids)
 		UNION ALL
 		SELECT
+			` + sideValue + `,
 			'tool_result_event' AS row_kind,
 			e.session_id,
 			e.tool_call_message_ordinal AS ordinal,
@@ -768,10 +794,6 @@ func createTranscriptCompareTable(ctx context.Context, tx *sql.Tx, schema string
 			'' AS c18
 		FROM ` + toolEvents + ` e
 		WHERE e.session_id IN (SELECT id FROM _matching_session_ids)`
-	if _, err := tx.ExecContext(ctx, query); err != nil {
-		return fmt.Errorf("creating %s: %w", table, err)
-	}
-	return nil
 }
 
 func canCompareOldTranscript(ctx context.Context, tx *sql.Tx) bool {

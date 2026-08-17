@@ -187,6 +187,19 @@
     return ordinals.find((o) => o >= target) ?? null;
   });
 
+  /**
+   * Wording follows the sort direction, not just the divider position.
+   * Ascending puts the divider above the boundary message, so everything
+   * below it is what the user has not read: "New messages". Newest-first
+   * reverses the list and puts the divider below the boundary message, so
+   * everything below it is what the user already read: "Earlier messages".
+   * Keeping "New messages" in both directions labels the older half of a
+   * newest-first transcript as new.
+   */
+  let unreadDividerLabel = $derived(
+    ui.sortNewestFirst ? "Earlier messages" : "New messages",
+  );
+
   function isBoundaryItem(item: DisplayItem): boolean {
     return (
       unreadBoundaryOrdinal !== null &&
@@ -273,6 +286,20 @@
       if (visible.length > 0) {
         readProgress.advanceOrdinal(sessionId, Math.max(...visible));
       }
+      return;
+    }
+
+    // A transcript with nothing to display — every block filter hiding
+    // its content, focused mode with nothing focusable, a system-only
+    // transcript whose blocks are off — has no ordinal to traverse and no
+    // scroll surface: handleScroll only asks for older history when at
+    // least one virtual item exists, so this state cannot resolve itself.
+    // Without an explicit completion path the marker would stay pinned to
+    // the previous revision and the unread indicator could never be
+    // cleared. The user is looking at everything this filter can show, so
+    // the revision is confirmed with no ordinal claimed.
+    if (displayItemsAsc.length === 0) {
+      readProgress.markRead(sessionId, token, null);
       return;
     }
 
@@ -758,7 +785,9 @@
                 role="separator"
                 aria-label="Read progress boundary"
               >
-                <span class="unread-divider-label">New messages</span>
+                <span class="unread-divider-label">
+                  {unreadDividerLabel}
+                </span>
               </div>
             {/if}
             {#if item.kind === "tool-group"}
@@ -791,7 +820,9 @@
                 role="separator"
                 aria-label="Read progress boundary"
               >
-                <span class="unread-divider-label">New messages</span>
+                <span class="unread-divider-label">
+                  {unreadDividerLabel}
+                </span>
               </div>
             {/if}
           </div>

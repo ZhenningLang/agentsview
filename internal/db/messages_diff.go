@@ -1,28 +1,40 @@
 package db
 
+// transcriptMessagesEqual reports whether two transcripts are the same
+// as far as a reader can tell. Comparison is keyed on ordinal rather than
+// slice position: the frontend read boundary
+// (frontend/src/lib/stores/messages.svelte.ts earliestChangedOrdinal)
+// also indexes by ordinal, so an index-based comparison here would make
+// the backend revision owner and the browser disagree about what counts
+// as a change. Slice order carries no visible meaning; a duplicate or
+// missing ordinal does, and is reported as changed.
 func transcriptMessagesEqual(a, b []Message) bool {
-	if !transcriptOrdinalsUnique(a) || !transcriptOrdinalsUnique(b) {
-		return false
-	}
 	if len(a) != len(b) {
 		return false
 	}
-	for i := range a {
-		if !transcriptMessageEqual(a[i], b[i]) {
+	byOrdinal := make(map[int]Message, len(a))
+	for _, msg := range a {
+		if _, ok := byOrdinal[msg.Ordinal]; ok {
 			return false
 		}
+		byOrdinal[msg.Ordinal] = msg
 	}
-	return true
-}
-
-func transcriptOrdinalsUnique(msgs []Message) bool {
-	seen := make(map[int]struct{}, len(msgs))
-	for _, msg := range msgs {
+	seen := make(map[int]struct{}, len(b))
+	for _, msg := range b {
 		if _, ok := seen[msg.Ordinal]; ok {
 			return false
 		}
 		seen[msg.Ordinal] = struct{}{}
+		other, ok := byOrdinal[msg.Ordinal]
+		if !ok {
+			return false
+		}
+		if !transcriptMessageEqual(other, msg) {
+			return false
+		}
 	}
+	// Equal lengths plus unique ordinals on both sides plus every b
+	// ordinal present in a means the two ordinal sets are identical.
 	return true
 }
 
