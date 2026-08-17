@@ -200,6 +200,123 @@ func TestPhase24UsageBranchFilterSQLite(t *testing.T) {
 	assert.Equal(t, 1, counts.ByProject["beta"])
 }
 
+func TestPhase24AnalyticsBranchFilterSQLite(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+	seedPhase24BranchSession(t, d, "alpha-main", "alpha", "main")
+	seedPhase24BranchSession(t, d, "beta-main", "beta", "main")
+	seedPhase24AnalyticsRows(t, d, "alpha-main", "assist-learn", "Read", 80)
+	seedPhase24AnalyticsRows(t, d, "beta-main", "write-outline", "Bash", 70)
+
+	base := AnalyticsFilter{From: "2026-08-17", To: "2026-08-17", Timezone: "UTC"}
+	alpha := base
+	alpha.GitBranch = EncodeBranchFilterToken("alpha", "main")
+	beta := base
+	beta.GitBranch = EncodeBranchFilterToken("beta", "main")
+
+	cases := []struct {
+		name                         string
+		wantAlpha, wantBeta, wantAll int
+		call                         func(context.Context, *DB, AnalyticsFilter) (int, error)
+	}{
+		{"activity", 1, 1, 2, func(ctx context.Context, d *DB, f AnalyticsFilter) (int, error) {
+			r, err := d.GetAnalyticsActivity(ctx, f, "day")
+			if err != nil {
+				return 0, err
+			}
+			count := 0
+			for _, entry := range r.Series {
+				count += entry.Sessions
+			}
+			return count, nil
+		}},
+		{"heatmap", 1, 1, 2, func(ctx context.Context, d *DB, f AnalyticsFilter) (int, error) {
+			r, err := d.GetAnalyticsHeatmap(ctx, f, "sessions")
+			if err != nil {
+				return 0, err
+			}
+			count := 0
+			for _, entry := range r.Entries {
+				count += entry.Value
+			}
+			return count, nil
+		}},
+		{"hour-of-week", 2, 2, 4, func(ctx context.Context, d *DB, f AnalyticsFilter) (int, error) {
+			r, err := d.GetAnalyticsHourOfWeek(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			count := 0
+			for _, cell := range r.Cells {
+				count += cell.Messages
+			}
+			return count, nil
+		}},
+		{"session-shape", 1, 1, 2, func(ctx context.Context, d *DB, f AnalyticsFilter) (int, error) {
+			r, err := d.GetAnalyticsSessionShape(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			return r.Count, nil
+		}},
+		{"signals", 1, 1, 2, func(ctx context.Context, d *DB, f AnalyticsFilter) (int, error) {
+			r, err := d.GetAnalyticsSignals(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			return r.ScoredSessions + r.UnscoredSessions, nil
+		}},
+		{"skills", 1, 1, 2, func(ctx context.Context, d *DB, f AnalyticsFilter) (int, error) {
+			r, err := d.GetAnalyticsSkills(ctx, f, "day")
+			if err != nil {
+				return 0, err
+			}
+			return r.TotalSkillCalls, nil
+		}},
+		{"tools", 1, 1, 2, func(ctx context.Context, d *DB, f AnalyticsFilter) (int, error) {
+			r, err := d.GetAnalyticsTools(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			return r.TotalCalls, nil
+		}},
+		{"top-sessions", 1, 1, 2, func(ctx context.Context, d *DB, f AnalyticsFilter) (int, error) {
+			r, err := d.GetAnalyticsTopSessions(ctx, f, "messages")
+			if err != nil {
+				return 0, err
+			}
+			return len(r.Sessions), nil
+		}},
+		{"velocity", 1, 1, 2, func(ctx context.Context, d *DB, f AnalyticsFilter) (int, error) {
+			r, err := d.GetAnalyticsVelocity(ctx, f)
+			if err != nil {
+				return 0, err
+			}
+			count := 0
+			for _, row := range r.ByAgent {
+				count += row.Sessions
+			}
+			return count, nil
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			alphaCount, err := tc.call(ctx, d, alpha)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantAlpha, alphaCount, "alpha branch result")
+
+			betaCount, err := tc.call(ctx, d, beta)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantBeta, betaCount, "beta branch result")
+
+			unfilteredCount, err := tc.call(ctx, d, base)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantAll, unfilteredCount, "unfiltered result")
+		})
+	}
+}
+
 func seedPhase24BranchSession(t *testing.T, d *DB, id, project, branch string) {
 	t.Helper()
 	started := "2026-08-17T00:00:00Z"
@@ -235,6 +352,53 @@ func seedPhase24UsageEvent(t *testing.T, d *DB, sessionID string, input, output 
 		DedupKey:       "session:" + sessionID,
 	}})
 	require.NoError(t, err, "ReplaceSessionUsageEvents %s", sessionID)
+}
+
+func seedPhase24AnalyticsRows(t *testing.T, d *DB, sessionID, skillName, category string, health int) {
+	t.Helper()
+	require.NoError(t, d.InsertMessages([]Message{
+		{
+			SessionID:     sessionID,
+			Ordinal:       0,
+			Role:          "user",
+			Content:       "phase24 analytics user",
+			ContentLength: 22,
+			Timestamp:     "2026-08-17T00:00:00Z",
+		},
+		{
+			SessionID:     sessionID,
+			Ordinal:       1,
+			Role:          "assistant",
+			Content:       "phase24 analytics assistant",
+			ContentLength: 27,
+			Timestamp:     "2026-08-17T00:00:10Z",
+			HasToolUse:    true,
+			ToolCalls: []ToolCall{{
+				SessionID: sessionID,
+				ToolName:  category,
+				Category:  category,
+				ToolUseID: "tool-" + sessionID,
+				SkillName: skillName,
+				InputJSON: "{}",
+			}},
+		},
+	}))
+
+	grade := "B"
+	_, err := d.getWriter().ExecContext(context.Background(), `
+		UPDATE sessions SET
+			health_score = ?,
+			health_grade = ?,
+			outcome = 'completed',
+			outcome_confidence = 'high',
+			tool_failure_signal_count = 1,
+			tool_retry_count = 1,
+			edit_churn_count = 1,
+			compaction_count = 1,
+			mid_task_compaction_count = 1,
+			context_pressure_max = 0.5
+		WHERE id = ?`, health, grade, sessionID)
+	require.NoError(t, err, "update analytics signals %s", sessionID)
 }
 
 func phase24SessionIDs(sessions []Session) []string {
