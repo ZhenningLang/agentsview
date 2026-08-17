@@ -1387,14 +1387,158 @@ func TestGetAnalyticsTools(t *testing.T) {
 	})
 }
 
+func TestPhase23AnalyticsSkillsAndModelFilter(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	insertSession(t, d, "p23-alpha", "alpha", func(s *Session) {
+		s.StartedAt = new("2024-06-01T09:00:00Z")
+		s.MessageCount = 2
+		s.Agent = "claude"
+	})
+	alphaA := asstMsgAt("p23-alpha", 0, "use skill alpha", "2024-06-01T09:15:00Z")
+	alphaA.Model = "model-a"
+	alphaA.HasToolUse = true
+	alphaA.ToolCalls = []ToolCall{
+		{SessionID: "p23-alpha", ToolName: "Skill", Category: "Task", SkillName: "assist-learn"},
+		{SessionID: "p23-alpha", ToolName: "Skill", Category: "Task", SkillName: "assist-learn"},
+	}
+	alphaB := asstMsgAt("p23-alpha", 1, "use skill beta", "2024-06-02T10:00:00Z")
+	alphaB.Model = "model-b"
+	alphaB.HasToolUse = true
+	alphaB.ToolCalls = []ToolCall{
+		{SessionID: "p23-alpha", ToolName: "Skill", Category: "Task", SkillName: "write-outline"},
+	}
+	insertMessages(t, d, alphaA, alphaB)
+
+	insertSession(t, d, "p23-beta", "beta", func(s *Session) {
+		s.StartedAt = new("2024-06-03T09:00:00Z")
+		s.MessageCount = 1
+		s.Agent = "codex"
+	})
+	beta := asstMsgAt("p23-beta", 0, "use skill gamma", "2024-06-03T09:30:00Z")
+	beta.Model = "model-a"
+	beta.HasToolUse = true
+	beta.ToolCalls = []ToolCall{
+		{SessionID: "p23-beta", ToolName: "Skill", Category: "Task", SkillName: "assist-learn"},
+	}
+	insertMessages(t, d, beta)
+
+	f := AnalyticsFilter{From: "2024-06-01", To: "2024-06-05", Timezone: "UTC"}
+
+	t.Run("010f62d0 top skills aggregates calls sessions agents projects", func(t *testing.T) {
+		resp, err := d.GetAnalyticsSkills(ctx, f, "week")
+		require.NoError(t, err, "GetAnalyticsSkills")
+		assert.Equal(t, 4, resp.TotalSkillCalls, "TotalSkillCalls")
+		assert.Equal(t, 2, resp.DistinctSkills, "DistinctSkills")
+		require.NotEmpty(t, resp.BySkill, "BySkill")
+		assert.Equal(t, "assist-learn", resp.BySkill[0].SkillName, "top skill")
+		assert.Equal(t, 3, resp.BySkill[0].CallCount, "assist-learn calls")
+		assert.Equal(t, 2, resp.BySkill[0].SessionCount, "assist-learn sessions")
+		require.Len(t, resp.BySkill[0].AgentBreakdown, 2, "AgentBreakdown")
+		assert.Equal(t, "claude", resp.BySkill[0].AgentBreakdown[0].Agent, "first agent tie sort")
+		require.Len(t, resp.BySkill[0].ProjectBreakdown, 2, "ProjectBreakdown")
+	})
+
+	t.Run("70818612 model filter scopes tool calls to matching messages", func(t *testing.T) {
+		mf := f
+		mf.Model = "model-b"
+		resp, err := d.GetAnalyticsSkills(ctx, mf, "week")
+		require.NoError(t, err, "GetAnalyticsSkills model-b")
+		assert.Equal(t, 1, resp.TotalSkillCalls, "TotalSkillCalls")
+		require.Len(t, resp.BySkill, 1, "BySkill")
+		assert.Equal(t, "write-outline", resp.BySkill[0].SkillName, "model-scoped skill")
+		assert.Equal(t, 1, resp.BySkill[0].CallCount, "write-outline calls")
+	})
+
+	t.Run("8da4adc1 trend granularity and zero buckets", func(t *testing.T) {
+		resp, err := d.GetAnalyticsSkills(ctx, f, "day")
+		require.NoError(t, err, "GetAnalyticsSkills day")
+		got := map[string]map[string]int{}
+		for _, entry := range resp.Trend {
+			got[entry.Date] = entry.BySkill
+		}
+		require.Contains(t, got, "2024-06-04", "zero day bucket")
+		assert.Empty(t, got["2024-06-04"], "zero day bucket counts")
+		assert.Equal(t, 2, got["2024-06-01"]["assist-learn"], "day assist-learn")
+
+		monthly, err := d.GetAnalyticsSkills(ctx, f, "month")
+		require.NoError(t, err, "GetAnalyticsSkills month")
+		require.Len(t, monthly.Trend, 1, "monthly trend")
+		assert.Equal(t, "2024-06-01", monthly.Trend[0].Date, "month bucket")
+		assert.Equal(t, 3, monthly.Trend[0].BySkill["assist-learn"], "month assist-learn")
+	})
+}
+
+func TestPhase23SkillsAggregationChronologicalLastUsed(t *testing.T) {
+	resp := BuildSkillsAnalytics([]SkillAnalyticsRow{
+		{
+			SessionID: "p23-old", SkillName: "assist-learn",
+			LastUsedAt: "2024-06-10T09:00:00Z", Date: "2024-06-10",
+			Count: 1,
+		},
+		{
+			SessionID: "p23-new", SkillName: "assist-learn",
+			LastUsedAt: "2024-06-10T09:00:00.500Z", Date: "2024-06-10",
+			Count: 1,
+		},
+	}, "2024-06-10", "2024-06-10", "day")
+
+	require.Len(t, resp.BySkill, 1)
+	assert.Equal(t, "2024-06-10T09:00:00.500Z", resp.BySkill[0].LastUsedAt)
+}
+
+func TestPhase23SkillsBackendParitySQLiteLongSessionMessageDate(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	insertSession(t, d, "p23-sqlite-long", "p23-project", func(s *Session) {
+		s.StartedAt = Ptr("2024-05-31T23:00:00Z")
+		s.EndedAt = Ptr("2024-06-01T00:10:00Z")
+		s.CreatedAt = "2024-05-31T23:00:00Z"
+		s.MessageCount = 2
+		s.UserMessageCount = 1
+		s.Agent = "claude"
+	})
+	msg := asstMsgAt("p23-sqlite-long", 1, "used skill", "2024-06-01T00:05:00Z")
+	msg.Model = "model-a"
+	msg.HasToolUse = true
+	msg.ToolCalls = []ToolCall{{
+		SessionID: "p23-sqlite-long", ToolName: "Skill", Category: "Task",
+		SkillName: "assist-learn",
+	}}
+	insertMessages(t, d,
+		userMsgAt("p23-sqlite-long", 0, "prompt", "2024-05-31T23:59:00Z"),
+		msg,
+	)
+
+	resp, err := d.GetAnalyticsSkills(ctx, AnalyticsFilter{
+		From: "2024-06-01", To: "2024-06-01", Timezone: "UTC", Model: "model-a",
+	}, "day")
+	require.NoError(t, err)
+	require.Len(t, resp.BySkill, 1)
+	assert.Equal(t, "assist-learn", resp.BySkill[0].SkillName)
+	assert.Equal(t, 1, resp.TotalSkillCalls)
+	assert.Equal(t, "2024-06-01T00:05:00Z", resp.BySkill[0].LastUsedAt)
+	require.Len(t, resp.Trend, 1)
+	assert.Equal(t, 1, resp.Trend[0].BySkill["assist-learn"])
+}
+
+func TestPhase23SkillTrendBucketsEmptyState(t *testing.T) {
+	resp := BuildSkillsAnalytics(nil, "2024-06-01", "2024-06-03", "day")
+	assert.Empty(t, resp.BySkill)
+	assert.Empty(t, resp.Trend)
+	assert.Equal(t, 0, resp.TotalSkillCalls)
+}
+
 func TestAnalyticsToolsToolCallsQueryAggregatesInSQL(t *testing.T) {
-	q := analyticsToolsQuery("(?,?)")
+	q := analyticsToolsQuery("(?,?)", "", false)
 	normalized := strings.Join(strings.Fields(strings.ToLower(q)), " ")
 
 	assert.Contains(t, normalized,
-		"select session_id, category, count(*)")
+		"select tc.session_id, tc.category, count(*)")
 	assert.Contains(t, normalized,
-		"group by session_id, category")
+		"group by tc.session_id, tc.category")
 }
 
 func TestGetAnalyticsToolsCanceled(t *testing.T) {

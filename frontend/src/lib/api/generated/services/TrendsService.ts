@@ -19,6 +19,7 @@ export class TrendsService {
     machine,
     project,
     agent,
+    model,
     dow,
     hour,
     minUserMessages,
@@ -53,6 +54,10 @@ export class TrendsService {
      * Filter by agent
      */
     agent?: string,
+    /**
+     * Comma-separated model filter
+     */
+    model?: string,
     /**
      * Day of week, Monday=0 through Sunday=6
      */
@@ -100,6 +105,7 @@ export class TrendsService {
         'machine': machine,
         'project': project,
         'agent': agent,
+        'model': model,
         'dow': dow,
         'hour': hour,
         'min_user_messages': minUserMessages,

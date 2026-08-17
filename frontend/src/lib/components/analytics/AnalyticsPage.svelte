@@ -9,11 +9,14 @@
   import SessionShape from "./SessionShape.svelte";
   import VelocityMetrics from "./VelocityMetrics.svelte";
   import ToolUsage from "./ToolUsage.svelte";
+  import TopSkills from "./TopSkills.svelte";
+  import SkillTrend from "./SkillTrend.svelte";
   import AgentComparison from "./AgentComparison.svelte";
   import SessionHealthSection from "./SessionHealthSection.svelte";
   import TopSessions from "./TopSessions.svelte";
   import ActiveFilters from "./ActiveFilters.svelte";
   import SessionFilterControl from "../filters/SessionFilterControl.svelte";
+  import FilterDropdown from "../usage/FilterDropdown.svelte";
   import { analytics } from "../../stores/analytics.svelte.js";
   import { sessions } from "../../stores/sessions.svelte.js";
   import { events } from "../../stores/events.svelte.js";
@@ -30,6 +33,38 @@
 
   const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
+  let knownModels: string[] = $state([]);
+
+  function mergeIntoKnownModels(names: string[]): void {
+    if (names.length === 0) return;
+    const set = new Set(knownModels);
+    let changed = false;
+    for (const model of names) {
+      if (model && !set.has(model)) {
+        set.add(model);
+        changed = true;
+      }
+    }
+    if (changed) {
+      knownModels = [...set].sort();
+    }
+  }
+
+  $effect(() => {
+    const fromSummary = analytics.summary?.models ?? [];
+    untrack(() => mergeIntoKnownModels(fromSummary));
+  });
+
+  $effect(() => {
+    const selected = analytics.model
+      .split(",")
+      .filter((model) => model.length > 0);
+    untrack(() => mergeIntoKnownModels(selected));
+  });
+
+  const modelItems = $derived(
+    knownModels.map((name) => ({ name })),
+  );
   function handleExportCSV() {
     exportAnalyticsCSV({
       from: analytics.from,
@@ -172,6 +207,14 @@
     >
       <RefreshCwIcon size="14" strokeWidth="2" aria-hidden="true" />
     </button>
+    <FilterDropdown
+      label="Model"
+      items={modelItems}
+      excludedCsv={analytics.model}
+      mode="include"
+      onToggle={(name) => analytics.toggleModel(name)}
+      onSelectAll={() => analytics.clearModel()}
+    />
     <button class="export-btn" onclick={handleExportCSV}>
       Export CSV
     </button>
@@ -223,6 +266,14 @@
 
       <div class="chart-panel">
         <ToolUsage />
+      </div>
+
+      <div class="chart-panel wide">
+        <TopSkills />
+      </div>
+
+      <div class="chart-panel wide">
+        <SkillTrend />
       </div>
 
       <div class="chart-panel wide">

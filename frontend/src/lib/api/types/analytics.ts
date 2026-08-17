@@ -21,6 +21,7 @@ export interface AnalyticsSummary {
   total_messages: number;
   total_output_tokens?: number;
   token_reporting_sessions?: number;
+  models?: string[];
   active_projects: number;
   active_days: number;
   avg_messages: number;
@@ -205,6 +206,38 @@ export interface ToolsAnalyticsResponse {
   by_category: ToolCategoryCount[];
   by_agent: ToolAgentBreakdown[];
   trend: ToolTrendEntry[];
+}
+
+export interface SkillAgentBreakdown {
+  agent: string;
+  count: number;
+}
+
+export interface SkillProjectBreakdown {
+  project: string;
+  count: number;
+}
+
+export interface SkillUsage {
+  skill_name: string;
+  call_count: number;
+  session_count: number;
+  agent_breakdown: SkillAgentBreakdown[];
+  project_breakdown: SkillProjectBreakdown[];
+  last_used_at: string;
+  pct: number;
+}
+
+export interface SkillTrendEntry {
+  date: string;
+  by_skill: Record<string, number>;
+}
+
+export interface SkillsAnalyticsResponse {
+  total_skill_calls: number;
+  distinct_skills: number;
+  by_skill: SkillUsage[];
+  trend: SkillTrendEntry[];
 }
 
 export interface SignalsToolHealth {
