@@ -915,4 +915,12 @@
     flex-direction: column;
     gap: 1px;
   }
+
+  /* Same lift the transcript call components get: the axis labels are a
+     literal grey that clears 4.5:1 on the light surface but not on the dark
+     one. `.scale-axis .now` keeps its green -- that color marks the live
+     edge of the timeline, so it is identity, not decoration. */
+  :global(.high-contrast) .scale-axis {
+    color: var(--text-secondary);
+  }
 </style>

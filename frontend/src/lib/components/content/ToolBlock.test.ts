@@ -552,7 +552,10 @@ describe("ToolBlock collapsed preview", () => {
     expect(preview!.textContent).toBe("$ cat <<EOF");
   });
 
-  it("prefers explicit content over command fallback", async () => {
+  // Phase 19 (de6eeaf6): the structured summary now outranks the display
+  // content's first line, so a Bash header shows the input command even when
+  // display content exists. This replaces the previous precedence assertion.
+  it("prefers the structured command summary over explicit content", async () => {
     const toolCall: ToolCall = {
       tool_name: "exec_command",
       category: "Bash",
@@ -565,7 +568,7 @@ describe("ToolBlock collapsed preview", () => {
     await tick();
 
     const preview = document.querySelector(".tool-header .tool-preview");
-    expect(preview!.textContent).toBe("$ from content");
+    expect(preview!.textContent).toBe("$ from json");
   });
 
   it("shows in-progress todo content for TodoWrite", async () => {
@@ -804,6 +807,168 @@ describe("ToolBlock collapsed preview", () => {
 
     const preview = document.querySelector(".tool-header .tool-preview");
     expect(preview!.textContent).toBe("Run subagent task");
+  });
+});
+
+describe("Phase 19 ToolBlock structured summary", () => {
+  let component: ReturnType<typeof mount> | undefined;
+
+  afterEach(() => {
+    if (component) unmount(component);
+    component = undefined;
+    document.body.innerHTML = "";
+  });
+
+  async function render(props: {
+    content: string;
+    label?: string;
+    toolCall?: ToolCall;
+  }) {
+    component = mount(ToolBlock, { target: document.body, props });
+    await tick();
+  }
+
+  function headerPreview(): string | null {
+    return (
+      document.querySelector(".tool-header .tool-preview")?.textContent ?? null
+    );
+  }
+
+  async function expandBlock() {
+    document.querySelector<HTMLButtonElement>(".tool-header")!.click();
+    await tick();
+  }
+
+  it("keeps the structured summary visible when expanded", async () => {
+    await render({
+      content: "",
+      label: "Read",
+      toolCall: {
+        tool_name: "Read",
+        category: "Read",
+        input_json: JSON.stringify({ file_path: "/src/main.ts" }),
+        result_content: "line one\nline two\n",
+      } satisfies ToolCall,
+    });
+
+    expect(headerPreview()).toBe("/src/main.ts (2 lines)");
+
+    await expandBlock();
+
+    expect(document.querySelector(".tool-chevron.open")).not.toBeNull();
+    expect(headerPreview()).toBe("/src/main.ts (2 lines)");
+  });
+
+  it("keeps the legacy content preview when no structured summary exists", async () => {
+    await render({
+      content: "legacy first line\nsecond line",
+      label: "Mystery",
+      toolCall: {
+        tool_name: "MysteryTool",
+        input_json: "{not json",
+      } satisfies ToolCall,
+    });
+
+    expect(headerPreview()).toBe("legacy first line");
+  });
+
+  it("drops the legacy content preview once expanded", async () => {
+    await render({
+      content: "legacy first line\nsecond line",
+      label: "Mystery",
+      toolCall: {
+        tool_name: "MysteryTool",
+        input_json: "{not json",
+      } satisfies ToolCall,
+    });
+
+    await expandBlock();
+
+    expect(document.querySelector(".tool-chevron.open")).not.toBeNull();
+    expect(headerPreview()).toBeNull();
+  });
+
+  it("shows the Edit line-delta suffix in the rendered header", async () => {
+    await render({
+      content: "",
+      label: "Edit",
+      toolCall: {
+        tool_name: "Edit",
+        category: "Edit",
+        input_json: JSON.stringify({
+          file_path: "/src/app.ts",
+          old_string: "one\ntwo",
+          new_string: "one\ntwo\nthree",
+        }),
+      } satisfies ToolCall,
+    });
+
+    expect(headerPreview()).toBe("/src/app.ts (+3 -2)");
+  });
+
+  it("shows the Write added-line suffix in the rendered header", async () => {
+    await render({
+      content: "",
+      label: "Write",
+      toolCall: {
+        tool_name: "Write",
+        category: "Write",
+        input_json: JSON.stringify({
+          file_path: "/src/new.ts",
+          content: "alpha\nbeta\n",
+        }),
+      } satisfies ToolCall,
+    });
+
+    expect(headerPreview()).toBe("/src/new.ts (+2)");
+  });
+
+  it("shows the Grep match-count suffix in the rendered header", async () => {
+    await render({
+      content: "",
+      label: "Grep",
+      toolCall: {
+        tool_name: "Grep",
+        category: "Grep",
+        input_json: JSON.stringify({ pattern: "handleError" }),
+        result_content: "a.ts:1:handleError\nb.ts:7:handleError\n",
+      } satisfies ToolCall,
+    });
+
+    expect(headerPreview()).toBe("handleError (2 matches)");
+  });
+
+  it("shows the Glob file-count suffix in the rendered header", async () => {
+    await render({
+      content: "",
+      label: "Glob",
+      toolCall: {
+        tool_name: "Glob",
+        category: "Glob",
+        input_json: JSON.stringify({ pattern: "**/*.ts" }),
+        result_content: "a.ts\nb.ts\nc.ts\n",
+      } satisfies ToolCall,
+    });
+
+    expect(headerPreview()).toBe("**/*.ts (3 files)");
+  });
+
+  it("does not let a summary-only tool call hide the collapse toggle", async () => {
+    await render({
+      content: "",
+      label: "Read",
+      toolCall: {
+        tool_name: "Read",
+        category: "Read",
+        input_json: JSON.stringify({ file_path: "/src/main.ts" }),
+        result_content: "only line",
+      } satisfies ToolCall,
+    });
+
+    expect(document.querySelector(".tool-chevron.open")).toBeNull();
+    await expandBlock();
+    expect(document.querySelector(".tool-chevron.open")).not.toBeNull();
+    expect(headerPreview()).toBe("/src/main.ts (1 lines)");
   });
 });
 

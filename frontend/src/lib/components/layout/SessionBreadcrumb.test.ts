@@ -194,6 +194,10 @@ describe("SessionBreadcrumb", () => {
     expect(badge?.getAttribute("style")).toContain(
       "var(--accent-rose)",
     );
+    // Phase 19 (e65fe7a3): the fill must carry its paired foreground.
+    expect(badge?.getAttribute("style")).toContain(
+      "var(--accent-rose-foreground)",
+    );
 
     unmount(component);
   });
@@ -211,6 +215,9 @@ describe("SessionBreadcrumb", () => {
     const badge = document.querySelector(".agent-badge");
     expect(badge?.getAttribute("style")).toContain(
       "var(--accent-blue)",
+    );
+    expect(badge?.getAttribute("style")).toContain(
+      "var(--accent-blue-foreground)",
     );
 
     unmount(component);

@@ -173,6 +173,13 @@
     isUser ? "var(--accent-blue)" : "var(--accent-purple)",
   );
 
+  /** Readable letter color for the accent-filled role icon. */
+  let accentIconForeground = $derived(
+    isUser
+      ? "var(--accent-blue-foreground)"
+      : "var(--accent-purple-foreground)",
+  );
+
   let roleBg = $derived(
     isUser ? "var(--user-bg)" : "var(--assistant-bg)",
   );
@@ -302,6 +309,7 @@
     <span
       class="role-icon"
       style:background={accentColor}
+      style:color={accentIconForeground}
     >
       {roleIcon}
     </span>

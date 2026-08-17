@@ -136,4 +136,8 @@
     flex-direction: column;
     gap: 1px;
   }
+
+  :global(.high-contrast) .sa-expand .sa-eh-meta {
+    color: var(--text-secondary);
+  }
 </style>

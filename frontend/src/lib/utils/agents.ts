@@ -62,8 +62,45 @@ const agentColorMap = new Map(
   KNOWN_AGENTS.map((a) => [a.name, a.color]),
 );
 
+const defaultFillColor = "var(--accent-blue)";
+const defaultForeground = "var(--accent-blue-foreground)";
+
+/**
+ * Readable foreground for each accent fill. The values are defined in
+ * app.css for both themes; see component-source-guard.test.ts, which fails
+ * if an accent fill is paired with a hard-coded white foreground instead.
+ */
+const accentForegroundMap = new Map([
+  ["var(--accent-blue)", "var(--accent-blue-foreground)"],
+  ["var(--accent-rose)", "var(--accent-rose-foreground)"],
+  ["var(--accent-purple)", "var(--accent-purple-foreground)"],
+  ["var(--accent-amber)", "var(--accent-amber-foreground)"],
+  ["var(--accent-green)", "var(--accent-green-foreground)"],
+  ["var(--accent-coral)", "var(--accent-coral-foreground)"],
+  ["var(--accent-black)", "var(--accent-black-foreground)"],
+  ["var(--accent-teal)", "var(--accent-teal-foreground)"],
+  ["var(--accent-red)", "var(--accent-red-foreground)"],
+  ["var(--accent-indigo)", "var(--accent-indigo-foreground)"],
+  ["var(--accent-orange)", "var(--accent-orange-foreground)"],
+  ["var(--accent-sky)", "var(--accent-sky-foreground)"],
+  ["var(--accent-pink)", "var(--accent-pink-foreground)"],
+  ["var(--accent-lime)", "var(--accent-lime-foreground)"],
+  ["var(--accent-cyan)", "var(--accent-cyan-foreground)"],
+  ["var(--accent-violet)", "var(--accent-violet-foreground)"],
+]);
+
 export function agentColor(agent: string): string {
-  return agentColorMap.get(agent) ?? "var(--accent-blue)";
+  return agentColorMap.get(agent) ?? defaultFillColor;
+}
+
+/** Foreground token that stays readable on the given accent fill. */
+export function accentForeground(color: string): string {
+  return accentForegroundMap.get(color) ?? defaultForeground;
+}
+
+/** Foreground token for an agent's identity fill. */
+export function agentForeground(agent: string): string {
+  return accentForeground(agentColor(agent));
 }
 
 export function agentLabel(agent: string): string {

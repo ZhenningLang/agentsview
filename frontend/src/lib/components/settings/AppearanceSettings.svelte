@@ -3,6 +3,7 @@
   import {
     ui,
     ALL_BLOCK_TYPES,
+    FONT_SCALE_STEPS,
     type BlockType,
     type MessageLayout,
     type ThemePreference,
@@ -18,6 +19,7 @@
     { value: "default", label: "Default" },
     { value: "compact", label: "Compact" },
     { value: "stream", label: "Stream" },
+    { value: "skim", label: "Skim" },
   ];
 
   const BLOCK_LABELS: Record<BlockType, string> = {
@@ -50,12 +52,45 @@
   </div>
 
   <div class="setting-row">
+    <div>
+      <span class="setting-label">High contrast</span>
+      <p class="setting-hint">Strengthen text, border, and focus contrast in both themes.</p>
+    </div>
+    <button
+      class="setting-toggle"
+      class:active={ui.highContrast}
+      aria-label="High contrast"
+      aria-pressed={ui.highContrast}
+      onclick={() => ui.toggleHighContrast()}
+    >
+      {ui.highContrast ? "On" : "Off"}
+    </button>
+  </div>
+
+  <div class="setting-row">
+    <span class="setting-label">Text size</span>
+    <div class="setting-options">
+      {#each FONT_SCALE_STEPS as step}
+        <button
+          class="option-btn"
+          class:active={ui.fontScale === step}
+          aria-pressed={ui.fontScale === step}
+          onclick={() => ui.setFontScale(step)}
+        >
+          {step}%
+        </button>
+      {/each}
+    </div>
+  </div>
+
+  <div class="setting-row">
     <span class="setting-label">Message layout</span>
     <div class="setting-options">
       {#each LAYOUT_OPTIONS as opt}
         <button
           class="option-btn"
           class:active={ui.messageLayout === opt.value}
+          aria-pressed={ui.messageLayout === opt.value}
           onclick={() => ui.setLayout(opt.value)}
         >
           {opt.label}

@@ -394,6 +394,42 @@ describe("MessageContent", () => {
 
     unmount(component);
   });
+
+  // Phase 19 (e65fe7a3): the role icon is an accent fill carrying a letter,
+  // so it must set the paired foreground token instead of inheriting white.
+  it("uses the user accent foreground for user role icons", async () => {
+    const component = mount(MessageContent, {
+      target: document.body,
+      props: { message: makeMessage({ role: "user" }) },
+    });
+
+    await tick();
+
+    const style = document
+      .querySelector(".role-icon")
+      ?.getAttribute("style");
+    expect(style).toContain("var(--accent-blue)");
+    expect(style).toContain("var(--accent-blue-foreground)");
+
+    unmount(component);
+  });
+
+  it("uses the assistant accent foreground for assistant role icons", async () => {
+    const component = mount(MessageContent, {
+      target: document.body,
+      props: { message: makeMessage({ role: "assistant" }) },
+    });
+
+    await tick();
+
+    const style = document
+      .querySelector(".role-icon")
+      ?.getAttribute("style");
+    expect(style).toContain("var(--accent-purple)");
+    expect(style).toContain("var(--accent-purple-foreground)");
+
+    unmount(component);
+  });
 });
 
 describe("MessageContent Mermaid routing", () => {

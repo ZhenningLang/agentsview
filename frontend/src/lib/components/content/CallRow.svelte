@@ -233,4 +233,24 @@
       transform: scaleX(1);
     }
   }
+
+  /* Literal greys lifted to a token in high contrast. `.cd` is the duration
+     text every call row renders, so it is matched directly rather than only
+     through its `.muted` variant -- the `:not()` pair is what keeps the two
+     semantic states below out of the lift, and it also raises specificity
+     above the `.call .cd.slow` / `.call .cd.live` rules so ordering alone is
+     not what decides the winner.
+     Deliberately NOT lifted: `.cd.slow` (#f29070) and `.cd.live`
+     (--running-fg) encode call state, and `.sa-eh` error red in
+     SubagentCalls does the same; recoloring them to a neutral would erase the
+     meaning the color carries. */
+  :global(.high-contrast) .call .ca,
+  :global(.high-contrast) .call .cd:not(.slow):not(.live),
+  :global(.high-contrast) .call .chev {
+    color: var(--text-secondary);
+  }
+
+  :global(.high-contrast) .call.expanded .chev {
+    color: var(--text-primary);
+  }
 </style>

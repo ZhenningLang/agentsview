@@ -1,3 +1,4 @@
+export { default as AlignJustifyIcon } from "@lucide/svelte/icons/align-justify";
 export { default as ArrowDownIcon } from "@lucide/svelte/icons/arrow-down";
 export { default as ArrowDownWideNarrowIcon } from "@lucide/svelte/icons/arrow-down-wide-narrow";
 export { default as ArrowUpNarrowWideIcon } from "@lucide/svelte/icons/arrow-up-narrow-wide";

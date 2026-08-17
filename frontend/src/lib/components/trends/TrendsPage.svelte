@@ -292,7 +292,7 @@
   .primary {
     background: var(--accent-blue);
     border-color: var(--accent-blue);
-    color: white;
+    color: var(--accent-blue-foreground);
   }
 
   .primary:hover:not(:disabled) {

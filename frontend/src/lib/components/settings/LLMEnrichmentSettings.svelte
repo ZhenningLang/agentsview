@@ -803,7 +803,7 @@
   .name-issues { display: flex; flex-direction: column; gap: 2px; }
   .name-issues span { font-size: 11px; color: var(--accent-red, #ef4444); }
   .trigger-btn, .refresh-btn { height: 28px; padding: 0 12px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 500; border: 1px solid var(--border-muted); cursor: pointer; }
-  .trigger-btn { color: white; background: var(--accent-blue); border-color: var(--accent-blue); }
+  .trigger-btn { color: var(--accent-blue-foreground); background: var(--accent-blue); border-color: var(--accent-blue); }
   .refresh-btn { color: var(--text-secondary); background: var(--bg-inset); }
   .trigger-btn:disabled, .refresh-btn:disabled { opacity: 0.6; cursor: default; }
 

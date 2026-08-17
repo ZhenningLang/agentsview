@@ -161,7 +161,7 @@
   .chip.active {
     background: var(--accent-blue, #3b82f6);
     border-color: var(--accent-blue, #3b82f6);
-    color: #fff;
+    color: var(--accent-blue-foreground);
   }
   .projects {
     display: flex;
