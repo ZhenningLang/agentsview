@@ -2,19 +2,29 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"maps"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"go.kenn.io/agentsview/internal/db"
 )
 
-const lastPushBoundaryStateKey = "last_push_boundary_state"
+const (
+	lastPushStateKey          = "last_push_at"
+	lastPushBoundaryStateKey  = "last_push_boundary_state"
+	pgScopedLastPushKeyPrefix = "pg_last_push_at_v2"
+	pgScopedBoundaryKeyPrefix = "pg_last_push_boundary_state_v2"
+)
 
 // syncStateStore abstracts sync state read/write operations on the
 // local database. Used by push boundary state helpers.
@@ -58,11 +68,24 @@ func (s *Sync) Push(
 		return result, err
 	}
 
-	lastPush, err := s.local.GetSyncState("last_push_at")
+	lastPushKey := s.lastPushStateKey()
+	lastBoundaryKey := s.lastPushBoundaryStateKey()
+	lastPush, err := s.local.GetSyncState(lastPushKey)
 	if err != nil {
 		return result, fmt.Errorf(
-			"reading last_push_at: %w", err,
+			"reading %s: %w", lastPushKey, err,
 		)
+	}
+	if lastPushKey != lastPushStateKey && lastPush != "" {
+		legacyLastPush, err := s.local.GetSyncState(lastPushStateKey)
+		if err != nil {
+			return result, fmt.Errorf(
+				"reading %s: %w", lastPushStateKey, err,
+			)
+		}
+		if legacyLastPush == "" {
+			lastPush = ""
+		}
 	}
 	if full {
 		lastPush = ""
@@ -81,7 +104,7 @@ func (s *Sync) Push(
 		// watermark and boundary state so the next
 		// unfiltered push also starts from scratch.
 		if s.isFiltered() {
-			if err := clearPushState(s.local); err != nil {
+			if err := s.clearPushState(); err != nil {
 				return result, err
 			}
 		}
@@ -118,7 +141,7 @@ func (s *Sync) Push(
 			// watermark and boundary state so the next
 			// unfiltered push also starts from scratch.
 			if s.isFiltered() {
-				if err := clearPushState(s.local); err != nil {
+				if err := s.clearPushState(); err != nil {
 					return result, err
 				}
 			}
@@ -157,7 +180,7 @@ func (s *Sync) Push(
 	if !full {
 		var bErr error
 		priorFingerprints, _, _, bErr = readBoundaryAndFingerprints(
-			s.local, lastPush,
+			s.local, lastPush, lastBoundaryKey,
 		)
 		if bErr != nil {
 			return result, bErr
@@ -238,14 +261,14 @@ func (s *Sync) Push(
 				boundaryKey = cutoff
 			}
 			if err := writePushBoundaryState(
-				s.local, boundaryKey, sessions,
+				s.local, lastBoundaryKey, boundaryKey, sessions,
 				priorFingerprints, sessionFingerprints,
 			); err != nil {
 				return result, err
 			}
 		} else {
-			if err := finalizePushState(
-				s.local, cutoff, sessions, nil,
+			if err := s.finalizePushState(
+				cutoff, sessions, nil,
 				sessionFingerprints,
 			); err != nil {
 				return result, err
@@ -299,6 +322,11 @@ func (s *Sync) Push(
 		}
 	}
 
+	if result.Errors > 0 {
+		result.Duration = time.Since(start)
+		return result, nil
+	}
+
 	if s.isFiltered() {
 		// Filtered pushes update fingerprints for pushed
 		// sessions so subsequent filtered runs stay
@@ -313,7 +341,7 @@ func (s *Sync) Push(
 			boundaryKey = cutoff
 		}
 		if err := writePushBoundaryState(
-			s.local, boundaryKey, pushed,
+			s.local, lastBoundaryKey, boundaryKey, pushed,
 			priorFingerprints, sessionFingerprints,
 		); err != nil {
 			return result, err
@@ -331,8 +359,8 @@ func (s *Sync) Push(
 			finalizeCutoff = lastPush
 			mergedFingerprints = priorFingerprints
 		}
-		if err := finalizePushState(
-			s.local, finalizeCutoff, pushed,
+		if err := s.finalizePushState(
+			finalizeCutoff, pushed,
 			mergedFingerprints, sessionFingerprints,
 		); err != nil {
 			return result, err
@@ -464,20 +492,37 @@ func (s *Sync) pushBatch(
 	return batchResult{ok: true, sessions: n, messages: msgs}, nil
 }
 
-func finalizePushState(
-	local syncStateStore,
+func (s *Sync) finalizePushState(
 	cutoff string,
 	sessions []db.Session,
 	priorFingerprints map[string]string,
 	sessionFingerprints map[string]string,
 ) error {
-	if err := local.SetSyncState(
-		"last_push_at", cutoff,
-	); err != nil {
-		return fmt.Errorf("updating last_push_at: %w", err)
+	return finalizePushStateForStore(
+		s.local, s.lastPushStateKey(), s.lastPushBoundaryStateKey(),
+		cutoff, sessions, priorFingerprints, sessionFingerprints,
+	)
+}
+
+func finalizePushStateForStore(
+	local syncStateStore,
+	lastPushKey string,
+	lastBoundaryKey string,
+	cutoff string,
+	sessions []db.Session,
+	priorFingerprints map[string]string,
+	sessionFingerprints map[string]string,
+) error {
+	if err := local.SetSyncState(lastPushKey, cutoff); err != nil {
+		return fmt.Errorf("updating %s: %w", lastPushKey, err)
+	}
+	if lastPushKey != lastPushStateKey {
+		if err := local.SetSyncState(lastPushStateKey, cutoff); err != nil {
+			return fmt.Errorf("updating %s: %w", lastPushStateKey, err)
+		}
 	}
 	return writePushBoundaryState(
-		local, cutoff, sessions, priorFingerprints,
+		local, lastBoundaryKey, cutoff, sessions, priorFingerprints,
 		sessionFingerprints,
 	)
 }
@@ -487,20 +532,22 @@ func finalizePushState(
 // runs --full or detects a PG reset, to avoid leaving stale
 // state that would cause the next unfiltered push to skip
 // sessions.
-func clearPushState(local syncStateStore) error {
-	if err := local.SetSyncState(
-		lastPushBoundaryStateKey, "",
-	); err != nil {
-		return fmt.Errorf(
-			"clearing boundary state: %w", err,
-		)
+func (s *Sync) clearPushState() error {
+	if err := s.local.SetSyncState(s.lastPushBoundaryStateKey(), ""); err != nil {
+		return fmt.Errorf("clearing %s: %w", s.lastPushBoundaryStateKey(), err)
 	}
-	if err := local.SetSyncState(
-		"last_push_at", "",
-	); err != nil {
-		return fmt.Errorf(
-			"clearing last_push_at: %w", err,
-		)
+	if err := s.local.SetSyncState(s.lastPushStateKey(), ""); err != nil {
+		return fmt.Errorf("clearing %s: %w", s.lastPushStateKey(), err)
+	}
+	if s.lastPushBoundaryStateKey() != lastPushBoundaryStateKey {
+		if err := s.local.SetSyncState(lastPushBoundaryStateKey, ""); err != nil {
+			return fmt.Errorf("clearing %s: %w", lastPushBoundaryStateKey, err)
+		}
+	}
+	if s.lastPushStateKey() != lastPushStateKey {
+		if err := s.local.SetSyncState(lastPushStateKey, ""); err != nil {
+			return fmt.Errorf("clearing %s: %w", lastPushStateKey, err)
+		}
 	}
 	return nil
 }
@@ -508,19 +555,21 @@ func clearPushState(local syncStateStore) error {
 func readBoundaryAndFingerprints(
 	local syncStateStore,
 	cutoff string,
+	keys ...string,
 ) (
 	fingerprints map[string]string,
 	boundary map[string]string,
 	boundaryOK bool,
 	err error,
 ) {
-	raw, err := local.GetSyncState(
-		lastPushBoundaryStateKey,
-	)
+	key := lastPushBoundaryStateKey
+	if len(keys) > 0 && keys[0] != "" {
+		key = keys[0]
+	}
+	raw, err := local.GetSyncState(key)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf(
-			"reading %s: %w",
-			lastPushBoundaryStateKey, err,
+			"reading %s: %w", key, err,
 		)
 	}
 	if raw == "" {
@@ -544,6 +593,7 @@ func readBoundaryAndFingerprints(
 
 func writePushBoundaryState(
 	local syncStateStore,
+	key string,
 	cutoff string,
 	sessions []db.Session,
 	priorFingerprints map[string]string,
@@ -570,19 +620,99 @@ func writePushBoundaryState(
 	data, err := json.Marshal(state)
 	if err != nil {
 		return fmt.Errorf(
-			"encoding %s: %w",
-			lastPushBoundaryStateKey, err,
+			"encoding %s: %w", key, err,
 		)
 	}
-	if err := local.SetSyncState(
-		lastPushBoundaryStateKey, string(data),
-	); err != nil {
+	if err := local.SetSyncState(key, string(data)); err != nil {
 		return fmt.Errorf(
-			"writing %s: %w",
-			lastPushBoundaryStateKey, err,
+			"writing %s: %w", key, err,
 		)
 	}
 	return nil
+}
+
+func (s *Sync) lastPushStateKey() string {
+	if s.stateScope == "" {
+		return lastPushStateKey
+	}
+	return pgScopedLastPushKeyPrefix + ":" + s.stateScope
+}
+
+func (s *Sync) lastPushBoundaryStateKey() string {
+	if s.stateScope == "" {
+		return lastPushBoundaryStateKey
+	}
+	return pgScopedBoundaryKeyPrefix + ":" + s.stateScope
+}
+
+func pgStateScope(pgURL, schema, localPath string, opts SyncOptions) (string, error) {
+	localCanonical, err := filepath.Abs(localPath)
+	if err != nil {
+		return "", fmt.Errorf("canonicalizing local db path: %w", err)
+	}
+	if evaluated, err := filepath.EvalSymlinks(localCanonical); err == nil {
+		localCanonical = evaluated
+	}
+	targetScope, err := pgTargetScope(pgURL, schema)
+	if err != nil {
+		return "", err
+	}
+	scope := struct {
+		LocalHash  string `json:"local_hash"`
+		TargetHash string `json:"target_hash"`
+		FilterHash string `json:"filter_hash"`
+	}{
+		LocalHash:  pgHashHex(localCanonical),
+		TargetHash: pgHashHex(targetScope),
+		FilterHash: pgHashHex(pgFilterScope(opts)),
+	}
+	data, err := json.Marshal(scope)
+	if err != nil {
+		return "", fmt.Errorf("encoding pg sync scope: %w", err)
+	}
+	return pgHashHex(string(data)), nil
+}
+
+func pgTargetScope(pgURL, schema string) (string, error) {
+	cfg, err := pgconn.ParseConfig(pgURL)
+	if err != nil {
+		return "", fmt.Errorf("parsing pg target scope: %w", err)
+	}
+	data, err := json.Marshal(struct {
+		Host     string `json:"host"`
+		Port     uint16 `json:"port"`
+		Database string `json:"database"`
+		Schema   string `json:"schema"`
+	}{
+		Host:     cfg.Host,
+		Port:     cfg.Port,
+		Database: cfg.Database,
+		Schema:   schema,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encoding pg target scope: %w", err)
+	}
+	return string(data), nil
+}
+
+func pgFilterScope(opts SyncOptions) string {
+	projects := append([]string(nil), opts.Projects...)
+	excludeProjects := append([]string(nil), opts.ExcludeProjects...)
+	sort.Strings(projects)
+	sort.Strings(excludeProjects)
+	data, _ := json.Marshal(struct {
+		Projects        []string `json:"projects"`
+		ExcludeProjects []string `json:"exclude_projects"`
+	}{
+		Projects:        projects,
+		ExcludeProjects: excludeProjects,
+	})
+	return string(data)
+}
+
+func pgHashHex(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func mapKeys(m map[string]db.Session) []string {
@@ -695,6 +825,7 @@ func sessionPushFingerprint(
 		stringValue(sess.TerminationStatus),
 		fmt.Sprintf("%d", sess.SecretLeakCount),
 		sess.SecretsRulesVersion,
+		pgTranscriptRevision(sess.TranscriptRevision),
 		usageEventFingerprint,
 	}
 	var b strings.Builder
@@ -702,6 +833,13 @@ func sessionPushFingerprint(
 		fmt.Fprintf(&b, "%d:%s", len(f), f)
 	}
 	return b.String()
+}
+
+func pgTranscriptRevision(value *string) string {
+	if value == nil || *value == "" {
+		return "0"
+	}
+	return *value
 }
 
 func stringValue(value *string) string {
@@ -796,7 +934,7 @@ func (s *Sync) pushSession(
 			llm_title, llm_summary, llm_keywords,
 			llm_embedding, llm_embedding_dim, enriched_at,
 			enriched_msg_count, enrich_model, enrich_status,
-			enrich_error,
+			enrich_error, transcript_revision,
 			updated_at
 		) VALUES (
 			$1, $2, $3, $4, $5, $6, $7,
@@ -813,7 +951,7 @@ func (s *Sync) pushSession(
 			$41, $42, $43, $44,
 			$45, $46,
 			$47, $48, $49, $50, $51,
-			$52, $53, $54, $55, $56,
+			$52, $53, $54, $55, $56, $57,
 			NOW()
 		)
 		ON CONFLICT (id) DO UPDATE SET
@@ -872,6 +1010,7 @@ func (s *Sync) pushSession(
 			enrich_model = EXCLUDED.enrich_model,
 			enrich_status = EXCLUDED.enrich_status,
 			enrich_error = EXCLUDED.enrich_error,
+			transcript_revision = EXCLUDED.transcript_revision,
 			updated_at = NOW()
 		WHERE sessions.machine IS DISTINCT FROM EXCLUDED.machine
 			OR sessions.project IS DISTINCT FROM EXCLUDED.project
@@ -927,7 +1066,8 @@ func (s *Sync) pushSession(
 			OR sessions.enriched_msg_count IS DISTINCT FROM EXCLUDED.enriched_msg_count
 			OR sessions.enrich_model IS DISTINCT FROM EXCLUDED.enrich_model
 			OR sessions.enrich_status IS DISTINCT FROM EXCLUDED.enrich_status
-			OR sessions.enrich_error IS DISTINCT FROM EXCLUDED.enrich_error`,
+			OR sessions.enrich_error IS DISTINCT FROM EXCLUDED.enrich_error
+			OR sessions.transcript_revision IS DISTINCT FROM EXCLUDED.transcript_revision`,
 		sess.ID, s.machine,
 		sanitizePG(sess.Project),
 		sess.Agent,
@@ -960,7 +1100,7 @@ func (s *Sync) pushSession(
 		sess.LLMTitle, sess.LLMSummary, sess.LLMKeywords,
 		sess.LLMEmbedding, sess.LLMEmbeddingDim, sess.EnrichedAt,
 		sess.EnrichedMsgCount, sess.EnrichModel, sess.EnrichStatus,
-		sess.EnrichError,
+		sess.EnrichError, pgTranscriptRevision(sess.TranscriptRevision),
 	)
 	return err
 }

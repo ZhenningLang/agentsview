@@ -33,6 +33,7 @@ type Sync struct {
 	// Project filtering for push scope.
 	projects        []string
 	excludeProjects []string
+	stateScope      string
 
 	closeOnce sync.Once
 	closeErr  error
@@ -85,6 +86,12 @@ func New(
 		return nil, err
 	}
 
+	stateScope, err := pgStateScope(pgURL, schema, local.Path(), opts)
+	if err != nil {
+		_ = pg.Close()
+		return nil, err
+	}
+
 	return &Sync{
 		pg:              pg,
 		local:           local,
@@ -92,6 +99,7 @@ func New(
 		schema:          schema,
 		projects:        opts.Projects,
 		excludeProjects: opts.ExcludeProjects,
+		stateScope:      stateScope,
 	}, nil
 }
 
@@ -139,10 +147,11 @@ func (s *Sync) EnsureSchema(ctx context.Context) error {
 func (s *Sync) Status(
 	ctx context.Context,
 ) (SyncStatus, error) {
-	lastPush, err := s.local.GetSyncState("last_push_at")
+	lastPushKey := s.lastPushStateKey()
+	lastPush, err := s.local.GetSyncState(lastPushKey)
 	if err != nil {
 		log.Printf(
-			"warning: reading last_push_at: %v", err,
+			"warning: reading %s: %v", lastPushKey, err,
 		)
 		lastPush = ""
 	}
