@@ -59,5 +59,6 @@ export type DbSession = {
   tool_failure_signal_count: number;
   tool_retry_count: number;
   total_output_tokens: number;
+  transcript_revision?: string;
   user_message_count: number;
 };

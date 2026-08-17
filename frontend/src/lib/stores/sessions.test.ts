@@ -108,6 +108,7 @@ type SkinnySessionRow = {
   user_message_count: number;
   is_automated: boolean;
   is_teammate?: boolean;
+  transcript_revision?: string;
 };
 
 function makeSkinnyRow(
@@ -525,6 +526,75 @@ describe("SessionsStore", () => {
       await Promise.all([first, second]);
 
       expect(sessions.sessions[0]!.first_message).toBe("detail");
+    });
+
+    describe("Phase 20 transcript revision propagation", () => {
+      it("carries the revision from skinny sidebar rows", async () => {
+        mockSidebarIndex([
+          makeSkinnyRow({ id: "s1", transcript_revision: "4" }),
+        ]);
+
+        await sessions.load();
+
+        expect(sessions.sessions[0]!.transcript_revision).toBe("4");
+        expect(sessions.sessions[0]!.is_index_only).toBe(true);
+      });
+
+      it("refreshes the revision on hydrated rows when the index advances", async () => {
+        mockSidebarIndex([
+          makeSkinnyRow({ id: "s1", transcript_revision: "4" }),
+        ]);
+        vi.mocked(api.getSession).mockResolvedValue(
+          makeSession({
+            id: "s1",
+            transcript_revision: "4",
+            first_message: "hydrated detail",
+          }),
+        );
+
+        await sessions.load();
+        await (sessions as any).hydrateVisibleSessions(["s1"]);
+        expect(sessions.sessions[0]!.transcript_revision).toBe("4");
+
+        mockSidebarIndex([
+          makeSkinnyRow({ id: "s1", transcript_revision: "6" }),
+        ]);
+        await sessions.load();
+
+        // A stale revision here would leave the unread indicator dark
+        // forever even though the API reported a new transcript.
+        expect(sessions.sessions[0]!.transcript_revision).toBe("6");
+        expect(sessions.sessions[0]!.first_message).toBe("hydrated detail");
+        expect(sessions.sessions[0]!.is_index_only).toBe(false);
+      });
+
+      it("keeps the indexed revision when the detail response omits it", async () => {
+        mockSidebarIndex([
+          makeSkinnyRow({ id: "s1", transcript_revision: "4" }),
+        ]);
+        vi.mocked(api.getSession).mockResolvedValue(
+          makeSession({ id: "s1", first_message: "hydrated detail" }),
+        );
+
+        await sessions.load();
+        await (sessions as any).hydrateVisibleSessions(["s1"]);
+
+        expect(sessions.sessions[0]!.transcript_revision).toBe("4");
+      });
+
+      it("takes the detail revision when the index has none", async () => {
+        mockSidebarIndex([makeSkinnyRow({ id: "s1" })]);
+        vi.mocked(api.getSession).mockResolvedValue(
+          makeSession({ id: "s1", transcript_revision: "9" }),
+        );
+
+        await sessions.load();
+        expect(sessions.sessions[0]!.transcript_revision).toBeUndefined();
+
+        await (sessions as any).hydrateVisibleSessions(["s1"]);
+
+        expect(sessions.sessions[0]!.transcript_revision).toBe("9");
+      });
     });
 
     it("bounds visible hydration concurrency", async () => {
@@ -1821,6 +1891,22 @@ function makeSession(
 }
 
 describe("buildSessionGroups", () => {
+  it("keeps transcript_revision on grouped sidebar rows", () => {
+    const groups = buildSessionGroups([
+      makeSkinnyRow({ id: "root", transcript_revision: "2" }),
+      makeSkinnyRow({
+        id: "child",
+        parent_session_id: "root",
+        transcript_revision: "5",
+      }),
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(
+      groups[0]!.sessions.map((s) => s.transcript_revision),
+    ).toEqual(["2", "5"]);
+  });
+
   it("sidebar index rows preserve status-tier order", () => {
     const isoAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
     const rows = [
