@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -16,20 +17,26 @@ import (
 
 type usageSummaryCountsSpy struct {
 	db.Store
-	dailyCalls  int
-	countsCalls int
+	dailyCalls   int
+	countsCalls  int
+	dailyFilters []db.UsageFilter
 }
 
 func (s *usageSummaryCountsSpy) GetDailyUsage(
-	_ context.Context, _ db.UsageFilter,
+	_ context.Context, f db.UsageFilter,
 ) (db.DailyUsageResult, error) {
 	s.dailyCalls++
+	s.dailyFilters = append(s.dailyFilters, f)
+	cost := 1.0
+	if f.GitBranch != "" {
+		cost = 2
+	}
 	return db.DailyUsageResult{
 		Daily: []db.DailyUsageEntry{{
 			Date:      "2024-06-01",
-			TotalCost: 1,
+			TotalCost: cost,
 		}},
-		Totals: db.UsageTotals{TotalCost: 1},
+		Totals: db.UsageTotals{TotalCost: cost},
 		SessionCounts: db.UsageSessionCounts{
 			Total:     1,
 			ByProject: map[string]int{"proj": 1},
@@ -93,6 +100,34 @@ func TestUsageComparisonScansPriorPeriodOnly(t *testing.T) {
 	assert.Equal(t, "2024-05-31", out.PriorFrom)
 	assert.Equal(t, "2024-05-31", out.PriorTo)
 	assert.Equal(t, 1.0, out.PriorTotalCost)
+	assert.Equal(t, 2.0, out.DeltaPct)
+}
+
+func TestUsageComparisonCopiesGitBranchFilterToPriorPeriod(t *testing.T) {
+	branchToken := db.EncodeBranchFilterToken("alpha", "main")
+	spy := &usageSummaryCountsSpy{}
+	s := &Server{
+		cfg: config.Config{Host: "127.0.0.1"},
+		db:  spy,
+		mux: http.NewServeMux(),
+	}
+	s.routes()
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/api/v1/usage/comparison?from=2024-06-01&to=2024-06-01&current_cost=6&git_branch="+url.QueryEscape(branchToken),
+		nil,
+	)
+	w := httptest.NewRecorder()
+	s.mux.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "body=%s", w.Body.String())
+
+	require.Len(t, spy.dailyFilters, 1)
+	assert.Equal(t, branchToken, spy.dailyFilters[0].GitBranch)
+
+	var out Comparison
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &out))
+	assert.Equal(t, 2.0, out.PriorTotalCost)
 	assert.Equal(t, 2.0, out.DeltaPct)
 }
 
