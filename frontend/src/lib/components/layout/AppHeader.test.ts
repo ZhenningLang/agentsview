@@ -425,4 +425,94 @@ describe("AppHeader export actions", () => {
     expect(router.route).toBe("memory");
     expect(memory!.classList.contains("active")).toBe(true);
   });
+
+  // Phase 19 (de6eeaf6): both layout entry points must reach the fourth
+  // layout, and both must render its own icon rather than reusing the
+  // stream one.
+  describe("Phase 19 skim layout entry points", () => {
+    const LAYOUT_ICON_CLASS: Record<string, string> = {
+      default: "svg.lucide-layout-list",
+      compact: "svg.lucide-list-collapse",
+      stream: "svg.lucide-logs",
+      skim: "svg.lucide-text-align-justify",
+    };
+
+    function layoutButton(): HTMLButtonElement {
+      const button = document.querySelector<HTMLButtonElement>(
+        'button[aria-label="Cycle message layout"]',
+      );
+      expect(button).not.toBeNull();
+      return button!;
+    }
+
+    afterEach(() => {
+      ui.setLayout("default");
+    });
+
+    it("cycles the desktop layout button through all four layouts", async () => {
+      ui.setLayout("default");
+      component = mount(AppHeader, { target: document.body });
+      await tick();
+
+      for (const expected of ["compact", "stream", "skim", "default"]) {
+        layoutButton().click();
+        await tick();
+        expect(ui.messageLayout).toBe(expected);
+        expect(layoutButton().title).toBe(
+          `Cycle layout: ${expected} (l)`,
+        );
+        expect(
+          layoutButton().querySelector(LAYOUT_ICON_CLASS[expected]!),
+          `${expected} icon`,
+        ).not.toBeNull();
+      }
+    });
+
+    it("shows the skim icon in the narrow overflow menu", async () => {
+      ui.setLayout("skim");
+      component = mount(AppHeader, { target: document.body });
+      await tick();
+
+      document
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="More actions"]',
+        )!
+        .click();
+      await tick();
+
+      const overflowLayout = Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          ".overflow-dropdown .overflow-item",
+        ),
+      ).find((button) => button.textContent?.includes("Layout:"));
+      expect(overflowLayout).toBeDefined();
+      expect(overflowLayout!.textContent).toContain("Layout: skim");
+      expect(
+        overflowLayout!.querySelector("svg.lucide-text-align-justify"),
+      ).not.toBeNull();
+    });
+
+    it("cycles from the narrow overflow menu into the next layout", async () => {
+      ui.setLayout("stream");
+      component = mount(AppHeader, { target: document.body });
+      await tick();
+
+      document
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="More actions"]',
+        )!
+        .click();
+      await tick();
+
+      const overflowLayout = Array.from(
+        document.querySelectorAll<HTMLButtonElement>(
+          ".overflow-dropdown .overflow-item",
+        ),
+      ).find((button) => button.textContent?.includes("Layout:"));
+      overflowLayout!.click();
+      await tick();
+
+      expect(ui.messageLayout).toBe("skim");
+    });
+  });
 });

@@ -723,7 +723,7 @@
     font-size: 11px;
     font-weight: 600;
     background: var(--accent-blue);
-    color: white;
+    color: var(--accent-blue-foreground);
     letter-spacing: 0.01em;
     transition: opacity 0.12s, transform 0.1s,
       box-shadow 0.12s;
@@ -1213,26 +1213,31 @@
     margin-bottom: 8px;
   }
 
+  /* The fill lives on the variant class, so the foreground has to live there
+     too: a `color` on the base class would survive every high-contrast and
+     dark-mode move of the fill token and quietly drop below 4.5:1. */
   .header-badge {
     font-size: 9px;
     font-weight: 700;
     padding: 3px 8px;
     border-radius: 10px;
-    color: white;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
 
   .badge-blue {
     background: var(--accent-blue);
+    color: var(--accent-blue-foreground);
   }
 
   .badge-purple {
     background: var(--accent-purple);
+    color: var(--accent-purple-foreground);
   }
 
   .badge-red {
     background: var(--accent-red);
+    color: var(--accent-red-foreground);
   }
 
   .header-date {

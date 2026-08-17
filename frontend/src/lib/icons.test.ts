@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import * as icons from "./icons.ts";
 
 const approvedIconNames = [
+  "AlignJustifyIcon",
   "ArrowDownIcon",
   "ArrowDownWideNarrowIcon",
   "ArrowUpNarrowWideIcon",
@@ -84,5 +85,18 @@ describe("icons barrel", () => {
       expect(container.querySelector("svg"), `${name} should render an svg`).toBeTruthy();
       unmount();
     }
+  });
+
+  // Phase 19 (de6eeaf6): the skim layout needs its own header icon, and the
+  // header wiring identifies it by lucide's generated class name.
+  it("renders AlignJustifyIcon with the lucide align-justify identity", () => {
+    const { container, unmount } = render(icons.AlignJustifyIcon, {
+      props: { size: "16", "aria-hidden": "true" },
+    });
+
+    expect(
+      container.querySelector("svg.lucide-text-align-justify"),
+    ).toBeTruthy();
+    unmount();
   });
 });

@@ -1498,12 +1498,15 @@
   }
   .action-btn.primary {
     background: var(--accent-blue);
-    color: #fff;
+    color: var(--accent-blue-foreground);
     border-color: var(--accent-blue);
   }
+  /* The hover fill is still an accent fill -- darkening it through color-mix
+     does not make a literal white readable once --accent-blue moves for dark
+     or high-contrast mode, so the pairing stays on the foreground token. */
   .action-btn.primary:hover:not(:disabled) {
     background: color-mix(in srgb, var(--accent-blue) 82%, black);
-    color: #fff;
+    color: var(--accent-blue-foreground);
   }
   .action-btn.danger {
     color: #b42318;

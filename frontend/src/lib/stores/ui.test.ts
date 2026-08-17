@@ -12,7 +12,7 @@ import {
   SIDEBAR_WIDTH_MIN,
   SIDEBAR_WIDTH_STORAGE_MAX,
 } from "../components/layout/sidebar-width.js";
-import { ui } from "./ui.svelte.js";
+import { FONT_SCALE_STEPS, ui } from "./ui.svelte.js";
 
 describe("UIStore", () => {
   beforeEach(() => {
@@ -856,8 +856,100 @@ describe("UIStore", () => {
       ui.cycleLayout();
       expect(ui.messageLayout).toBe("stream");
 
+      // Phase 19 (de6eeaf6): skim joins the cycle before wrapping around.
+      ui.cycleLayout();
+      expect(ui.messageLayout).toBe("skim");
+
       ui.cycleLayout();
       expect(ui.messageLayout).toBe("default");
+    });
+  });
+
+  describe("Phase 19 messageLayout skim", () => {
+    beforeEach(() => {
+      ui.setLayout("default");
+    });
+
+    it("accepts skim as an explicit layout", () => {
+      ui.setLayout("skim");
+      expect(ui.messageLayout).toBe("skim");
+    });
+
+    it("restores a stored skim layout", async () => {
+      const original = globalThis.localStorage;
+      Object.defineProperty(globalThis, "localStorage", {
+        value: {
+          getItem: vi.fn((key: string) =>
+            key === "agentsview-message-layout" ? "skim" : null,
+          ),
+          setItem: vi.fn(),
+        },
+        writable: true,
+        configurable: true,
+      });
+      try {
+        // @ts-expect-error -- query string busts module cache
+        const mod = await import("./ui.svelte.js?storedSkimLayout");
+        expect(mod.ui.messageLayout).toBe("skim");
+      } finally {
+        Object.defineProperty(globalThis, "localStorage", {
+          value: original,
+          writable: true,
+          configurable: true,
+        });
+      }
+    });
+
+    it("falls back to default for an unknown stored layout", async () => {
+      const original = globalThis.localStorage;
+      Object.defineProperty(globalThis, "localStorage", {
+        value: {
+          getItem: vi.fn((key: string) =>
+            key === "agentsview-message-layout" ? "skimmed" : null,
+          ),
+          setItem: vi.fn(),
+        },
+        writable: true,
+        configurable: true,
+      });
+      try {
+        // @ts-expect-error -- query string busts module cache
+        const mod = await import("./ui.svelte.js?badSkimLayout");
+        expect(mod.ui.messageLayout).toBe("default");
+      } finally {
+        Object.defineProperty(globalThis, "localStorage", {
+          value: original,
+          writable: true,
+          configurable: true,
+        });
+      }
+    });
+
+    it("persists a skim layout selection", async () => {
+      const original = globalThis.localStorage;
+      const setItem = vi.fn();
+      Object.defineProperty(globalThis, "localStorage", {
+        value: { getItem: vi.fn(() => null), setItem },
+        writable: true,
+        configurable: true,
+      });
+      try {
+        // @ts-expect-error -- query string busts module cache
+        const mod = await import("./ui.svelte.js?persistSkimLayout");
+        setItem.mockClear();
+        mod.ui.setLayout("skim");
+        await tick();
+        expect(setItem).toHaveBeenCalledWith(
+          "agentsview-message-layout",
+          "skim",
+        );
+      } finally {
+        Object.defineProperty(globalThis, "localStorage", {
+          value: original,
+          writable: true,
+          configurable: true,
+        });
+      }
     });
   });
 
@@ -931,6 +1023,422 @@ describe("UIStore", () => {
           configurable: true,
         });
       }
+    });
+  });
+
+  /**
+   * Phase 19 (e65fe7a3). These use fresh-module imports because the root zoom
+   * and high-contrast class are written by `$effect`s created in the store
+   * constructor, so they need a store whose lifetime the test controls.
+   */
+  describe("Phase 19 fontScale", () => {
+    /** Swap in a stub localStorage for the duration of `body`. */
+    async function withStorage(
+      storage: unknown,
+      body: () => Promise<void>,
+    ): Promise<void> {
+      const original = globalThis.localStorage;
+      Object.defineProperty(globalThis, "localStorage", {
+        value: storage,
+        writable: true,
+        configurable: true,
+      });
+      try {
+        await body();
+      } finally {
+        Object.defineProperty(globalThis, "localStorage", {
+          value: original,
+          writable: true,
+          configurable: true,
+        });
+        document.documentElement.style.removeProperty("zoom");
+      }
+    }
+
+    /** A store built against a hostile localStorage must still be usable. */
+    async function expectInteractive(mod: {
+      ui: { fontScale: number; setFontScale: (n: number) => void };
+    }): Promise<void> {
+      expect(mod.ui.fontScale).toBe(100);
+      mod.ui.setFontScale(110);
+      await tick();
+      expect(mod.ui.fontScale).toBe(110);
+      expect(
+        document.documentElement.style.getPropertyValue("zoom"),
+      ).toBe("1.1");
+    }
+
+    beforeEach(() => {
+      ui.setFontScale(100);
+    });
+
+    it("defaults to 100", () => {
+      expect(ui.fontScale).toBe(100);
+    });
+
+    it("exposes the five supported steps", () => {
+      expect(FONT_SCALE_STEPS).toEqual([90, 100, 110, 120, 130]);
+    });
+
+    it("sets any supported step", () => {
+      for (const step of FONT_SCALE_STEPS) {
+        ui.setFontScale(step);
+        expect(ui.fontScale).toBe(step);
+      }
+    });
+
+    it("ignores values outside the supported steps", () => {
+      ui.setFontScale(120);
+      for (const bad of [145, 0, -100, 100.5, Number.NaN]) {
+        ui.setFontScale(bad);
+        expect(ui.fontScale).toBe(120);
+      }
+    });
+
+    it("applies the font scale as root zoom on the web", async () => {
+      await withStorage(
+        { getItem: vi.fn(() => null), setItem: vi.fn() },
+        async () => {
+          // @ts-expect-error -- query string busts module cache
+          const mod = await import("./ui.svelte.js?webFontScale");
+          mod.ui.setFontScale(90);
+          await tick();
+          expect(
+            document.documentElement.style.getPropertyValue("zoom"),
+          ).toBe("0.9");
+
+          mod.ui.setFontScale(110);
+          await tick();
+          expect(
+            document.documentElement.style.getPropertyValue("zoom"),
+          ).toBe("1.1");
+
+          mod.ui.setFontScale(130);
+          await tick();
+          expect(
+            document.documentElement.style.getPropertyValue("zoom"),
+          ).toBe("1.3");
+        },
+      );
+    });
+
+    it("multiplies the desktop window zoom with the font scale", async () => {
+      window.history.replaceState({}, "", "/?desktop");
+      try {
+        await withStorage(
+          { getItem: vi.fn(() => null), setItem: vi.fn() },
+          async () => {
+            // @ts-expect-error -- query string busts module cache
+            const mod = await import("./ui.svelte.js?desktopCompose");
+            mod.ui.zoomLevel = 150;
+            mod.ui.setFontScale(120);
+            await tick();
+            // 1.5 * 1.2 -- a sum would be 2.7 and plain replacement 1.2.
+            expect(
+              document.documentElement.style.getPropertyValue("zoom"),
+            ).toBe("1.8");
+
+            mod.ui.zoomLevel = 200;
+            mod.ui.setFontScale(110);
+            await tick();
+            expect(
+              document.documentElement.style.getPropertyValue("zoom"),
+            ).toBe("2.2");
+          },
+        );
+      } finally {
+        window.history.replaceState({}, "", "/");
+      }
+    });
+
+    it("keeps a single root zoom writer so font scale wins last", async () => {
+      window.history.replaceState({}, "", "/?desktop");
+      try {
+        await withStorage(
+          { getItem: vi.fn(() => null), setItem: vi.fn() },
+          async () => {
+            // @ts-expect-error -- query string busts module cache
+            const mod = await import("./ui.svelte.js?singleZoomWriter");
+            mod.ui.zoomLevel = 150;
+            await tick();
+            expect(
+              document.documentElement.style.getPropertyValue("zoom"),
+            ).toBe("1.5");
+            mod.ui.setFontScale(120);
+            await tick();
+            // A leftover desktop-only writer would clobber this back to 1.5.
+            expect(
+              document.documentElement.style.getPropertyValue("zoom"),
+            ).toBe("1.8");
+          },
+        );
+      } finally {
+        window.history.replaceState({}, "", "/");
+      }
+    });
+
+    it("persists the font scale on the web", async () => {
+      const setItem = vi.fn();
+      await withStorage(
+        { getItem: vi.fn(() => null), setItem },
+        async () => {
+          // @ts-expect-error -- query string busts module cache
+          const mod = await import("./ui.svelte.js?persistFontScale");
+          setItem.mockClear();
+          mod.ui.setFontScale(120);
+          await tick();
+          expect(setItem).toHaveBeenCalledWith(
+            "agentsview-font-scale",
+            "120",
+          );
+          // The desktop-only window zoom must not leak onto the web.
+          expect(setItem).not.toHaveBeenCalledWith(
+            "agentsview-zoom-level",
+            expect.anything(),
+          );
+        },
+      );
+    });
+
+    it("persists both the font scale and the window zoom on desktop", async () => {
+      const setItem = vi.fn();
+      window.history.replaceState({}, "", "/?desktop");
+      try {
+        await withStorage(
+          { getItem: vi.fn(() => null), setItem },
+          async () => {
+            // @ts-expect-error -- query string busts module cache
+            const mod = await import("./ui.svelte.js?persistDesktopScale");
+            setItem.mockClear();
+            mod.ui.setFontScale(130);
+            mod.ui.zoomLevel = 125;
+            await tick();
+            expect(setItem).toHaveBeenCalledWith(
+              "agentsview-font-scale",
+              "130",
+            );
+            expect(setItem).toHaveBeenCalledWith(
+              "agentsview-zoom-level",
+              "125",
+            );
+          },
+        );
+      } finally {
+        window.history.replaceState({}, "", "/");
+      }
+    });
+
+    it("restores a stored font scale", async () => {
+      await withStorage(
+        {
+          getItem: vi.fn((key: string) =>
+            key === "agentsview-font-scale" ? "130" : null,
+          ),
+          setItem: vi.fn(),
+        },
+        async () => {
+          // @ts-expect-error -- query string busts module cache
+          const mod = await import("./ui.svelte.js?storedFontScale");
+          expect(mod.ui.fontScale).toBe(130);
+        },
+      );
+    });
+
+    it("falls back to 100 for an invalid stored font scale", async () => {
+      await withStorage(
+        {
+          getItem: vi.fn((key: string) =>
+            key === "agentsview-font-scale" ? "145" : null,
+          ),
+          setItem: vi.fn(),
+        },
+        async () => {
+          // @ts-expect-error -- query string busts module cache
+          const mod = await import("./ui.svelte.js?badFontScale");
+          expect(mod.ui.fontScale).toBe(100);
+        },
+      );
+    });
+
+    it("stays interactive when localStorage is undefined", async () => {
+      await withStorage(undefined, async () => {
+        // @ts-expect-error -- query string busts module cache
+        const mod = await import("./ui.svelte.js?noStorage");
+        await expectInteractive(mod);
+      });
+    });
+
+    it("stays interactive when localStorage is null", async () => {
+      await withStorage(null, async () => {
+        // @ts-expect-error -- query string busts module cache
+        const mod = await import("./ui.svelte.js?nullStorage");
+        await expectInteractive(mod);
+      });
+    });
+
+    it("stays interactive when localStorage has no methods", async () => {
+      await withStorage({}, async () => {
+        // @ts-expect-error -- query string busts module cache
+        const mod = await import("./ui.svelte.js?methodlessStorage");
+        await expectInteractive(mod);
+      });
+    });
+
+    it("stays interactive when localStorage throws", async () => {
+      await withStorage(
+        {
+          getItem: () => {
+            throw new Error("denied");
+          },
+          setItem: () => {
+            throw new Error("denied");
+          },
+        },
+        async () => {
+          // @ts-expect-error -- query string busts module cache
+          const mod = await import("./ui.svelte.js?throwingStorage");
+          await expectInteractive(mod);
+        },
+      );
+    });
+  });
+
+  describe("Phase 19 highContrast", () => {
+    async function withStorage(
+      storage: unknown,
+      body: () => Promise<void>,
+    ): Promise<void> {
+      const original = globalThis.localStorage;
+      Object.defineProperty(globalThis, "localStorage", {
+        value: storage,
+        writable: true,
+        configurable: true,
+      });
+      try {
+        await body();
+      } finally {
+        Object.defineProperty(globalThis, "localStorage", {
+          value: original,
+          writable: true,
+          configurable: true,
+        });
+        document.documentElement.classList.remove("high-contrast");
+      }
+    }
+
+    beforeEach(() => {
+      if (ui.highContrast) ui.toggleHighContrast();
+    });
+
+    it("defaults to false", () => {
+      expect(ui.highContrast).toBe(false);
+    });
+
+    it("toggles the value", () => {
+      ui.toggleHighContrast();
+      expect(ui.highContrast).toBe(true);
+      ui.toggleHighContrast();
+      expect(ui.highContrast).toBe(false);
+    });
+
+    it("toggles the root class and persists both states", async () => {
+      const setItem = vi.fn();
+      await withStorage(
+        { getItem: vi.fn(() => null), setItem },
+        async () => {
+          // @ts-expect-error -- query string busts module cache
+          const mod = await import("./ui.svelte.js?highContrastToggle");
+          setItem.mockClear();
+          mod.ui.toggleHighContrast();
+          await tick();
+          expect(
+            document.documentElement.classList.contains("high-contrast"),
+          ).toBe(true);
+          expect(setItem).toHaveBeenCalledWith(
+            "agentsview-high-contrast",
+            "true",
+          );
+
+          mod.ui.toggleHighContrast();
+          await tick();
+          expect(
+            document.documentElement.classList.contains("high-contrast"),
+          ).toBe(false);
+          expect(setItem).toHaveBeenCalledWith(
+            "agentsview-high-contrast",
+            "false",
+          );
+        },
+      );
+    });
+
+    it("restores a stored high-contrast preference", async () => {
+      await withStorage(
+        {
+          getItem: vi.fn((key: string) =>
+            key === "agentsview-high-contrast" ? "true" : null,
+          ),
+          setItem: vi.fn(),
+        },
+        async () => {
+          // @ts-expect-error -- query string busts module cache
+          const mod = await import("./ui.svelte.js?storedHighContrast");
+          expect(mod.ui.highContrast).toBe(true);
+          await tick();
+          expect(
+            document.documentElement.classList.contains("high-contrast"),
+          ).toBe(true);
+        },
+      );
+    });
+
+    it("composes with the dark theme instead of replacing it", async () => {
+      await withStorage(
+        { getItem: vi.fn(() => null), setItem: vi.fn() },
+        async () => {
+          // @ts-expect-error -- query string busts module cache
+          const mod = await import("./ui.svelte.js?contrastWithDark");
+          mod.ui.toggleHighContrast();
+          mod.ui.setThemePreference("dark");
+          await tick();
+          const classes = document.documentElement.classList;
+          expect(classes.contains("dark")).toBe(true);
+          expect(classes.contains("high-contrast")).toBe(true);
+
+          mod.ui.setThemePreference("light");
+          await tick();
+          expect(document.documentElement.classList.contains("dark")).toBe(
+            false,
+          );
+          expect(
+            document.documentElement.classList.contains("high-contrast"),
+          ).toBe(true);
+        },
+      );
+    });
+
+    it("stays interactive when localStorage throws", async () => {
+      await withStorage(
+        {
+          getItem: () => {
+            throw new Error("denied");
+          },
+          setItem: () => {
+            throw new Error("denied");
+          },
+        },
+        async () => {
+          // @ts-expect-error -- query string busts module cache
+          const mod = await import("./ui.svelte.js?contrastBrokenStorage");
+          expect(mod.ui.highContrast).toBe(false);
+          mod.ui.toggleHighContrast();
+          await tick();
+          expect(mod.ui.highContrast).toBe(true);
+          expect(
+            document.documentElement.classList.contains("high-contrast"),
+          ).toBe(true);
+        },
+      );
     });
   });
 });

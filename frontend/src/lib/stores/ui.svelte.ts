@@ -12,7 +12,11 @@ const THEME_PREFERENCES: readonly ThemePreference[] = [
   "dark",
   "system",
 ];
-export type MessageLayout = "default" | "compact" | "stream";
+export type MessageLayout =
+  | "default"
+  | "compact"
+  | "stream"
+  | "skim";
 export type TranscriptMode = "normal" | "focused";
 type ModalType =
   | "about"
@@ -85,6 +89,11 @@ const ZOOM_STEPS = [
   67, 75, 80, 90, 100, 110, 125, 150, 175, 200,
 ];
 const ZOOM_DEFAULT = 100;
+const FONT_SCALE_KEY = "agentsview-font-scale";
+const HIGH_CONTRAST_KEY = "agentsview-high-contrast";
+/** Supported UI text-size steps, in percent. */
+export const FONT_SCALE_STEPS = [90, 100, 110, 120, 130];
+const FONT_SCALE_DEFAULT = 100;
 
 function readStoredZoom(): number {
   if (!IS_DESKTOP) return ZOOM_DEFAULT;
@@ -99,21 +108,42 @@ function readStoredZoom(): number {
   }
   return ZOOM_DEFAULT;
 }
+
+function readStoredFontScale(): number {
+  try {
+    const raw = localStorage?.getItem(FONT_SCALE_KEY);
+    if (raw) {
+      const val = Number(raw);
+      if (FONT_SCALE_STEPS.includes(val)) return val;
+    }
+  } catch {
+    // ignore
+  }
+  return FONT_SCALE_DEFAULT;
+}
+
 const VALID_LAYOUTS: MessageLayout[] = [
   "default",
   "compact",
   "stream",
+  "skim",
 ];
 function readStoredThemePreference(): ThemePreference | null {
-  if (
-    typeof localStorage !== "undefined" &&
-    localStorage != null &&
-    typeof localStorage.getItem === "function"
-  ) {
-    const raw = localStorage.getItem("theme");
-    if (raw && THEME_PREFERENCES.includes(raw as ThemePreference)) {
-      return raw as ThemePreference;
+  // Fail open like every other storage reader here: a localStorage that
+  // throws (private mode, blocked storage) must not break store construction.
+  try {
+    if (
+      typeof localStorage !== "undefined" &&
+      localStorage != null &&
+      typeof localStorage.getItem === "function"
+    ) {
+      const raw = localStorage.getItem("theme");
+      if (raw && THEME_PREFERENCES.includes(raw as ThemePreference)) {
+        return raw as ThemePreference;
+      }
     }
+  } catch {
+    // ignore
   }
   return null;
 }
@@ -199,6 +229,11 @@ class UIStore {
   pendingScrollSession: string | null = $state(null);
 
   zoomLevel: number = $state(readStoredZoom());
+  /** UI text-size percentage; one of FONT_SCALE_STEPS. */
+  fontScale: number = $state(readStoredFontScale());
+  highContrast: boolean = $state(
+    readStoredBool(HIGH_CONTRAST_KEY, false),
+  );
 
   sidebarOpen: boolean = $state(true);
   isMobileViewport: boolean = $state(false);
@@ -236,12 +271,16 @@ class UIStore {
         } else {
           root.classList.remove("dark");
         }
-        if (
-          typeof localStorage !== "undefined" &&
-          localStorage != null &&
-          typeof localStorage.setItem === "function"
-        ) {
-          localStorage.setItem("theme", this.themePreference);
+        try {
+          if (
+            typeof localStorage !== "undefined" &&
+            localStorage != null &&
+            typeof localStorage.setItem === "function"
+          ) {
+            localStorage.setItem("theme", this.themePreference);
+          }
+        } catch {
+          // ignore
         }
       });
 
@@ -278,17 +317,58 @@ class UIStore {
         }
       });
 
+      // Apply the composed root zoom: the font scale (web and desktop)
+      // multiplied by the desktop window zoom (desktop only). This is the
+      // only writer of root zoom -- a second desktop-only writer would race
+      // it and clobber font-scale changes. "zoom" is non-standard but
+      // supported in WebKit/Chromium.
       $effect(() => {
-        if (!IS_DESKTOP) return;
-        // "zoom" is non-standard but supported in WebKit/Chromium
+        const desktopZoom = IS_DESKTOP ? this.zoomLevel / 100 : 1;
+        const scale = this.fontScale / 100;
+        const effective =
+          Math.round(desktopZoom * scale * 10000) / 10000;
         (
           document.documentElement.style as unknown as
             Record<string, string>
-        ).zoom = String(this.zoomLevel / 100);
+        ).zoom = String(effective);
+      });
+
+      // Persist the desktop window zoom (desktop only).
+      $effect(() => {
+        if (!IS_DESKTOP) return;
         try {
           localStorage?.setItem(
             ZOOM_KEY,
             String(this.zoomLevel),
+          );
+        } catch {
+          // ignore
+        }
+      });
+
+      // Persist the font scale (web and desktop).
+      $effect(() => {
+        try {
+          localStorage?.setItem(
+            FONT_SCALE_KEY,
+            String(this.fontScale),
+          );
+        } catch {
+          // ignore
+        }
+      });
+
+      // Apply and persist high contrast. The class composes with the
+      // light/dark class rather than replacing it.
+      $effect(() => {
+        document.documentElement.classList.toggle(
+          "high-contrast",
+          this.highContrast,
+        );
+        try {
+          localStorage?.setItem(
+            HIGH_CONTRAST_KEY,
+            String(this.highContrast),
           );
         } catch {
           // ignore
@@ -544,6 +624,17 @@ class UIStore {
 
   resetZoom() {
     this.zoomLevel = ZOOM_DEFAULT;
+  }
+
+  /** Set the UI text size. Values outside FONT_SCALE_STEPS are ignored. */
+  setFontScale(scale: number) {
+    if (FONT_SCALE_STEPS.includes(scale)) {
+      this.fontScale = scale;
+    }
+  }
+
+  toggleHighContrast() {
+    this.highContrast = !this.highContrast;
   }
 
   toggleSidebar() {

@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   KNOWN_AGENTS,
+  accentForeground,
   agentColor,
+  agentForeground,
   agentLabel,
 } from "./agents.js";
 
@@ -124,5 +126,84 @@ describe("agentLabel", () => {
   it("capitalizes simple agent names", () => {
     expect(agentLabel("claude")).toBe("Claude");
     expect(agentLabel("gemini")).toBe("Gemini");
+  });
+});
+
+// Phase 19 (e65fe7a3): every accent fill that carries text needs a paired
+// readable foreground token; hard-coded white is not acceptable.
+describe("Phase 19 agentForeground", () => {
+  it("returns the paired foreground token for every known agent fill", () => {
+    for (const agent of KNOWN_AGENTS) {
+      const color = agentColor(agent.name);
+      const token = color.match(/^var\(--accent-([a-z]+)\)$/)?.[1];
+      expect(token, `${agent.name} fill must be an accent token`).toBeTruthy();
+      expect(agentForeground(agent.name)).toBe(
+        `var(--accent-${token}-foreground)`,
+      );
+    }
+  });
+
+  it("covers more than one foreground token across the roster", () => {
+    const distinct = new Set(
+      KNOWN_AGENTS.map((agent) => agentForeground(agent.name)),
+    );
+    expect(distinct.size).toBeGreaterThan(1);
+  });
+
+  it("falls back to the blue pair for unknown agents", () => {
+    expect(agentForeground("unknown")).toBe(
+      "var(--accent-blue-foreground)",
+    );
+    expect(agentForeground("")).toBe("var(--accent-blue-foreground)");
+  });
+
+  it("uses non-blue foregrounds for non-blue agent fills", () => {
+    expect(agentForeground("codex")).toBe("var(--accent-green-foreground)");
+    expect(agentForeground("opencode")).toBe(
+      "var(--accent-purple-foreground)",
+    );
+    expect(agentForeground("claude-ai")).toBe(
+      "var(--accent-violet-foreground)",
+    );
+    expect(agentForeground("kimicode")).toBe(
+      "var(--accent-indigo-foreground)",
+    );
+  });
+});
+
+describe("Phase 19 accentForeground", () => {
+  it("maps every accent fill token to its foreground token", () => {
+    const fills = [
+      "blue",
+      "rose",
+      "purple",
+      "amber",
+      "green",
+      "coral",
+      "black",
+      "teal",
+      "red",
+      "indigo",
+      "orange",
+      "sky",
+      "pink",
+      "lime",
+      "cyan",
+      "violet",
+    ];
+    for (const fill of fills) {
+      expect(accentForeground(`var(--accent-${fill})`)).toBe(
+        `var(--accent-${fill}-foreground)`,
+      );
+    }
+  });
+
+  it("falls back to the blue foreground for unmapped fills", () => {
+    expect(accentForeground("#ff0000")).toBe(
+      "var(--accent-blue-foreground)",
+    );
+    expect(accentForeground("var(--cat-read)")).toBe(
+      "var(--accent-blue-foreground)",
+    );
   });
 });

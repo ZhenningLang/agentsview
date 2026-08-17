@@ -9,6 +9,7 @@ import {
 } from "vitest";
 import { mount, tick, unmount } from "svelte";
 import type { Message, Session } from "../../api/types.js";
+import { inSessionSearch } from "../../stores/inSessionSearch.svelte.js";
 import { messages } from "../../stores/messages.svelte.js";
 import { sessions } from "../../stores/sessions.svelte.js";
 import { ui } from "../../stores/ui.svelte.js";
@@ -229,5 +230,129 @@ describe("MessageList follow cancellation", () => {
         fork_session: true,
       },
     });
+  });
+});
+
+describe("Phase 19 MessageList skim layout", () => {
+  let component: ReturnType<typeof mount> | undefined;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    virtualizerMock.visibleItems = [
+      { index: 0, key: "row-0", start: 0, end: 80 },
+    ];
+    messages.clear();
+    sessions.sessions = [makeSession({ id: "s1", agent: "claude" })];
+    sessions.activeSessionId = "s1";
+    messages.sessionId = "s1";
+    messages.messages = [makeToolMessage(7)];
+    messages.messageCount = 1;
+    messages.loading = false;
+    ui.followLatest = false;
+    ui.selectedOrdinal = null;
+    inSessionSearch.close();
+  });
+
+  afterEach(() => {
+    if (component) {
+      unmount(component);
+      component = undefined;
+    }
+    inSessionSearch.close();
+    ui.setLayout("default");
+    messages.clear();
+    sessions.sessions = [];
+    sessions.activeSessionId = null;
+    document.body.innerHTML = "";
+  });
+
+  function scrollClasses(): string {
+    return (
+      document.querySelector(".message-list-scroll")?.className ?? ""
+    );
+  }
+
+  it("applies layout-skim to the transcript root when skim is selected", async () => {
+    ui.setLayout("skim");
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    expect(scrollClasses()).toContain("layout-skim");
+    expect(scrollClasses()).not.toContain("layout-default");
+  });
+
+  it("suspends skim to the default layout while a search highlight is active", async () => {
+    ui.setLayout("skim");
+    component = mount(MessageList, { target: document.body });
+    await tick();
+    expect(scrollClasses()).toContain("layout-skim");
+
+    inSessionSearch.open();
+    inSessionSearch.query = "pwd";
+    await tick();
+
+    expect(scrollClasses()).toContain("layout-default");
+    expect(scrollClasses()).not.toContain("layout-skim");
+    // The stored preference must not be rewritten -- only the applied class.
+    expect(ui.messageLayout).toBe("skim");
+  });
+
+  it("restores layout-skim once the search is closed", async () => {
+    ui.setLayout("skim");
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    inSessionSearch.open();
+    inSessionSearch.query = "pwd";
+    await tick();
+    expect(scrollClasses()).toContain("layout-default");
+
+    inSessionSearch.close();
+    await tick();
+
+    expect(scrollClasses()).toContain("layout-skim");
+    expect(ui.messageLayout).toBe("skim");
+  });
+
+  it("treats a whitespace-only query as no highlight", async () => {
+    ui.setLayout("skim");
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    inSessionSearch.open();
+    inSessionSearch.query = "   ";
+    await tick();
+
+    expect(scrollClasses()).toContain("layout-skim");
+  });
+
+  it("leaves non-skim layouts untouched while searching", async () => {
+    ui.setLayout("compact");
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    inSessionSearch.open();
+    inSessionSearch.query = "pwd";
+    await tick();
+
+    expect(scrollClasses()).toContain("layout-compact");
+  });
+
+  it("keeps the tool summary in the skim row and the row clickable", async () => {
+    ui.setLayout("skim");
+    component = mount(MessageList, { target: document.body });
+    await tick();
+
+    expect(
+      document.querySelector(".tool-header .tool-preview")?.textContent,
+    ).toBe("$ pwd");
+
+    document.querySelector<HTMLElement>(".virtual-row")!.click();
+    await tick();
+
+    expect(ui.selectedOrdinal).toBe(7);
+    expect(
+      document.querySelector(".virtual-row.selected"),
+    ).not.toBeNull();
   });
 });
