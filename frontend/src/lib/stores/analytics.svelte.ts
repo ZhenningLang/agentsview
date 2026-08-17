@@ -669,18 +669,21 @@ class AnalyticsStore {
     );
   }
 
-  async fetchSkills() {
-    await this.executeFetch(
+  async fetchSkills(
+    granularity: SkillsGranularity = this.skillsGranularity,
+  ) {
+    return await this.executeFetch(
       "skills",
       () =>
         AnalyticsService.getApiV1AnalyticsSkills(
           {
             ...this.filterParams(),
-            granularity: this.skillsGranularity,
+            granularity,
           },
         ) as unknown as Promise<SkillsAnalyticsResponse>,
       (data) => {
         this.skills = data;
+        this.skillsGranularity = granularity;
       },
       () => this.skills !== null,
     );
@@ -792,9 +795,9 @@ class AnalyticsStore {
     this.fetchActivity();
   }
 
-  setSkillsGranularity(g: SkillsGranularity) {
-    this.skillsGranularity = g;
-    this.fetchSkills();
+  async setSkillsGranularity(g: SkillsGranularity) {
+    if (this.skillsGranularity === g) return "ok";
+    return await this.fetchSkills(g);
   }
 
   setMetric(m: HeatmapMetric) {

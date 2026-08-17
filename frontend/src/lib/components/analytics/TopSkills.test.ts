@@ -69,7 +69,7 @@ describe("TopSkills", () => {
     return mount(TopSkills, { target: document.body });
   }
 
-  it("renders skill usage, breakdowns, and trend", async () => {
+  it("renders skill usage and breakdowns", async () => {
     const component = mountWithData();
     await tick();
 
@@ -90,29 +90,8 @@ describe("TopSkills", () => {
     expect(document.body.textContent).toContain("2");
     expect(document.body.textContent).toContain("29%");
     expect(document.body.textContent).toContain("Projects: agentsview: 4, notes: 3");
-    expect(document.body.textContent).toContain("Weekly Trend");
 
-    unmount(component);
-  });
-
-  it("lets users change the trend granularity", async () => {
-    const component = mountWithData();
-    const spy = vi
-      .spyOn(analytics, "setSkillsGranularity")
-      .mockImplementation(() => {});
-    await tick();
-
-    const buttons = [...document.querySelectorAll<HTMLButtonElement>(
-      ".granularity-buttons button",
-    )];
-    const day = buttons.find((button) => button.textContent?.trim() === "day");
-    expect(day).toBeTruthy();
-    day!.click();
-    await tick();
-
-    expect(spy).toHaveBeenCalledWith("day");
-
-    unmount(component);
+    await unmount(component);
   });
 
   it("does not expose incomplete click-to-search behavior", async () => {
@@ -127,7 +106,7 @@ describe("TopSkills", () => {
 
     expect(ui.activeModal).toBeNull();
 
-    unmount(component);
+    await unmount(component);
   });
 
   it("renders empty state", async () => {
@@ -154,7 +133,7 @@ describe("TopSkills", () => {
     };
     const retrySpy = vi
       .spyOn(analytics, "fetchSkills")
-      .mockResolvedValue();
+      .mockResolvedValue(undefined);
     const component = mount(TopSkills, { target: document.body });
     await tick();
 
@@ -164,6 +143,6 @@ describe("TopSkills", () => {
 
     expect(retrySpy).toHaveBeenCalledOnce();
 
-    unmount(component);
+    await unmount(component);
   });
 });

@@ -534,12 +534,37 @@ describe("AnalyticsStore skills", () => {
     expect(params?.granularity).toBe("week");
   });
 
-  it("setSkillsGranularity refetches skills with the selected granularity", () => {
-    analytics.setSkillsGranularity("day");
+  it("setSkillsGranularity applies only after its response arrives", async () => {
+    analytics.skills = makeSkills();
+    let resolve!: (value: SkillsAnalyticsResponse) => void;
+    vi.mocked(
+      analyticsService.getApiV1AnalyticsSkills,
+    ).mockReturnValueOnce(new Promise((r) => { resolve = r; }));
 
-    expect(analytics.skillsGranularity).toBe("day");
+    const pending = analytics.setSkillsGranularity("day");
+
+    expect(analytics.skillsGranularity).toBe("week");
+    expect(analytics.querying.skills).toBe(true);
     const params = vi.mocked(analyticsService.getApiV1AnalyticsSkills).mock.lastCall?.[0];
     expect(params?.granularity).toBe("day");
+
+    resolve(makeSkills());
+    await pending;
+
+    expect(analytics.skillsGranularity).toBe("day");
+    expect(analytics.querying.skills).toBe(false);
+  });
+
+  it("keeps the applied granularity when the request fails", async () => {
+    analytics.skills = makeSkills();
+    vi.mocked(
+      analyticsService.getApiV1AnalyticsSkills,
+    ).mockRejectedValueOnce(new Error("network down"));
+
+    const result = await analytics.setSkillsGranularity("month");
+
+    expect(result).toBeUndefined();
+    expect(analytics.skillsGranularity).toBe("week");
   });
 });
 

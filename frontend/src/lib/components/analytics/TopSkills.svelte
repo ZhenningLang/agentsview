@@ -7,8 +7,6 @@
   } from "../../api/types.js";
 
   const skills = $derived(analytics.skills?.by_skill ?? []);
-  const trendEntries = $derived(analytics.skills?.trend ?? []);
-  const trendOptions = ["day", "week", "month"] as const;
 
   const maxCount = $derived(
     skills.length > 0
@@ -16,37 +14,8 @@
       : 1,
   );
 
-  const trendMax = $derived.by(() => {
-    let max = 1;
-    for (const entry of trendEntries) {
-      let total = 0;
-      for (const v of Object.values(entry.by_skill)) {
-        total += v;
-      }
-      if (total > max) max = total;
-    }
-    return max;
-  });
-
   function barWidth(count: number): number {
     return (count / maxCount) * 100;
-  }
-
-  function trendBarHeight(total: number): number {
-    return Math.max((total / trendMax) * 100, 2);
-  }
-
-  function trendTotal(bySkill: Record<string, number>): number {
-    let total = 0;
-    for (const v of Object.values(bySkill)) {
-      total += v;
-    }
-    return total;
-  }
-
-  function formatBucket(date: string): string {
-    if (date.length < 10) return date;
-    return date.slice(5);
   }
 
   function formatLastUsed(value: string): string {
@@ -101,34 +70,8 @@
     );
   }
 
-  function handleTrendHover(
-    e: MouseEvent,
-    entry: { date: string; by_skill: Record<string, number> },
-  ) {
-    const total = trendTotal(entry.by_skill);
-    const parts = Object.entries(entry.by_skill)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 4)
-      .map(([skill, count]) => `${skill}: ${count}`);
-    showTooltip(
-      e,
-      `${entry.date} | ${total} total | ${parts.join(", ")}`,
-    );
-  }
-
   function handleLeave() {
     tooltip = null;
-  }
-
-  function trendTitle(): string {
-    switch (analytics.skillsGranularity) {
-      case "day":
-        return "Daily Trend";
-      case "month":
-        return "Monthly Trend";
-      default:
-        return "Weekly Trend";
-    }
   }
 </script>
 
@@ -154,93 +97,53 @@
       </button>
     </div>
   {:else if skills.length > 0}
-    <div class="sections">
-      <div class="section">
-        <div class="skill-list">
-          {#each skills.slice(0, 8) as skill}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="skill-row"
-              onmouseenter={(e) => handleSkillHover(e, skill)}
-              onmouseleave={handleLeave}
-            >
-              <span class="skill-name">{skill.skill_name}</span>
-              <span class="bar-track">
-                <span
-                  class="bar-fill"
-                  style="width: {barWidth(skill.call_count)}%"
-                ></span>
-              </span>
-              <span class="bar-value">
-                {skill.call_count.toLocaleString()}
-              </span>
-              <span class="session-value">
-                {skill.session_count.toLocaleString()} sessions
-              </span>
-              <span class="last-used">
-                {formatLastUsed(skill.last_used_at)}
-              </span>
-            </div>
-            <div class="breakdowns">
-              <div class="agent-breakdown" aria-label="Agent breakdown">
-                <span class="breakdown-label">Agents</span>
-                {#if skill.agent_breakdown?.length}
-                  {#each skill.agent_breakdown as agent}
-                    <span class="agent-chip">
-                      <span class="agent-name">{agent.agent}</span>
-                      <span class="agent-count">{agent.count.toLocaleString()}</span>
-                      <span class="agent-pct">
-                        {agentPct(agent, skill.call_count)}
-                      </span>
-                    </span>
-                  {/each}
-                {:else}
-                  <span class="muted">None</span>
-                {/if}
-              </div>
-              <span class="project-breakdown">
-                Projects: {projectBreakdownLabel(skill.project_breakdown)}
-              </span>
-            </div>
-          {/each}
+    <div class="skill-list">
+      {#each skills.slice(0, 8) as skill}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="skill-row"
+          onmouseenter={(e) => handleSkillHover(e, skill)}
+          onmouseleave={handleLeave}
+        >
+          <span class="skill-name">{skill.skill_name}</span>
+          <span class="bar-track">
+            <span
+              class="bar-fill"
+              style="width: {barWidth(skill.call_count)}%"
+            ></span>
+          </span>
+          <span class="bar-value">
+            {skill.call_count.toLocaleString()}
+          </span>
+          <span class="session-value">
+            {skill.session_count.toLocaleString()} sessions
+          </span>
+          <span class="last-used">
+            {formatLastUsed(skill.last_used_at)}
+          </span>
         </div>
-      </div>
-
-      {#if trendEntries.length > 1}
-        <div class="section">
-          <div class="trend-header">
-            <h4 class="section-title">{trendTitle()}</h4>
-            <div class="granularity-buttons" aria-label="Skill trend granularity">
-              {#each trendOptions as option}
-                <button
-                  class:active={analytics.skillsGranularity === option}
-                  onclick={() => analytics.setSkillsGranularity(option)}
-                >
-                  {option}
-                </button>
-              {/each}
-            </div>
-          </div>
-          <div class="trend-chart">
-            {#each trendEntries as entry}
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div
-                class="trend-bar-wrapper"
-                onmouseenter={(e) => handleTrendHover(e, entry)}
-                onmouseleave={handleLeave}
-              >
-                <div
-                  class="trend-bar"
-                  style="height: {trendBarHeight(trendTotal(entry.by_skill))}%"
-                ></div>
-                <span class="trend-label">
-                  {formatBucket(entry.date)}
+        <div class="breakdowns">
+          <div class="agent-breakdown" aria-label="Agent breakdown">
+            <span class="breakdown-label">Agents</span>
+            {#if skill.agent_breakdown?.length}
+              {#each skill.agent_breakdown as agent}
+                <span class="agent-chip">
+                  <span class="agent-name">{agent.agent}</span>
+                  <span class="agent-count">{agent.count.toLocaleString()}</span>
+                  <span class="agent-pct">
+                    {agentPct(agent, skill.call_count)}
+                  </span>
                 </span>
-              </div>
-            {/each}
+              {/each}
+            {:else}
+              <span class="muted">None</span>
+            {/if}
           </div>
+          <span class="project-breakdown">
+            Projects: {projectBreakdownLabel(skill.project_breakdown)}
+          </span>
         </div>
-      {/if}
+      {/each}
     </div>
 
     {#if tooltip}
@@ -280,58 +183,6 @@
     font-size: 10px;
     color: var(--text-muted);
     white-space: nowrap;
-  }
-
-  .sections {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .section-title {
-    font-size: 10px;
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 6px;
-  }
-
-  .trend-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin-bottom: 6px;
-  }
-
-  .trend-header .section-title {
-    margin-bottom: 0;
-  }
-
-  .granularity-buttons {
-    display: inline-flex;
-    gap: 2px;
-    padding: 1px;
-    border: 1px solid var(--border-muted);
-    border-radius: var(--radius-sm);
-    background: var(--bg-inset);
-  }
-
-  .granularity-buttons button {
-    border: 0;
-    border-radius: 3px;
-    padding: 2px 6px;
-    background: transparent;
-    color: var(--text-muted);
-    font-size: 9px;
-    line-height: 1.2;
-    cursor: pointer;
-  }
-
-  .granularity-buttons button.active {
-    background: var(--bg-surface);
-    color: var(--text-primary);
   }
 
   .skill-list {
@@ -447,43 +298,6 @@
   .agent-pct,
   .muted {
     color: var(--text-muted);
-  }
-
-  .trend-chart {
-    display: flex;
-    align-items: flex-end;
-    gap: 3px;
-    height: 72px;
-    padding-top: 4px;
-  }
-
-  .trend-bar-wrapper {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    height: 100%;
-    justify-content: flex-end;
-    cursor: default;
-  }
-
-  .trend-bar {
-    width: 100%;
-    max-width: 32px;
-    background: var(--accent-green, #10b981);
-    border-radius: 2px 2px 0 0;
-    min-height: 2px;
-  }
-
-  .trend-bar-wrapper:hover .trend-bar {
-    opacity: 0.8;
-  }
-
-  .trend-label {
-    font-size: 8px;
-    color: var(--text-muted);
-    margin-top: 2px;
-    white-space: nowrap;
   }
 
   .tooltip {
