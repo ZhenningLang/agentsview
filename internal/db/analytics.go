@@ -179,21 +179,6 @@ func (db *DB) getAnalyticsFilteredMessageCounts(
 	return counts, nil
 }
 
-func (db *DB) getAnalyticsModelScopedMessages(
-	ctx context.Context,
-	sessionIDs []string,
-	f AnalyticsFilter,
-) (map[string][]ScopedMessage, error) {
-	scope, err := db.resolveAnalyticsMessageScope(ctx, sessionIDs, f, true)
-	if err != nil {
-		return nil, err
-	}
-	if scope == nil {
-		return map[string][]ScopedMessage{}, nil
-	}
-	return scope.MessagesBySession(), nil
-}
-
 func (db *DB) getAnalyticsFilteredMessageStats(
 	ctx context.Context,
 	sessionIDs []string,
@@ -332,28 +317,6 @@ func (f AnalyticsFilter) buildWhereWithDate(
 	}
 
 	return strings.Join(preds, " AND "), args
-}
-
-func normalizeAutomatedScope(scope string, excludeAutomated bool) string {
-	switch strings.TrimSpace(scope) {
-	case "human", "all", "automated":
-		return strings.TrimSpace(scope)
-	}
-	if excludeAutomated {
-		return "human"
-	}
-	return "all"
-}
-
-func automatedScopePredicate(scope, col string) string {
-	switch scope {
-	case "human":
-		return col + " = 0"
-	case "automated":
-		return col + " = 1"
-	default:
-		return ""
-	}
 }
 
 func (db *DB) queryAnalyticsModels(

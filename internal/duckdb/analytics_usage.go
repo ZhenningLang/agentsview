@@ -34,10 +34,7 @@ func duckQueryChunked(ids []string, fn func(chunk []string) error) error {
 		return nil
 	}
 	for start := 0; start < len(ids); start += duckMaxSQLVars {
-		end := start + duckMaxSQLVars
-		if end > len(ids) {
-			end = len(ids)
-		}
+		end := min(start+duckMaxSQLVars, len(ids))
 		if err := fn(ids[start:end]); err != nil {
 			return err
 		}

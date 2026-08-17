@@ -4,8 +4,7 @@ import "fmt"
 
 // ScopeReducer applies model membership, user-turn pairing, and the day/hour
 // match to a stream of candidate rows, calling emit for each matched
-// ScopedMessage. Emit order mirrors the reference
-// getAnalyticsModelScopedMessages (analytics.go): buffered user turns are
+// ScopedMessage. Emit order mirrors resolveAnalyticsMessageScope: buffered user turns are
 // flushed only when their selected assistant arrives, so a selected
 // non-assistant row that lands between a pending user and that assistant is
 // emitted ahead of the user. Changing this ordering is a cross-backend behavior

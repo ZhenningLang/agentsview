@@ -264,21 +264,6 @@ func (s *Store) getAnalyticsFilteredMessageCounts(
 	return counts, nil
 }
 
-func (s *Store) getAnalyticsModelScopedMessages(
-	ctx context.Context,
-	sessionIDs []string,
-	f db.AnalyticsFilter,
-) (map[string][]db.ScopedMessage, error) {
-	scope, err := s.resolveAnalyticsMessageScope(ctx, sessionIDs, f, true)
-	if err != nil {
-		return nil, err
-	}
-	if scope == nil {
-		return map[string][]db.ScopedMessage{}, nil
-	}
-	return scope.MessagesBySession(), nil
-}
-
 func (s *Store) getAnalyticsFilteredMessageStats(
 	ctx context.Context,
 	sessionIDs []string,
