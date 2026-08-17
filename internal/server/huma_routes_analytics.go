@@ -21,6 +21,7 @@ func (s *Server) registerAnalyticsRoutes() {
 	get(s, group, "/velocity", "Get velocity analytics", s.humaAnalyticsVelocity)
 	get(s, group, "/speed-trend", "Get approximate output speed trend", s.humaSpeedTrend)
 	get(s, group, "/tools", "Get tool analytics", s.humaAnalyticsTools)
+	get(s, group, "/skills", "Get skill analytics", s.humaAnalyticsSkills)
 	get(s, group, "/top-sessions", "Get top sessions", s.humaAnalyticsTopSessions)
 	get(s, group, "/signals", "Get signal analytics", s.humaAnalyticsSignals)
 }
@@ -38,6 +39,7 @@ type AnalyticsFilterInput struct {
 	Machine          string           `query:"machine" doc:"Filter by machine"`
 	Project          string           `query:"project" doc:"Filter by project"`
 	Agent            string           `query:"agent" doc:"Filter by agent"`
+	Model            string           `query:"model" doc:"Comma-separated model filter"`
 	DayOfWeek        optionalIntParam `query:"dow" minimum:"0" maximum:"6" doc:"Day of week, Monday=0 through Sunday=6"`
 	Hour             optionalIntParam `query:"hour" minimum:"0" maximum:"23" doc:"Hour of day, 0 through 23"`
 	MinUserMessages  int              `query:"min_user_messages" minimum:"0" doc:"Minimum user message count"`
@@ -50,6 +52,11 @@ type AnalyticsFilterInput struct {
 type analyticsActivityInput struct {
 	AnalyticsFilterInput
 	Granularity analyticsGranularity `query:"granularity" enum:"day,week,month" default:"day" doc:"Time bucket granularity"`
+}
+
+type analyticsSkillsInput struct {
+	AnalyticsFilterInput
+	Granularity analyticsGranularity `query:"granularity" enum:"day,week,month" default:"week" doc:"Trend bucket granularity"`
 }
 
 type analyticsHeatmapInput struct {
@@ -97,6 +104,7 @@ func analyticsFilterFromInput(in AnalyticsFilterInput) (db.AnalyticsFilter, erro
 		Machine:          in.Machine,
 		Project:          in.Project,
 		Agent:            in.Agent,
+		Model:            in.Model,
 		Timezone:         tz,
 		DayOfWeek:        optionalIntValue(in.DayOfWeek),
 		Hour:             optionalIntValue(in.Hour),
@@ -273,6 +281,21 @@ func (s *Server) humaAnalyticsTools(
 		return nil, internalError("analytics error", err)
 	}
 	return &jsonOutput[db.ToolsAnalyticsResponse]{Body: result}, nil
+}
+
+func (s *Server) humaAnalyticsSkills(
+	ctx context.Context,
+	in *analyticsSkillsInput,
+) (*jsonOutput[db.SkillsAnalyticsResponse], error) {
+	f, err := analyticsFilterFromInput(in.AnalyticsFilterInput)
+	if err != nil {
+		return nil, err
+	}
+	result, err := s.db.GetAnalyticsSkills(ctx, f, string(in.Granularity))
+	if err != nil {
+		return nil, internalError("analytics error", err)
+	}
+	return &jsonOutput[db.SkillsAnalyticsResponse]{Body: result}, nil
 }
 
 func (s *Server) humaAnalyticsTopSessions(

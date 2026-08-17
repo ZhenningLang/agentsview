@@ -18,6 +18,7 @@ import type {
   SessionShapeResponse,
   VelocityResponse,
   ToolsAnalyticsResponse,
+  SkillsAnalyticsResponse,
   TopSessionsResponse,
 } from "../api/types.js";
 
@@ -37,6 +38,7 @@ vi.mock("../api/generated/index", () => ({
     getApiV1AnalyticsSessions: vi.fn(),
     getApiV1AnalyticsVelocity: vi.fn(),
     getApiV1AnalyticsTools: vi.fn(),
+    getApiV1AnalyticsSkills: vi.fn(),
     getApiV1AnalyticsTopSessions: vi.fn(),
     getApiV1AnalyticsSignals: vi.fn(),
   },
@@ -53,6 +55,7 @@ const analyticsService = AnalyticsService as unknown as {
   getApiV1AnalyticsSessions: MockFn;
   getApiV1AnalyticsVelocity: MockFn;
   getApiV1AnalyticsTools: MockFn;
+  getApiV1AnalyticsSkills: MockFn;
   getApiV1AnalyticsTopSessions: MockFn;
   getApiV1AnalyticsSignals: MockFn;
 };
@@ -130,6 +133,15 @@ function makeTools(): ToolsAnalyticsResponse {
   };
 }
 
+function makeSkills(): SkillsAnalyticsResponse {
+  return {
+    total_skill_calls: 0,
+    distinct_skills: 0,
+    by_skill: [],
+    trend: [],
+  };
+}
+
 function makeTopSessions(): TopSessionsResponse {
   return { metric: "messages", sessions: [] };
 }
@@ -158,6 +170,9 @@ function mockAllAPIs() {
   );
   vi.mocked(analyticsService.getApiV1AnalyticsTools).mockResolvedValue(
     makeTools(),
+  );
+  vi.mocked(analyticsService.getApiV1AnalyticsSkills).mockResolvedValue(
+    makeSkills(),
   );
   vi.mocked(analyticsService.getApiV1AnalyticsTopSessions).mockResolvedValue(
     makeTopSessions(),
@@ -206,6 +221,7 @@ function resetStore() {
   analytics.to = "2024-01-31";
   analytics.isPinned = false;
   analytics.windowDays = 365;
+  analytics.skillsGranularity = "week";
   // Clear cached data fields so each test starts from a clean
   // "no data" state. Prior tests leave the singleton populated,
   // which breaks assertions like `loading === true during fetch`
@@ -219,6 +235,7 @@ function resetStore() {
   analytics.sessionShape = null;
   analytics.velocity = null;
   analytics.tools = null;
+  analytics.skills = null;
   analytics.topSessions = null;
   analytics.signals = null;
   analytics.querying = {
@@ -230,6 +247,7 @@ function resetStore() {
     sessionShape: false,
     velocity: false,
     tools: false,
+    skills: false,
     topSessions: false,
     signals: false,
   };
@@ -439,6 +457,7 @@ describe("AnalyticsStore.setProject", () => {
     { name: "sessionShape", fn: () => analyticsService.getApiV1AnalyticsSessions },
     { name: "velocity", fn: () => analyticsService.getApiV1AnalyticsVelocity },
     { name: "tools", fn: () => analyticsService.getApiV1AnalyticsTools },
+    { name: "skills", fn: () => analyticsService.getApiV1AnalyticsSkills },
     { name: "topSessions", fn: () => analyticsService.getApiV1AnalyticsTopSessions },
   ])(
     "should include project in $name params",
@@ -487,6 +506,7 @@ describe("AnalyticsStore.setProject", () => {
     { name: "sessionShape", fn: () => analyticsService.getApiV1AnalyticsSessions },
     { name: "velocity", fn: () => analyticsService.getApiV1AnalyticsVelocity },
     { name: "tools", fn: () => analyticsService.getApiV1AnalyticsTools },
+    { name: "skills", fn: () => analyticsService.getApiV1AnalyticsSkills },
     { name: "topSessions", fn: () => analyticsService.getApiV1AnalyticsTopSessions },
     { name: "heatmap", fn: () => analyticsService.getApiV1AnalyticsHeatmap },
     { name: "hourOfWeek", fn: () => analyticsService.getApiV1AnalyticsHourOfWeek },
@@ -506,6 +526,23 @@ describe("AnalyticsStore.setProject", () => {
   );
 });
 
+describe("AnalyticsStore skills", () => {
+  it("fetchAll fetches skills with the default weekly granularity", () => {
+    analytics.fetchAll();
+
+    const params = vi.mocked(analyticsService.getApiV1AnalyticsSkills).mock.lastCall?.[0];
+    expect(params?.granularity).toBe("week");
+  });
+
+  it("setSkillsGranularity refetches skills with the selected granularity", () => {
+    analytics.setSkillsGranularity("day");
+
+    expect(analytics.skillsGranularity).toBe("day");
+    const params = vi.mocked(analyticsService.getApiV1AnalyticsSkills).mock.lastCall?.[0];
+    expect(params?.granularity).toBe("day");
+  });
+});
+
 describe("AnalyticsStore machine filter", () => {
   it.each([
     { name: "summary", fn: () => analyticsService.getApiV1AnalyticsSummary },
@@ -516,6 +553,7 @@ describe("AnalyticsStore machine filter", () => {
     { name: "sessionShape", fn: () => analyticsService.getApiV1AnalyticsSessions },
     { name: "velocity", fn: () => analyticsService.getApiV1AnalyticsVelocity },
     { name: "tools", fn: () => analyticsService.getApiV1AnalyticsTools },
+    { name: "skills", fn: () => analyticsService.getApiV1AnalyticsSkills },
     { name: "topSessions", fn: () => analyticsService.getApiV1AnalyticsTopSessions },
     { name: "signals", fn: () => analyticsService.getApiV1AnalyticsSignals },
   ])("should include machine in $name params", ({ fn }) => {

@@ -9,6 +9,7 @@ import type { DbHourOfWeekResponse } from '../models/DbHourOfWeekResponse';
 import type { DbProjectsAnalyticsResponse } from '../models/DbProjectsAnalyticsResponse';
 import type { DbSessionShapeResponse } from '../models/DbSessionShapeResponse';
 import type { DbSignalsAnalyticsResponse } from '../models/DbSignalsAnalyticsResponse';
+import type { DbSkillsAnalyticsResponse } from '../models/DbSkillsAnalyticsResponse';
 import type { DbSpeedTrendResponse } from '../models/DbSpeedTrendResponse';
 import type { DbToolsAnalyticsResponse } from '../models/DbToolsAnalyticsResponse';
 import type { DbTopSessionsResponse } from '../models/DbTopSessionsResponse';
@@ -29,6 +30,7 @@ export class AnalyticsService {
     machine,
     project,
     agent,
+    model,
     dow,
     hour,
     minUserMessages,
@@ -62,6 +64,10 @@ export class AnalyticsService {
      * Filter by agent
      */
     agent?: string,
+    /**
+     * Comma-separated model filter
+     */
+    model?: string,
     /**
      * Day of week, Monday=0 through Sunday=6
      */
@@ -105,6 +111,7 @@ export class AnalyticsService {
         'machine': machine,
         'project': project,
         'agent': agent,
+        'model': model,
         'dow': dow,
         'hour': hour,
         'min_user_messages': minUserMessages,
@@ -141,6 +148,7 @@ export class AnalyticsService {
     machine,
     project,
     agent,
+    model,
     dow,
     hour,
     minUserMessages,
@@ -174,6 +182,10 @@ export class AnalyticsService {
      * Filter by agent
      */
     agent?: string,
+    /**
+     * Comma-separated model filter
+     */
+    model?: string,
     /**
      * Day of week, Monday=0 through Sunday=6
      */
@@ -217,6 +229,7 @@ export class AnalyticsService {
         'machine': machine,
         'project': project,
         'agent': agent,
+        'model': model,
         'dow': dow,
         'hour': hour,
         'min_user_messages': minUserMessages,
@@ -253,6 +266,7 @@ export class AnalyticsService {
     machine,
     project,
     agent,
+    model,
     dow,
     hour,
     minUserMessages,
@@ -285,6 +299,10 @@ export class AnalyticsService {
      * Filter by agent
      */
     agent?: string,
+    /**
+     * Comma-separated model filter
+     */
+    model?: string,
     /**
      * Day of week, Monday=0 through Sunday=6
      */
@@ -324,6 +342,7 @@ export class AnalyticsService {
         'machine': machine,
         'project': project,
         'agent': agent,
+        'model': model,
         'dow': dow,
         'hour': hour,
         'min_user_messages': minUserMessages,
@@ -359,6 +378,7 @@ export class AnalyticsService {
     machine,
     project,
     agent,
+    model,
     dow,
     hour,
     minUserMessages,
@@ -391,6 +411,10 @@ export class AnalyticsService {
      * Filter by agent
      */
     agent?: string,
+    /**
+     * Comma-separated model filter
+     */
+    model?: string,
     /**
      * Day of week, Monday=0 through Sunday=6
      */
@@ -430,6 +454,7 @@ export class AnalyticsService {
         'machine': machine,
         'project': project,
         'agent': agent,
+        'model': model,
         'dow': dow,
         'hour': hour,
         'min_user_messages': minUserMessages,
@@ -465,6 +490,7 @@ export class AnalyticsService {
     machine,
     project,
     agent,
+    model,
     dow,
     hour,
     minUserMessages,
@@ -497,6 +523,10 @@ export class AnalyticsService {
      * Filter by agent
      */
     agent?: string,
+    /**
+     * Comma-separated model filter
+     */
+    model?: string,
     /**
      * Day of week, Monday=0 through Sunday=6
      */
@@ -536,6 +566,7 @@ export class AnalyticsService {
         'machine': machine,
         'project': project,
         'agent': agent,
+        'model': model,
         'dow': dow,
         'hour': hour,
         'min_user_messages': minUserMessages,
@@ -571,6 +602,7 @@ export class AnalyticsService {
     machine,
     project,
     agent,
+    model,
     dow,
     hour,
     minUserMessages,
@@ -603,6 +635,10 @@ export class AnalyticsService {
      * Filter by agent
      */
     agent?: string,
+    /**
+     * Comma-separated model filter
+     */
+    model?: string,
     /**
      * Day of week, Monday=0 through Sunday=6
      */
@@ -642,6 +678,7 @@ export class AnalyticsService {
         'machine': machine,
         'project': project,
         'agent': agent,
+        'model': model,
         'dow': dow,
         'hour': hour,
         'min_user_messages': minUserMessages,
@@ -649,6 +686,124 @@ export class AnalyticsService {
         'include_one_shot': includeOneShot,
         'include_automated': includeAutomated,
         'termination': termination,
+      },
+      errors: {
+        400: `Bad Request`,
+        401: `Unauthorized`,
+        403: `Forbidden`,
+        404: `Not Found`,
+        409: `Conflict`,
+        422: `Unprocessable Entity`,
+        500: `Internal Server Error`,
+        501: `Not Implemented`,
+        502: `Bad Gateway`,
+        503: `Service Unavailable`,
+        504: `Gateway Timeout`,
+      },
+    });
+  }
+  /**
+   * Get skill analytics
+   * @returns DbSkillsAnalyticsResponse OK
+   * @throws ApiError
+   */
+  public static getApiV1AnalyticsSkills({
+    from,
+    to,
+    timezone,
+    machine,
+    project,
+    agent,
+    model,
+    dow,
+    hour,
+    minUserMessages,
+    activeSince,
+    includeOneShot,
+    includeAutomated,
+    termination,
+    granularity = 'week',
+  }: {
+    /**
+     * Range start date
+     */
+    from?: string,
+    /**
+     * Range end date
+     */
+    to?: string,
+    /**
+     * IANA timezone name
+     */
+    timezone?: string,
+    /**
+     * Filter by machine
+     */
+    machine?: string,
+    /**
+     * Filter by project
+     */
+    project?: string,
+    /**
+     * Filter by agent
+     */
+    agent?: string,
+    /**
+     * Comma-separated model filter
+     */
+    model?: string,
+    /**
+     * Day of week, Monday=0 through Sunday=6
+     */
+    dow?: number,
+    /**
+     * Hour of day, 0 through 23
+     */
+    hour?: number,
+    /**
+     * Minimum user message count
+     */
+    minUserMessages?: number,
+    /**
+     * Filter sessions active since this RFC3339 timestamp
+     */
+    activeSince?: string,
+    /**
+     * Include one-shot sessions
+     */
+    includeOneShot?: boolean,
+    /**
+     * Include automated sessions
+     */
+    includeAutomated?: boolean,
+    /**
+     * Filter by termination reason
+     */
+    termination?: string,
+    /**
+     * Trend bucket granularity
+     */
+    granularity?: 'day' | 'week' | 'month',
+  }): CancelablePromise<DbSkillsAnalyticsResponse> {
+    return __request(OpenAPI, {
+      method: 'GET',
+      url: '/api/v1/analytics/skills',
+      query: {
+        'from': from,
+        'to': to,
+        'timezone': timezone,
+        'machine': machine,
+        'project': project,
+        'agent': agent,
+        'model': model,
+        'dow': dow,
+        'hour': hour,
+        'min_user_messages': minUserMessages,
+        'active_since': activeSince,
+        'include_one_shot': includeOneShot,
+        'include_automated': includeAutomated,
+        'termination': termination,
+        'granularity': granularity,
       },
       errors: {
         400: `Bad Request`,
@@ -735,6 +890,7 @@ export class AnalyticsService {
     machine,
     project,
     agent,
+    model,
     dow,
     hour,
     minUserMessages,
@@ -767,6 +923,10 @@ export class AnalyticsService {
      * Filter by agent
      */
     agent?: string,
+    /**
+     * Comma-separated model filter
+     */
+    model?: string,
     /**
      * Day of week, Monday=0 through Sunday=6
      */
@@ -806,6 +966,7 @@ export class AnalyticsService {
         'machine': machine,
         'project': project,
         'agent': agent,
+        'model': model,
         'dow': dow,
         'hour': hour,
         'min_user_messages': minUserMessages,
@@ -841,6 +1002,7 @@ export class AnalyticsService {
     machine,
     project,
     agent,
+    model,
     dow,
     hour,
     minUserMessages,
@@ -873,6 +1035,10 @@ export class AnalyticsService {
      * Filter by agent
      */
     agent?: string,
+    /**
+     * Comma-separated model filter
+     */
+    model?: string,
     /**
      * Day of week, Monday=0 through Sunday=6
      */
@@ -912,6 +1078,7 @@ export class AnalyticsService {
         'machine': machine,
         'project': project,
         'agent': agent,
+        'model': model,
         'dow': dow,
         'hour': hour,
         'min_user_messages': minUserMessages,
@@ -947,6 +1114,7 @@ export class AnalyticsService {
     machine,
     project,
     agent,
+    model,
     dow,
     hour,
     minUserMessages,
@@ -980,6 +1148,10 @@ export class AnalyticsService {
      * Filter by agent
      */
     agent?: string,
+    /**
+     * Comma-separated model filter
+     */
+    model?: string,
     /**
      * Day of week, Monday=0 through Sunday=6
      */
@@ -1023,6 +1195,7 @@ export class AnalyticsService {
         'machine': machine,
         'project': project,
         'agent': agent,
+        'model': model,
         'dow': dow,
         'hour': hour,
         'min_user_messages': minUserMessages,
@@ -1059,6 +1232,7 @@ export class AnalyticsService {
     machine,
     project,
     agent,
+    model,
     dow,
     hour,
     minUserMessages,
@@ -1091,6 +1265,10 @@ export class AnalyticsService {
      * Filter by agent
      */
     agent?: string,
+    /**
+     * Comma-separated model filter
+     */
+    model?: string,
     /**
      * Day of week, Monday=0 through Sunday=6
      */
@@ -1130,6 +1308,7 @@ export class AnalyticsService {
         'machine': machine,
         'project': project,
         'agent': agent,
+        'model': model,
         'dow': dow,
         'hour': hour,
         'min_user_messages': minUserMessages,

@@ -582,6 +582,12 @@ func TestOpenAPIEndpointDocumentsEnumsAndRequestBodies(t *testing.T) {
 			want:   []string{"day", "week", "month"},
 		},
 		{
+			path:   "/api/v1/analytics/skills",
+			method: "get",
+			name:   "granularity",
+			want:   []string{"day", "week", "month"},
+		},
+		{
 			path:   "/api/v1/analytics/heatmap",
 			method: "get",
 			name:   "metric",
