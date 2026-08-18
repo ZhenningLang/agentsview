@@ -70,9 +70,8 @@ func TestPhase21DaemonStartFailsClosedOnDataDirMismatchAfterLock(t *testing.T) {
 	lockedDir := filepath.Join(t.TempDir(), "locked")
 	configuredDir := filepath.Join(t.TempDir(), "configured")
 	require.NoError(t, os.MkdirAll(lockedDir, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(lockedDir, "config.toml"), []byte(
-		fmt.Sprintf("data_dir = %q\n", configuredDir),
-	), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(lockedDir, "config.toml"),
+		fmt.Appendf(nil, "data_dir = %q\n", configuredDir), 0o600))
 	t.Setenv("AGENTSVIEW_DATA_DIR", lockedDir)
 	settings := withDaemonCommandTestSettings(t)
 	settings.start = func(config.Config, []string) (*DaemonRuntime, error) {
@@ -188,11 +187,6 @@ func withDaemonCommandTestSettings(t *testing.T) *daemonCommandTestSettings {
 	}
 	t.Cleanup(func() { daemonCommands = old })
 	return settings
-}
-
-func phase21DaemonTestRecord(t *testing.T, dataDir string, port int, readOnly bool) daemon.RuntimeRecord {
-	t.Helper()
-	return phase21DaemonTestRecordForPID(t, dataDir, os.Getpid(), port, readOnly)
 }
 
 func phase21DaemonTestRecordForPID(t *testing.T, dataDir string, pid int, port int, readOnly bool) daemon.RuntimeRecord {

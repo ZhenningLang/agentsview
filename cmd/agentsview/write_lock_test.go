@@ -54,15 +54,13 @@ func TestPhase21WriteOwnerLockConcurrentAcquireOnlyOneSucceeds(t *testing.T) {
 	errs := make(chan error, 2)
 
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 2 {
+		wg.Go(func() {
 			<-start
 			lock, err := acquireWriteOwnerLock(context.Background(), dataDir)
 			locks <- lock
 			errs <- err
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

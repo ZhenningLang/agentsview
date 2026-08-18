@@ -231,18 +231,22 @@ func sessionUsageData(sessionID string) (*sessionUsageOutput, int, error) {
 		}
 	}
 
+	// The close function is bound only after the error check: on the
+	// failure path database is nil, and binding a method value on it
+	// leaves a closer that panics if anything ever calls it.
 	var database *db.DB
-	var closeDatabase func() error
 	if serverActive {
 		database, err = openReadOnlyDB(appCfg)
-		closeDatabase = database.Close
 	} else {
 		database, err = openWriteDB(context.Background(), appCfg)
-		closeDatabase = func() error { return closeWriteDB(database) }
 	}
 	if err != nil {
 		return nil, tokenUseExitErr,
 			fmt.Errorf("opening database: %w", err)
+	}
+	closeDatabase := database.Close
+	if !serverActive {
+		closeDatabase = func() error { return closeWriteDB(database) }
 	}
 	defer func() { _ = closeDatabase() }()
 

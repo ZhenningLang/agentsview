@@ -135,5 +135,5 @@ func phase21DBFileSnapshot(t *testing.T, path string) map[string]struct {
 
 func TestPhase21ReadOnlyArchiveErrorIsStable(t *testing.T) {
 	require.True(t, errors.Is(ErrReadOnly, ErrReadOnly))
-	require.False(t, errors.Is(os.ErrNotExist, ErrReadOnly))
+	require.False(t, errors.Is(ErrReadOnly, os.ErrNotExist))
 }

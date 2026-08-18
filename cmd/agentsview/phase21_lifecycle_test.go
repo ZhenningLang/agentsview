@@ -110,7 +110,7 @@ func TestPhase21ServeBackgroundLogUsesAppendOnRepeatedLaunches(t *testing.T) {
 	t.Setenv("AGENTSVIEW_PHASE21_HELPER_MODE", "quick-exit")
 	t.Setenv("AGENTSVIEW_PHASE21_HELPER_DATA_DIR", dataDir)
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		child, _, err := startServeBackgroundProcess(
 			config.Config{DataDir: dataDir},
 			[]string{"-test.run=^TestPhase21ServeBackgroundHelperProcess$", "--background"},
@@ -130,7 +130,7 @@ func TestPhase21ServeBackgroundLaunchLockConcurrentAcquireOnlyOneSucceeds(t *tes
 	start := make(chan struct{})
 	results := make(chan *flock.Flock, 2)
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		go func() {
 			<-start
 			lock, ok := acquireBackgroundLaunchLock(dataDir)
@@ -144,7 +144,7 @@ func TestPhase21ServeBackgroundLaunchLockConcurrentAcquireOnlyOneSucceeds(t *tes
 	close(start)
 
 	var locks []*flock.Flock
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		lock := <-results
 		if lock != nil {
 			locks = append(locks, lock)
