@@ -16,31 +16,66 @@ import (
 )
 
 func TestPhase21SQLiteOpenInventoryClassifiesProductionCallSites(t *testing.T) {
-	got := phase21SQLiteOpenInventory(t)
+	got := phase21SQLiteHelperInventory(t)
 
 	want := map[string]string{
-		"classifier.go:clearSQLiteClassifierHash:sql.Open(sqlite3)": "write",
-		"duckdb.go:runDuckDBPush:db.Open":                           "write",
-		"duckdb.go:runDuckDBStatus:db.OpenReadOnly":                 "read",
-		"health.go:runHealth:db.OpenReadOnly":                       "read",
-		"import.go:runImport:db.Open":                               "write",
-		"main.go:openDB:db.Open":                                    "write",
-		"pg.go:runPGPush:db.Open":                                   "write",
-		"pg.go:runPGStatus:db.OpenReadOnly":                         "read",
-		"projects.go:runProjects:db.OpenReadOnly":                   "read",
-		"prune.go:runPrune:db.Open":                                 "write",
-		"session_export.go:newSessionExportCommand:db.OpenReadOnly": "read",
-		"session_sync.go:syncService:db.Open":                       "write",
-		"sync.go:doSync:db.Open":                                    "write",
-		"token_use.go:sessionUsageData:db.Open":                     "write",
-		"transport.go:newService:db.Open":                           "write",
-		"transport.go:newService:db.OpenReadOnly":                   "read",
+		"classifier.go:clearSQLiteClassifierHash:acquireWriteOwnerLock": "write",
+		"duckdb.go:runDuckDBPush:openWriteDB":                          "write",
+		"duckdb.go:runDuckDBStatus:openReadOnlyDB":                     "read",
+		"enrich.go:runEnrich:openDB":                                   "write",
+		"health.go:runHealth:openReadOnlyDB":                           "read",
+		"import.go:runImport:openWriteDB":                              "write",
+		"main.go:mustOpenDB:openDB":                                    "write",
+		"main.go:openDB:openWriteDB":                                   "write",
+		"main.go:runServe:mustOpenDB":                                  "write",
+		"pg.go:runPGPush:openWriteDB":                                  "write",
+		"pg.go:runPGStatus:openReadOnlyDB":                             "read",
+		"pg_service.go:runServiceStatus:openReadOnlyDB":                 "read",
+		"pg_watch.go:runPGPushWatch:mustOpenDB":                         "write",
+		"projects.go:runProjects:openReadOnlyDB":                       "read",
+		"prune.go:runPrune:openWriteDB":                                "write",
+		"session_export.go:newSessionExportCommand:openReadOnlyDB":      "read",
+		"session_sync.go:syncService:openWriteDB":                       "write",
+		"stats.go:openStatsService:openReadOnlyDB":                      "read",
+		"sync.go:doSync:openWriteDB":                                    "write",
+		"token_use.go:sessionUsageData:openReadOnlyDB":                  "read",
+		"token_use.go:sessionUsageData:openWriteDB":                     "write",
+		"transport.go:newService:openReadOnlyDB":                        "read",
+		"transport.go:newService:openWriteDB":                           "write",
+		"usage.go:openUsageDB:openWriteDB":                              "write",
+		"write_lock.go:openWriteDB:acquireWriteOwnerLock":               "write",
 	}
 
 	assert.Equal(t, want, got)
 }
 
-func phase21SQLiteOpenInventory(t *testing.T) map[string]string {
+func TestPhase21SQLiteRawOpenInventoryAllowsOnlyCentralHelpers(t *testing.T) {
+	got := phase21SQLiteRawOpenInventory(t)
+
+	want := map[string]string{
+		"classifier.go:clearSQLiteClassifierHash:sql.Open(sqlite3)": "write",
+		"write_lock.go:openReadOnlyDB:db.OpenReadOnly":              "read",
+		"write_lock.go:openWriteDB:db.Open":                         "write",
+	}
+
+	assert.Equal(t, want, got)
+}
+
+func phase21SQLiteHelperInventory(t *testing.T) map[string]string {
+	t.Helper()
+	return phase21Inventory(t, phase21SQLiteHelperKind, phase21ExpectedHelperClass)
+}
+
+func phase21SQLiteRawOpenInventory(t *testing.T) map[string]string {
+	t.Helper()
+	return phase21Inventory(t, phase21SQLiteRawOpenKind, phase21ExpectedRawOpenClass)
+}
+
+func phase21Inventory(
+	t *testing.T,
+	kindFor func(*ast.CallExpr) string,
+	classFor func(string, string) string,
+) map[string]string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
 	require.True(t, ok, "resolve current file")
@@ -69,12 +104,12 @@ func phase21SQLiteOpenInventory(t *testing.T) map[string]string {
 				if !ok {
 					return true
 				}
-				kind := phase21SQLiteOpenKind(call)
+				kind := kindFor(call)
 				if kind == "" {
 					return true
 				}
 				key := name + ":" + funcName + ":" + kind
-				observed[key] = phase21ExpectedOpenClass(kind, key)
+				observed[key] = classFor(kind, key)
 				return true
 			})
 		}
@@ -91,7 +126,7 @@ func phase21SQLiteOpenInventory(t *testing.T) map[string]string {
 	return ordered
 }
 
-func phase21SQLiteOpenKind(call *ast.CallExpr) string {
+func phase21SQLiteRawOpenKind(call *ast.CallExpr) string {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
 		return ""
@@ -111,14 +146,29 @@ func phase21SQLiteOpenKind(call *ast.CallExpr) string {
 	return ""
 }
 
-func phase21ExpectedOpenClass(kind, key string) string {
+func phase21SQLiteHelperKind(call *ast.CallExpr) string {
+	ident, ok := call.Fun.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+	switch ident.Name {
+	case "openWriteDB", "openReadOnlyDB", "openDB", "mustOpenDB", "acquireWriteOwnerLock":
+		return ident.Name
+	default:
+		return ""
+	}
+}
+
+func phase21ExpectedRawOpenClass(kind, key string) string {
 	if strings.Contains(kind, "OpenReadOnly") {
 		return "read"
 	}
-	if strings.Contains(key, "runDuckDBStatus") || strings.Contains(key, "runPGStatus") ||
-		strings.Contains(key, "runHealth") || strings.Contains(key, "runProjects") ||
-		strings.Contains(key, "session_export.go") {
-		return "unclassified-read"
+	return "write"
+}
+
+func phase21ExpectedHelperClass(kind, key string) string {
+	if kind == "openReadOnlyDB" {
+		return "read"
 	}
 	return "write"
 }

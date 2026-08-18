@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -115,9 +114,12 @@ func runServe(cfg config.Config) {
 	MarkDaemonStarting(cfg.DataDir)
 	defer UnmarkDaemonStarting(cfg.DataDir)
 
-	applyClassifierConfig(cfg)
 	database := mustOpenDB(cfg)
-	defer database.Close()
+	defer func() {
+		if err := closeWriteDB(database); err != nil {
+			log.Printf("close database: %v", err)
+		}
+	}()
 
 	if n := len(db.UserAutomationPrefixes()); n > 0 {
 		log.Printf("loaded %d user automation prefix(es) from config", n)
@@ -428,13 +430,7 @@ func truncateLogFile(path string, limit int64) {
 }
 
 func openDB(cfg config.Config) (*db.DB, error) {
-	applyClassifierConfig(cfg)
-	database, err := db.Open(cfg.DBPath)
-	if err != nil {
-		return nil, err
-	}
-	applyCustomPricing(database, cfg)
-	return database, nil
+	return openWriteDB(context.Background(), cfg)
 }
 
 func mustOpenDB(cfg config.Config) *db.DB {
@@ -442,15 +438,6 @@ func mustOpenDB(cfg config.Config) *db.DB {
 	if err != nil {
 		fatal("opening database: %v", err)
 	}
-
-	if cfg.CursorSecret != "" {
-		secret, err := base64.StdEncoding.DecodeString(cfg.CursorSecret)
-		if err != nil {
-			fatal("invalid cursor secret: %v", err)
-		}
-		database.SetCursorSecret(secret)
-	}
-
 	return database
 }
 

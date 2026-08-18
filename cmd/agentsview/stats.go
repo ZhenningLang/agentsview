@@ -153,11 +153,11 @@ func openStatsService(
 		return nil, nil, fmt.Errorf("loading config: %w", err)
 	}
 	applyClassifierConfig(cfg)
-	d, err := openDB(cfg)
+	d, err := openReadOnlyDB(cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening db: %w", err)
 	}
-	cleanup := func() { d.Close() }
+	cleanup := func() { _ = d.Close() }
 	// Pass a typed *db.DB so directBackend.Stats has the local handle
 	// it needs; engine is nil because the CLI never syncs.
 	return service.NewDirectBackend(d, nil), cleanup, nil

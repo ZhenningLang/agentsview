@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"go.kenn.io/agentsview/internal/config"
-	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/postgres"
 	"go.kenn.io/agentsview/internal/server"
 )
@@ -53,21 +51,15 @@ func runPGPush(cfg PGPushConfig) {
 	}
 
 	applyClassifierConfig(appCfg)
-	database, err := db.Open(appCfg.DBPath)
+	database, err := openWriteDB(context.Background(), appCfg)
 	if err != nil {
 		fatal("opening database: %v", err)
 	}
-	defer database.Close()
-
-	if appCfg.CursorSecret != "" {
-		secret, decErr := base64.StdEncoding.DecodeString(
-			appCfg.CursorSecret,
-		)
-		if decErr != nil {
-			fatal("invalid cursor secret: %v", decErr)
+	defer func() {
+		if err := closeWriteDB(database); err != nil {
+			log.Printf("close database: %v", err)
 		}
-		database.SetCursorSecret(secret)
-	}
+	}()
 
 	// Run local sync first so newly discovered sessions
 	// are available for push. If a full resync was performed
@@ -145,8 +137,7 @@ func runPGStatus() {
 	}
 	setupLogFile(appCfg.DataDir)
 
-	applyClassifierConfig(appCfg)
-	database, err := db.OpenReadOnly(appCfg.DBPath)
+	database, err := openReadOnlyDB(appCfg)
 	if err != nil {
 		fatal("opening database: %v", err)
 	}
@@ -160,6 +151,7 @@ func runPGStatus() {
 		fatal("pg status: url not configured")
 	}
 
+	applyClassifierConfig(appCfg)
 	ps, err := postgres.New(
 		pgCfg.URL, pgCfg.Schema, database,
 		pgCfg.MachineName, pgCfg.AllowInsecure,

@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -55,22 +54,15 @@ func doSync(cfg SyncConfig) (hadRemoteFailures bool) {
 	stopProfile := startSyncProfile(cfg)
 	defer stopProfile()
 
-	applyClassifierConfig(appCfg)
-	database, err := db.Open(appCfg.DBPath)
+	database, err := openWriteDB(context.Background(), appCfg)
 	if err != nil {
 		fatal("opening database: %v", err)
 	}
-	defer database.Close()
-
-	if appCfg.CursorSecret != "" {
-		secret, decErr := base64.StdEncoding.DecodeString(
-			appCfg.CursorSecret,
-		)
-		if decErr != nil {
-			fatal("invalid cursor secret: %v", decErr)
+	defer func() {
+		if err := closeWriteDB(database); err != nil {
+			log.Printf("close database: %v", err)
 		}
-		database.SetCursorSecret(secret)
-	}
+	}()
 
 	if cfg.Host != "" {
 		runRemoteSync(appCfg, database, cfg)

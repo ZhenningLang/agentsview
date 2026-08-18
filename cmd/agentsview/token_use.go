@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -232,25 +231,20 @@ func sessionUsageData(sessionID string) (*sessionUsageOutput, int, error) {
 		}
 	}
 
-	applyClassifierConfig(appCfg)
-	database, err := db.Open(appCfg.DBPath)
+	var database *db.DB
+	var closeDatabase func() error
+	if serverActive {
+		database, err = openReadOnlyDB(appCfg)
+		closeDatabase = database.Close
+	} else {
+		database, err = openWriteDB(context.Background(), appCfg)
+		closeDatabase = func() error { return closeWriteDB(database) }
+	}
 	if err != nil {
 		return nil, tokenUseExitErr,
 			fmt.Errorf("opening database: %w", err)
 	}
-	defer database.Close()
-
-	if appCfg.CursorSecret != "" {
-		secret, decErr := base64.StdEncoding.DecodeString(
-			appCfg.CursorSecret,
-		)
-		if decErr != nil {
-			return nil, tokenUseExitErr, fmt.Errorf(
-				"invalid cursor secret: %w", decErr,
-			)
-		}
-		database.SetCursorSecret(secret)
-	}
+	defer func() { _ = closeDatabase() }()
 
 	// Pricing setup for the direct path: db.Open (unlike openDB)
 	// neither applies custom rates nor seeds model_pricing. Custom

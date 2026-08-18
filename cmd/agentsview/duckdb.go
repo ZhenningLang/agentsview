@@ -15,7 +15,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"go.kenn.io/agentsview/internal/config"
-	"go.kenn.io/agentsview/internal/db"
 	duckdbsync "go.kenn.io/agentsview/internal/duckdb"
 	"go.kenn.io/agentsview/internal/server"
 )
@@ -53,20 +52,15 @@ func runDuckDBPush(cfg DuckDBPushConfig) {
 		fatal("duckdb push: %v", err)
 	}
 
-	applyClassifierConfig(appCfg)
-	database, err := db.Open(appCfg.DBPath)
+	database, err := openWriteDB(context.Background(), appCfg)
 	if err != nil {
 		fatal("opening database: %v", err)
 	}
-	defer database.Close()
-
-	if appCfg.CursorSecret != "" {
-		secret, decErr := base64.StdEncoding.DecodeString(appCfg.CursorSecret)
-		if decErr != nil {
-			fatal("invalid cursor secret: %v", decErr)
+	defer func() {
+		if err := closeWriteDB(database); err != nil {
+			log.Printf("close database: %v", err)
 		}
-		database.SetCursorSecret(secret)
-	}
+	}()
 
 	didResync := runLocalSync(appCfg, database, cfg.Full)
 	forceFull := cfg.Full || didResync
@@ -135,8 +129,7 @@ func runDuckDBStatus() {
 	}
 	setupLogFile(appCfg.DataDir)
 
-	applyClassifierConfig(appCfg)
-	database, err := db.OpenReadOnly(appCfg.DBPath)
+	database, err := openReadOnlyDB(appCfg)
 	if err != nil {
 		fatal("opening database: %v", err)
 	}
