@@ -26,12 +26,12 @@ const (
 )
 
 func runHealth(args []string, cfg HealthConfig) {
-	appCfg, err := config.LoadMinimal()
+	appCfg, err := config.LoadReadOnly()
 	if err != nil {
 		fatal("loading config: %v", err)
 	}
 	applyClassifierConfig(appCfg)
-	database, err := db.Open(appCfg.DBPath)
+	database, err := db.OpenReadOnly(appCfg.DBPath)
 	if err != nil {
 		fatal("opening database: %v", err)
 	}

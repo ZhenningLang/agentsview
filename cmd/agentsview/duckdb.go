@@ -126,7 +126,7 @@ func runDuckDBPush(cfg DuckDBPushConfig) {
 }
 
 func runDuckDBStatus() {
-	appCfg, err := config.LoadMinimal()
+	appCfg, err := config.LoadReadOnly()
 	if err != nil {
 		log.Fatalf("loading config: %v", err)
 	}
@@ -136,7 +136,7 @@ func runDuckDBStatus() {
 	setupLogFile(appCfg.DataDir)
 
 	applyClassifierConfig(appCfg)
-	database, err := db.Open(appCfg.DBPath)
+	database, err := db.OpenReadOnly(appCfg.DBPath)
 	if err != nil {
 		fatal("opening database: %v", err)
 	}

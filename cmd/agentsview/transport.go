@@ -99,7 +99,13 @@ func newService(
 			func() {}, nil
 	default:
 		applyClassifierConfig(cfg)
-		d, err := db.Open(cfg.DBPath)
+		var d *db.DB
+		var err error
+		if tr.DirectReadOnly {
+			d, err = db.OpenReadOnly(cfg.DBPath)
+		} else {
+			d, err = db.Open(cfg.DBPath)
+		}
 		if err != nil {
 			return nil, nil, fmt.Errorf(
 				"opening db: %w", err,

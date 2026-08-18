@@ -78,12 +78,14 @@ func TestPhase20SQLiteSchemaProjectsTranscriptRevisionReads(t *testing.T) {
 	fileHash := "phase20-file-hash"
 	localModifiedAt := "2026-08-18T00:03:00.000Z"
 	insertSession(t, d, "phase20-parent", "project-a", func(s *Session) {
+		s.CreatedAt = "2026-08-18T00:00:00Z"
 		s.StartedAt = new("2026-08-18T00:00:00Z")
 		s.EndedAt = new("2026-08-18T00:01:00Z")
 		s.FileHash = &fileHash
 		s.LocalModifiedAt = &localModifiedAt
 	})
 	insertSession(t, d, "phase20-child", "project-a", func(s *Session) {
+		s.CreatedAt = "2026-08-18T00:02:00Z"
 		s.ParentSessionID = new("phase20-parent")
 		s.RelationshipType = "subagent"
 		s.StartedAt = new("2026-08-18T00:02:00Z")
@@ -91,12 +93,15 @@ func TestPhase20SQLiteSchemaProjectsTranscriptRevisionReads(t *testing.T) {
 	_, err := d.getWriter().Exec(
 		`UPDATE sessions
 		 SET transcript_revision = '7',
+		     created_at = '2026-08-18T00:00:00Z',
 		     local_modified_at = '2026-08-18T00:03:00.000Z'
 		 WHERE id = 'phase20-parent'`,
 	)
 	require.NoError(t, err)
 	_, err = d.getWriter().Exec(
-		`UPDATE sessions SET transcript_revision = '3'
+		`UPDATE sessions
+		 SET transcript_revision = '3',
+		     created_at = '2026-08-18T00:02:00Z'
 		 WHERE id = 'phase20-child'`,
 	)
 	require.NoError(t, err)

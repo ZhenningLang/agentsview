@@ -136,7 +136,7 @@ func runPGPush(cfg PGPushConfig) {
 }
 
 func runPGStatus() {
-	appCfg, err := config.LoadMinimal()
+	appCfg, err := config.LoadReadOnly()
 	if err != nil {
 		log.Fatalf("loading config: %v", err)
 	}
@@ -146,7 +146,7 @@ func runPGStatus() {
 	setupLogFile(appCfg.DataDir)
 
 	applyClassifierConfig(appCfg)
-	database, err := db.Open(appCfg.DBPath)
+	database, err := db.OpenReadOnly(appCfg.DBPath)
 	if err != nil {
 		fatal("opening database: %v", err)
 	}

@@ -250,6 +250,7 @@ func TestNewService_DirectMode(t *testing.T) {
 func TestNewService_DirectReadOnly(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	seedEmptyArchive(t, dir)
 	cfg := config.Config{DBPath: filepath.Join(dir, "sessions.db")}
 
 	svc, cleanup, err := newService(cfg, transport{

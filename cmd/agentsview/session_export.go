@@ -33,7 +33,7 @@ func newSessionExportCommand() *cobra.Command {
 				return fmt.Errorf("loading config: %w", err)
 			}
 			applyClassifierConfig(cfg)
-			d, err := db.Open(cfg.DBPath)
+			d, err := db.OpenReadOnly(cfg.DBPath)
 			if err != nil {
 				return fmt.Errorf("open local archive: %w", err)
 			}
