@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,12 +48,12 @@ func TestPhase21DaemonStartIsConfigOnlyAndIdempotent(t *testing.T) {
 	dataDir := runtimeTestDir(t)
 	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
 	settings := withDaemonCommandTestSettings(t)
-	settings.start = func(cfg config.Config, _ []string) (*DaemonRuntime, error) {
+	settings.start = func(cfg config.Config, _ []string) (daemonStartResult, error) {
 		settings.started = append(settings.started, cfg)
 		host, port := testPingServer(t)
 		_, err := WriteDaemonRuntime(dataDir, host, port, "phase21", false)
 		require.NoError(t, err)
-		return FindDaemonRuntime(dataDir), nil
+		return daemonStartResult{Runtime: FindDaemonRuntime(dataDir), Cfg: cfg}, nil
 	}
 
 	out, err := executeCommand(newRootCommand(), "daemon", "start", "--port", "9191")
@@ -74,9 +76,9 @@ func TestPhase21DaemonStartFailsClosedOnDataDirMismatchAfterLock(t *testing.T) {
 		fmt.Appendf(nil, "data_dir = %q\n", configuredDir), 0o600))
 	t.Setenv("AGENTSVIEW_DATA_DIR", lockedDir)
 	settings := withDaemonCommandTestSettings(t)
-	settings.start = func(config.Config, []string) (*DaemonRuntime, error) {
+	settings.start = func(config.Config, []string) (daemonStartResult, error) {
 		t.Fatal("daemon start should not run after data-dir mismatch")
-		return nil, nil
+		return daemonStartResult{}, nil
 	}
 
 	_, err := executeCommand(newRootCommand(), "daemon", "start")
@@ -99,11 +101,10 @@ func TestPhase21DaemonStopOnlyStopsWritableRuntime(t *testing.T) {
 	_, err = WriteDaemonRuntime(readOnlyDir, host, port, "phase21", true)
 	require.NoError(t, err)
 
-	out := captureStdout(t, func() {
-		err = runDaemonStop(config.Config{DataDir: writableDir})
-	})
+	out := &bytes.Buffer{}
+	err = runDaemonStop(out, config.Config{DataDir: writableDir})
 	require.NoError(t, err)
-	assert.Contains(t, out, "Stopped writable agentsview daemon")
+	assert.Contains(t, out.String(), "Stopped writable agentsview daemon")
 	require.Len(t, settings.stopped, 1)
 	assert.Nil(t, FindDaemonRuntime(writableDir))
 	assert.NotNil(t, FindDaemonRuntime(readOnlyDir), "read-only runtime was stopped")
@@ -127,7 +128,7 @@ func TestPhase21DaemonStopFailsClosedOnMultipleWritableRuntimes(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	err := runDaemonStop(config.Config{DataDir: dataDir})
+	err := runDaemonStop(io.Discard, config.Config{DataDir: dataDir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "multiple writable agentsview daemons")
 	assert.Empty(t, settings.stopped)
@@ -156,8 +157,9 @@ func TestPhase21DaemonRestartPreflightsBeforeStop(t *testing.T) {
 
 type daemonCommandTestSettings struct {
 	started          []config.Config
+	startOut         io.Writer
 	stopped          []daemon.RuntimeRecord
-	start            func(config.Config, []string) (*DaemonRuntime, error)
+	start            func(config.Config, []string) (daemonStartResult, error)
 	stop             func(daemon.RuntimeRecord) error
 	checkDataVersion func(string) error
 }
@@ -166,11 +168,14 @@ func withDaemonCommandTestSettings(t *testing.T) *daemonCommandTestSettings {
 	t.Helper()
 	settings := &daemonCommandTestSettings{}
 	old := daemonCommands
-	daemonCommands.start = func(cfg config.Config, args []string) (*DaemonRuntime, error) {
+	daemonCommands.start = func(
+		cfg config.Config, args []string, out io.Writer,
+	) (daemonStartResult, error) {
+		settings.startOut = out
 		if settings.start != nil {
 			return settings.start(cfg, args)
 		}
-		return nil, nil
+		return daemonStartResult{Cfg: cfg}, nil
 	}
 	daemonCommands.stop = func(rec daemon.RuntimeRecord) error {
 		if settings.stop != nil {

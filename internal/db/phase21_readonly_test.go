@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -133,7 +132,36 @@ func phase21DBFileSnapshot(t *testing.T, path string) map[string]struct {
 	return snapshot
 }
 
+// TestPhase21ReadOnlyArchiveErrorIsStable pins what callers actually
+// depend on: every refused write on a read-only archive answers with an
+// error that survives wrapping and still matches errors.Is. The earlier
+// version of this test asserted errors.Is(ErrReadOnly, ErrReadOnly),
+// which is true of any sentinel by construction and could not fail for
+// any change to production code.
 func TestPhase21ReadOnlyArchiveErrorIsStable(t *testing.T) {
-	require.True(t, errors.Is(ErrReadOnly, ErrReadOnly))
-	require.False(t, errors.Is(ErrReadOnly, os.ErrNotExist))
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	d := phase21WritableDB(t, path)
+	insertSession(t, d, "stable-error", "proj")
+	require.NoError(t, d.Close())
+
+	ro, err := OpenReadOnly(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, ro.Close()) })
+
+	writes := map[string]error{
+		"UpsertSession": ro.UpsertSession(Session{
+			ID: "blocked", Project: "proj", Machine: "local", Agent: "claude",
+		}),
+		"DropFTS":                  ro.DropFTS(),
+		"RebuildFTS":               ro.RebuildFTS(),
+		"ForceBackfillIsAutomated": ro.ForceBackfillIsAutomated(),
+		"Update":                   ro.Update(func(*sql.Tx) error { return nil }),
+	}
+	for name, writeErr := range writes {
+		require.Error(t, writeErr, name)
+		assert.ErrorIs(t, writeErr, ErrReadOnly, name)
+		assert.ErrorIs(t, fmt.Errorf("caller context: %w", writeErr), ErrReadOnly,
+			"%s: the sentinel did not survive wrapping", name)
+		assert.NotErrorIs(t, writeErr, os.ErrNotExist, name)
+	}
 }

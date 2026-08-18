@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,72 +38,126 @@ func acquireBackgroundLaunchLock(dataDir string) (*flock.Flock, bool) {
 }
 
 func runServeBackgroundCommand(cmd *cobra.Command) {
-	dataDir, err := config.ResolveDataDir()
-	if err != nil {
-		fatal("serve background: resolving data dir: %v", err)
+	if _, err := startBackgroundServe(
+		mustLoadConfig(cmd), os.Args[1:], cmd.OutOrStdout(),
+	); err != nil {
+		fatal("%v", err)
 	}
-	if err := os.MkdirAll(dataDir, 0o700); err != nil {
-		fatal("serve background: creating data dir: %v", err)
-	}
-	launchLock, ok := acquireBackgroundLaunchLock(dataDir)
-	if !ok {
-		reportBackgroundLaunchInProgress(dataDir, "")
-		return
-	}
-	defer func() { _ = launchLock.Unlock() }()
-	runServeBackground(mustLoadConfig(cmd), os.Args[1:])
 }
 
-func reportBackgroundLaunchInProgress(dataDir, authToken string) {
+// daemonStartResult is what a background start produces for its caller.
+//
+// Cfg is the *effective* config, not the one passed in: a start with
+// require_auth enabled mints and persists a token, and a caller that
+// keeps probing with its original empty token cannot discover the
+// daemon it just started.
+type daemonStartResult struct {
+	Runtime *DaemonRuntime
+	Cfg     config.Config
+}
+
+func reportBackgroundLaunchInProgress(out io.Writer, dataDir, authToken string) {
 	WaitForDaemonStartup(dataDir, backgroundServeReadyTimeout, authToken)
 	if rt := FindDaemonRuntime(dataDir, authToken); rt != nil && !rt.ReadOnly {
-		fmt.Printf("agentsview already running at %s (pid %d)\n", urlFromDaemonRuntime(rt), rt.Record.PID)
+		fmt.Fprintf(out, "agentsview already running at %s (pid %d)\n", urlFromDaemonRuntime(rt), rt.Record.PID)
 		return
 	}
 	if state, ok := readStartupState(dataDir); ok {
-		fmt.Printf("agentsview is starting (pid %d, phase %s).\n", state.PID, state.Phase)
+		fmt.Fprintf(out, "agentsview is starting (pid %d, phase %s).\n", state.PID, state.Phase)
 		if state.LogPath != "" {
-			fmt.Printf("Logs: %s\n", state.LogPath)
+			fmt.Fprintf(out, "Logs: %s\n", state.LogPath)
 		}
 		return
 	}
-	fmt.Println("agentsview serve --background is already in progress.")
+	fmt.Fprintln(out, "agentsview serve --background is already in progress.")
 }
 
-func runServeBackground(cfg config.Config, args []string) {
+// startBackgroundServe is the one background-launch entrypoint. The
+// `serve --background` command, `daemon start` and the MCP on-demand
+// wake-up all reach the archive through it, so the launch lock is taken
+// here rather than in the Cobra wrapper: a lock held by only one of
+// three callers serializes nothing, and the two that skipped it could
+// each spawn a child and each provision an auth token before either
+// child reached the write-owner lock.
+//
+// It reports progress to out and returns an error rather than writing
+// to os.Stdout and calling fatal. Both matter to the MCP command: its
+// default transport is JSON-RPC over this process's stdout, so a status
+// line there corrupts the session, and exiting the process turns a
+// recoverable start failure into a dead client connection.
+//
+// Losing the launch race is not an error. The winner is starting the
+// daemon this caller wanted, so report its progress and return it.
+func startBackgroundServe(
+	cfg config.Config, args []string, out io.Writer,
+) (daemonStartResult, error) {
+	if out == nil {
+		out = io.Discard
+	}
+	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
+		return daemonStartResult{Cfg: cfg},
+			fmt.Errorf("serve background: creating data dir: %w", err)
+	}
+	launchLock, ok := acquireBackgroundLaunchLock(cfg.DataDir)
+	if !ok {
+		reportBackgroundLaunchInProgress(out, cfg.DataDir, cfg.AuthToken)
+		return daemonStartResult{
+			Runtime: FindDaemonRuntime(cfg.DataDir, cfg.AuthToken),
+			Cfg:     cfg,
+		}, nil
+	}
+	defer func() { _ = launchLock.Unlock() }()
+	return startBackgroundServeLocked(cfg, args, out)
+}
+
+// startBackgroundServeLocked runs with the launch lock held. Token
+// provisioning lives inside it so two starters cannot write competing
+// tokens, and the minted token travels back out in the result.
+func startBackgroundServeLocked(
+	cfg config.Config, args []string, out io.Writer,
+) (daemonStartResult, error) {
 	if cfg.RequireAuth {
 		if err := cfg.EnsureAuthToken(); err != nil {
-			fatal("serve background: generating auth token: %v", err)
+			return daemonStartResult{Cfg: cfg},
+				fmt.Errorf("serve background: generating auth token: %w", err)
 		}
 		if cfg.AuthToken != "" {
-			fmt.Printf("Auth enabled. Token: %s\n", cfg.AuthToken)
+			fmt.Fprintf(out, "Auth enabled. Token: %s\n", cfg.AuthToken)
 		}
 	}
+	res := daemonStartResult{Cfg: cfg}
 	if rt := FindDaemonRuntime(cfg.DataDir, cfg.AuthToken); rt != nil && !rt.ReadOnly {
-		fmt.Printf("agentsview already running at %s (pid %d)\n", urlFromDaemonRuntime(rt), rt.Record.PID)
-		return
+		fmt.Fprintf(out, "agentsview already running at %s (pid %d)\n", urlFromDaemonRuntime(rt), rt.Record.PID)
+		res.Runtime = rt
+		return res, nil
 	}
 	if IsLocalDaemonActive(cfg.DataDir, cfg.AuthToken) {
-		reportBackgroundLaunchInProgress(cfg.DataDir, cfg.AuthToken)
-		return
+		reportBackgroundLaunchInProgress(out, cfg.DataDir, cfg.AuthToken)
+		res.Runtime = FindDaemonRuntime(cfg.DataDir, cfg.AuthToken)
+		return res, nil
 	}
 	child, logPath, err := startServeBackgroundProcess(cfg, args)
 	if err != nil {
-		fatal("serve background: %v", err)
+		return res, fmt.Errorf("serve background: %w", err)
 	}
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- child.Wait() }()
 	rt, err := waitForBackgroundServeReady(cfg.DataDir, cfg.AuthToken, waitCh, backgroundServeReadyTimeout)
 	if err != nil {
-		fatal("serve background: server exited before becoming ready: %v\nLogs: %s", err, logPath)
+		return res, fmt.Errorf(
+			"serve background: server exited before becoming ready: %w\nLogs: %s",
+			err, logPath,
+		)
 	}
+	res.Runtime = rt
 	if rt != nil {
-		fmt.Printf("agentsview running at %s (pid %d)\n", urlFromDaemonRuntime(rt), child.Process.Pid)
-		fmt.Printf("Logs: %s\n", logPath)
-		return
+		fmt.Fprintf(out, "agentsview running at %s (pid %d)\n", urlFromDaemonRuntime(rt), child.Process.Pid)
+		fmt.Fprintf(out, "Logs: %s\n", logPath)
+		return res, nil
 	}
-	fmt.Printf("agentsview starting in background (pid %d)\n", child.Process.Pid)
-	fmt.Printf("Logs: %s\n", logPath)
+	fmt.Fprintf(out, "agentsview starting in background (pid %d)\n", child.Process.Pid)
+	fmt.Fprintf(out, "Logs: %s\n", logPath)
+	return res, nil
 }
 
 func startServeBackgroundProcess(cfg config.Config, args []string) (*exec.Cmd, string, error) {

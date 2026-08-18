@@ -191,10 +191,10 @@ func TestPhase21MCPLocalDaemonResolvesEveryOperation(t *testing.T) {
 			finds++
 			return runtime
 		},
-		start: func(config.Config) (*DaemonRuntime, error) {
+		start: func(cfg config.Config) (daemonStartResult, error) {
 			starts++
 			runtime = phase21MCPRuntime(18080)
-			return runtime, nil
+			return daemonStartResult{Runtime: runtime, Cfg: cfg}, nil
 		},
 		newBackend: func(url, _ string) service.SessionService {
 			builds++
@@ -222,7 +222,10 @@ func TestPhase21MCPLocalDaemonResolvesEveryOperation(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, starts, "a vanished daemon is started again")
 	assert.Equal(t, 3, backend.lists)
-	assert.GreaterOrEqual(t, finds, 4)
+	// Three, not four: a start that returns its runtime is believed
+	// rather than re-probed. Re-probing is what loses a token minted
+	// during the start.
+	assert.GreaterOrEqual(t, finds, 3)
 }
 
 func TestPhase21MCPLocalDaemonFailsWithoutAPublishedRuntime(t *testing.T) {
@@ -230,8 +233,8 @@ func TestPhase21MCPLocalDaemonFailsWithoutAPublishedRuntime(t *testing.T) {
 	svc := &mcpLocalService{
 		cfg:  config.Config{DataDir: t.TempDir()},
 		find: func(config.Config) *DaemonRuntime { return nil },
-		start: func(config.Config) (*DaemonRuntime, error) {
-			return nil, nil
+		start: func(cfg config.Config) (daemonStartResult, error) {
+			return daemonStartResult{Cfg: cfg}, nil
 		},
 		newBackend: func(string, string) service.SessionService {
 			builds++
@@ -249,9 +252,9 @@ func TestPhase21MCPLocalDaemonRefusesWrites(t *testing.T) {
 	svc := &mcpLocalService{
 		cfg:  config.Config{DataDir: t.TempDir()},
 		find: func(config.Config) *DaemonRuntime { return nil },
-		start: func(config.Config) (*DaemonRuntime, error) {
+		start: func(config.Config) (daemonStartResult, error) {
 			t.Fatal("a write must not start a daemon")
-			return nil, nil
+			return daemonStartResult{}, nil
 		},
 		newBackend: func(string, string) service.SessionService {
 			t.Fatal("a write must not build a backend")
@@ -268,9 +271,11 @@ func TestPhase21MCPLocalDaemonRefusesWrites(t *testing.T) {
 func TestPhase21MCPLocalDaemonNeverOpensTheArchive(t *testing.T) {
 	dataDir := t.TempDir()
 	svc := &mcpLocalService{
-		cfg:   config.Config{DataDir: dataDir, DBPath: filepath.Join(dataDir, "sessions.db")},
-		find:  func(config.Config) *DaemonRuntime { return nil },
-		start: func(config.Config) (*DaemonRuntime, error) { return nil, nil },
+		cfg:  config.Config{DataDir: dataDir, DBPath: filepath.Join(dataDir, "sessions.db")},
+		find: func(config.Config) *DaemonRuntime { return nil },
+		start: func(cfg config.Config) (daemonStartResult, error) {
+			return daemonStartResult{Cfg: cfg}, nil
+		},
 		newBackend: func(string, string) service.SessionService {
 			return &phase21MCPFakeService{}
 		},
@@ -406,9 +411,9 @@ func TestPhase21MCPPairwiseComparisonIsForwardedWhole(t *testing.T) {
 		newBackend: func(string, string) service.SessionService {
 			return backend
 		},
-		start: func(config.Config) (*DaemonRuntime, error) {
+		start: func(config.Config) (daemonStartResult, error) {
 			t.Fatal("a live daemon must not be restarted")
-			return nil, nil
+			return daemonStartResult{}, nil
 		},
 	}
 

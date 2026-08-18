@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+	"github.com/gofrs/flock"
 	"github.com/spf13/cobra"
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
@@ -14,20 +16,62 @@ import (
 )
 
 type daemonCommandHooks struct {
-	start            func(config.Config, []string) (*DaemonRuntime, error)
+	start            func(config.Config, []string, io.Writer) (daemonStartResult, error)
 	stop             func(daemon.RuntimeRecord) error
 	checkDataVersion func(string) error
 }
 
 var daemonCommands = daemonCommandHooks{
-	start: func(cfg config.Config, args []string) (*DaemonRuntime, error) {
-		runServeBackground(cfg, args)
-		return FindDaemonRuntime(cfg.DataDir, cfg.AuthToken), nil
-	},
+	start: startBackgroundServe,
 	stop: func(rec daemon.RuntimeRecord) error {
 		return stopDaemonProcess(rec, serveStopGraceTimeout)
 	},
 	checkDataVersion: db.CheckDataVersion,
+}
+
+const daemonLifecycleLockFile = "daemon.lifecycle.lock"
+
+// acquireDaemonLifecycleLock serializes the commands that mutate the
+// daemon's lifecycle against each other.
+//
+// It is deliberately not the write-owner lock. A running daemon holds
+// that one for its whole life, so a lifecycle command that takes it
+// first can never act on a daemon that is actually running - which is
+// the only case restart exists for. Writer exclusivity is still
+// enforced where it belongs, in the child that opens the archive.
+func acquireDaemonLifecycleLock(dataDir string) (*flock.Flock, error) {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, fmt.Errorf("creating data dir for lifecycle lock: %w", err)
+	}
+	path := filepath.Join(dataDir, daemonLifecycleLockFile)
+	lock := flock.New(path)
+	locked, err := lock.TryLock()
+	if err != nil {
+		return nil, fmt.Errorf("acquiring daemon lifecycle lock %s: %w", path, err)
+	}
+	if !locked {
+		return nil, fmt.Errorf(
+			"another agentsview daemon lifecycle command is running (%s); "+
+				"retry once it finishes",
+			path,
+		)
+	}
+	return lock, nil
+}
+
+// configuredAuthToken reads the token a running daemon would demand.
+//
+// Every "is a daemon already running" probe needs it: with
+// require_auth the daemon answers 401 to an unauthenticated ping, is
+// never confirmed, and looks absent. The read is deliberately
+// read-only - asking whether a daemon runs must not migrate config or
+// persist anything.
+func configuredAuthToken(dataDir string) string {
+	cfg, err := config.LoadReadOnly()
+	if err != nil || !samePath(dataDir, cfg.DataDir) {
+		return ""
+	}
+	return cfg.AuthToken
 }
 
 func newDaemonCommand() *cobra.Command {
@@ -78,7 +122,7 @@ func newDaemonCommand() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("loading config: %w", err)
 			}
-			return runDaemonStop(cfg)
+			return runDaemonStop(cmd.OutOrStdout(), cfg)
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
@@ -101,7 +145,15 @@ func runDaemonStartCommand(cmd *cobra.Command) error {
 	if err != nil {
 		return fmt.Errorf("resolving data dir: %w", err)
 	}
-	if rt := FindDaemonRuntime(dataDir); rt != nil && !rt.ReadOnly {
+	lifecycle, err := acquireDaemonLifecycleLock(dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = lifecycle.Unlock() }()
+	// Probe with the configured token before reaching for any lock: an
+	// already-running require_auth daemon is what makes this command
+	// idempotent, and an unauthenticated probe cannot see one.
+	if rt := FindDaemonRuntime(dataDir, configuredAuthToken(dataDir)); rt != nil && !rt.ReadOnly {
 		fmt.Fprintf(cmd.OutOrStdout(), "agentsview daemon already running at %s (pid %d)\n", urlFromDaemonRuntime(rt), rt.Record.PID)
 		return nil
 	}
@@ -129,26 +181,31 @@ func runDaemonStartCommand(cmd *cobra.Command) error {
 }
 
 func runDaemonStart(cmd *cobra.Command, cfg config.Config) error {
+	out := cmd.OutOrStdout()
 	if rt := FindDaemonRuntime(cfg.DataDir, cfg.AuthToken); rt != nil && !rt.ReadOnly {
-		fmt.Fprintf(cmd.OutOrStdout(), "agentsview daemon already running at %s (pid %d)\n", urlFromDaemonRuntime(rt), rt.Record.PID)
+		fmt.Fprintf(out, "agentsview daemon already running at %s (pid %d)\n", urlFromDaemonRuntime(rt), rt.Record.PID)
 		return nil
 	}
 	if IsLocalDaemonActive(cfg.DataDir, cfg.AuthToken) {
-		reportBackgroundLaunchInProgress(cfg.DataDir, cfg.AuthToken)
+		reportBackgroundLaunchInProgress(out, cfg.DataDir, cfg.AuthToken)
 		return nil
 	}
-	rt, err := daemonCommands.start(cfg, []string{"serve", "--background"})
+	res, err := daemonCommands.start(cfg, []string{"serve", "--background"}, out)
 	if err != nil {
 		return err
 	}
+	// res.Cfg, not cfg: a start under require_auth mints the token, and
+	// the daemon it started answers 401 to anything else.
+	effective := res.Cfg
+	rt := res.Runtime
 	if rt == nil {
-		rt = FindDaemonRuntime(cfg.DataDir, cfg.AuthToken)
+		rt = FindDaemonRuntime(effective.DataDir, effective.AuthToken)
 	}
 	if rt != nil {
-		fmt.Fprintf(cmd.OutOrStdout(), "agentsview daemon running at %s (pid %d)\n", urlFromDaemonRuntime(rt), rt.Record.PID)
+		fmt.Fprintf(out, "agentsview daemon running at %s (pid %d)\n", urlFromDaemonRuntime(rt), rt.Record.PID)
 		return nil
 	}
-	fmt.Fprintln(cmd.OutOrStdout(), "agentsview daemon start requested")
+	fmt.Fprintln(out, "agentsview daemon start requested")
 	return nil
 }
 
@@ -188,7 +245,7 @@ func runDaemonStatus(cmd *cobra.Command, cfg config.Config) {
 	fmt.Fprintln(cmd.OutOrStdout(), "No writable agentsview daemon is running.")
 }
 
-func runDaemonStop(cfg config.Config) error {
+func runDaemonStop(out io.Writer, cfg config.Config) error {
 	var writable []daemonRuntimeTarget
 	for _, target := range listDaemonRuntimeTargets(cfg.DataDir, cfg.AuthToken) {
 		if target.Runtime != nil && !target.Runtime.ReadOnly {
@@ -196,7 +253,7 @@ func runDaemonStop(cfg config.Config) error {
 		}
 	}
 	if len(writable) == 0 {
-		fmt.Println("No writable agentsview daemon is running.")
+		fmt.Fprintln(out, "No writable agentsview daemon is running.")
 		return nil
 	}
 	if len(writable) > 1 {
@@ -213,20 +270,27 @@ func runDaemonStop(cfg config.Config) error {
 		return fmt.Errorf("stopping writable agentsview daemon pid %d: %w", target.Record.PID, err)
 	}
 	stopOrphanedCaddyChild(target.Record)
-	fmt.Printf("Stopped writable agentsview daemon (pid %d).\n", target.Record.PID)
+	fmt.Fprintf(out, "Stopped writable agentsview daemon (pid %d).\n", target.Record.PID)
 	return nil
 }
 
+// runDaemonRestartCommand stops the writable daemon and starts a new
+// one. It runs under the lifecycle lock and never takes the write-owner
+// lock: the daemon it has to stop is holding that one, so acquiring it
+// first would fail on exactly the case restart exists for. The
+// preflight below reads config and the data version, which a live
+// daemon does not prevent - CheckDataVersion opens the archive
+// read-only.
 func runDaemonRestartCommand(cmd *cobra.Command) error {
 	dataDir, err := config.ResolveDataDir()
 	if err != nil {
 		return fmt.Errorf("resolving data dir: %w", err)
 	}
-	owner, err := acquireWriteOwnerLock(context.Background(), dataDir)
+	lifecycle, err := acquireDaemonLifecycleLock(dataDir)
 	if err != nil {
 		return err
 	}
-	defer owner.Close()
+	defer func() { _ = lifecycle.Unlock() }()
 	if err := rejectConfigDataDirDrift(dataDir); err != nil {
 		return err
 	}
@@ -244,11 +308,7 @@ func runDaemonRestartCommand(cmd *cobra.Command) error {
 	if err := daemonCommands.checkDataVersion(cfg.DBPath); err != nil {
 		return err
 	}
-	if err := owner.Close(); err != nil {
-		return err
-	}
-	owner = nil
-	if err := runDaemonStop(cfg); err != nil {
+	if err := runDaemonStop(cmd.OutOrStdout(), cfg); err != nil {
 		return err
 	}
 	return runDaemonStart(cmd, cfg)

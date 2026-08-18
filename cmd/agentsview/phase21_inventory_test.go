@@ -20,7 +20,6 @@ func TestPhase21SQLiteOpenInventoryClassifiesProductionCallSites(t *testing.T) {
 
 	want := map[string]string{
 		"classifier.go:clearSQLiteClassifierHash:acquireWriteOwnerLock": "write",
-		"daemon.go:runDaemonRestartCommand:acquireWriteOwnerLock":       "write",
 		"daemon.go:runDaemonStartCommand:acquireWriteOwnerLock":         "write",
 		"duckdb.go:runDuckDBPush:openWriteDB":                           "write",
 		"duckdb.go:runDuckDBStatus:openReadOnlyDB":                      "read",
