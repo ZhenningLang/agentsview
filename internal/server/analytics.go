@@ -1,22 +1,10 @@
 package server
 
-import "time"
+import "go.kenn.io/agentsview/internal/service"
 
-// defaultDateRange returns (from, to) defaulting to the last
-// 30 days if not provided.
-func defaultDateRange(
-	from, to string,
-) (string, string) {
-	now := time.Now().UTC()
-	if to == "" {
-		to = now.Format("2006-01-02")
-	}
-	if from == "" {
-		t, err := time.Parse("2006-01-02", to)
-		if err != nil {
-			t = now
-		}
-		from = t.AddDate(0, 0, -30).Format("2006-01-02")
-	}
-	return from, to
+// defaultDateRange returns (from, to) defaulting to the last 30 days if
+// not provided. It delegates so the analytics routes and the usage read
+// model cannot end up with two different notions of "no range given".
+func defaultDateRange(from, to string) (string, string) {
+	return service.DefaultDateRange(from, to)
 }

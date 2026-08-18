@@ -2,11 +2,11 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export type AgentTotal = {
-  agent: string;
+export type ServiceCacheStats = {
   cacheCreationTokens: number;
   cacheReadTokens: number;
-  cost: number;
-  inputTokens: number;
+  hitRate: number;
   outputTokens: number;
+  savingsVsUncached: number;
+  uncachedInputTokens: number;
 };

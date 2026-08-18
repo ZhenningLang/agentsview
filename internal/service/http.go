@@ -26,6 +26,20 @@ import (
 // explicitly below.
 var errHTTPNotFound = errors.New("http: not found")
 
+// httpStatusError carries the status code of a non-OK daemon response so
+// callers can map a specific code to a transport-neutral sentinel without
+// string-matching. Its message is the same one getJSON used to build, so
+// callers that only print the error are unaffected.
+type httpStatusError struct {
+	Path   string
+	Status int
+	Body   string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("GET %s: HTTP %d: %s", e.Path, e.Status, e.Body)
+}
+
 type httpBackend struct {
 	baseURL  string
 	client   *http.Client
@@ -278,6 +292,139 @@ func (b *httpBackend) Stats(
 	return nil, errors.New("stats over HTTP backend: not yet implemented")
 }
 
+// Search proxies GET /api/v1/search. Every SearchRequest field maps to
+// one query parameter; the empty query is rejected here so both backends
+// fail identically without a round trip.
+func (b *httpBackend) Search(
+	ctx context.Context, req SearchRequest,
+) (*SessionSearchResult, error) {
+	query := strings.TrimSpace(req.Query)
+	if query == "" {
+		return nil, ErrSearchQueryRequired
+	}
+	q := url.Values{}
+	q.Set("q", query)
+	if req.Project != "" {
+		q.Set("project", req.Project)
+	}
+	// Sort and cursor are left off when unset so the route applies its own
+	// documented defaults (relevance, offset 0) instead of the client
+	// pinning them. The limit is always sent: it is clamped here so the
+	// direct backend and the daemon agree on the page size.
+	if req.Sort != "" {
+		q.Set("sort", req.Sort)
+	}
+	q.Set("limit", strconv.Itoa(clampSearchLimit(req.Limit)))
+	if req.Cursor > 0 {
+		q.Set("cursor", strconv.Itoa(req.Cursor))
+	}
+	var out SessionSearchResult
+	err := b.getJSON(ctx, "/api/v1/search?"+q.Encode(), &out)
+	var status *httpStatusError
+	if errors.As(err, &status) &&
+		status.Status == http.StatusNotImplemented {
+		// The route sends 501 when its store reports HasFTS()==false.
+		return nil, ErrSearchUnavailable
+	}
+	if err != nil {
+		return nil, err
+	}
+	if out.Results == nil {
+		out.Results = []db.SearchResult{}
+	}
+	return &out, nil
+}
+
+// usageQuery renders the shared usage filter as query parameters. Every
+// UsageRequest field maps to exactly one parameter; dropping one here
+// compiles and returns data, just for the wrong range or project.
+//
+// The two flags are only sent when the caller set them: an omitted
+// parameter takes the route default, which is what a nil pointer means,
+// so an unset request is identical on both transports.
+func usageQuery(req UsageRequest) url.Values {
+	q := url.Values{}
+	for k, v := range map[string]string{
+		"from":            req.From,
+		"to":              req.To,
+		"timezone":        req.Timezone,
+		"agent":           req.Agent,
+		"project":         req.Project,
+		"machine":         req.Machine,
+		"git_branch":      req.GitBranch,
+		"exclude_project": req.ExcludeProject,
+		"exclude_agent":   req.ExcludeAgent,
+		"exclude_model":   req.ExcludeModel,
+		"model":           req.Model,
+		"active_since":    req.ActiveSince,
+	} {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	if req.MinUserMessages > 0 {
+		q.Set("min_user_messages", strconv.Itoa(req.MinUserMessages))
+	}
+	if req.IncludeOneShot != nil {
+		q.Set("include_one_shot", strconv.FormatBool(*req.IncludeOneShot))
+	}
+	if req.IncludeAutomated != nil {
+		q.Set("include_automated", strconv.FormatBool(*req.IncludeAutomated))
+	}
+	if req.NoCache {
+		q.Set("no_cache", "true")
+	}
+	return q
+}
+
+// UsageSummary proxies GET /api/v1/usage/summary. The request is
+// validated with the shared rules first so both transports reject the
+// same input with the same message and without a round trip.
+func (b *httpBackend) UsageSummary(
+	ctx context.Context, req UsageRequest,
+) (*UsageSummaryResult, error) {
+	if _, err := UsageFilterFromRequest(req); err != nil {
+		return nil, err
+	}
+	var out UsageSummaryResult
+	if err := b.getJSON(
+		ctx, "/api/v1/usage/summary?"+usageQuery(req).Encode(), &out,
+	); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UsagePairwiseComparison proxies GET
+// /api/v1/usage/pairwise-comparison. The whole usage filter travels with
+// the four side parameters: the route intersects each side against it,
+// so a dropped filter param silently compares the wrong populations.
+func (b *httpBackend) UsagePairwiseComparison(
+	ctx context.Context, req UsagePairwiseComparisonRequest,
+) (*PairwiseComparisonResponse, error) {
+	if _, err := UsageFilterFromRequest(req.UsageRequest); err != nil {
+		return nil, err
+	}
+	if _, err := ParsePairwiseDimension(string(req.LeftDimension)); err != nil {
+		return nil, err
+	}
+	if _, err := ParsePairwiseDimension(string(req.RightDimension)); err != nil {
+		return nil, err
+	}
+	q := usageQuery(req.UsageRequest)
+	q.Set("left_dimension", string(req.LeftDimension))
+	q.Set("left_value", req.LeftValue)
+	q.Set("right_dimension", string(req.RightDimension))
+	q.Set("right_value", req.RightValue)
+	var out PairwiseComparisonResponse
+	if err := b.getJSON(
+		ctx, "/api/v1/usage/pairwise-comparison?"+q.Encode(), &out,
+	); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (b *httpBackend) SearchContent(
 	ctx context.Context, req ContentSearchRequest,
 ) (*ContentSearchResult, error) {
@@ -508,9 +655,9 @@ func (b *httpBackend) getJSON(
 	}
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf(
-			"GET %s: HTTP %d: %s", path, resp.StatusCode, msg,
-		)
+		return &httpStatusError{
+			Path: path, Status: resp.StatusCode, Body: string(msg),
+		}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }

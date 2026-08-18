@@ -16,23 +16,47 @@ import (
 	"time"
 
 	"github.com/gofrs/flock"
+	"github.com/shirou/gopsutil/v4/process"
+	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/kit/daemon"
 )
 
 const (
-	daemonService   = "agentsview"
-	runtimeReadOnly = "read_only"
-	runtimeHost     = "host"
-	runtimePort     = "port"
-	startProbeTick  = 250 * time.Millisecond
+	daemonService          = "agentsview"
+	runtimeAPIVersion      = "api_version"
+	runtimeAPIVersionValue = "1"
+	runtimeCaddyCreateTime = "caddy_create_time_ms"
+	runtimeCaddyPID        = "caddy_pid"
+	runtimeCreateTime      = "create_time_ms"
+	runtimeDataVersion     = "data_version"
+	runtimeHost            = "host"
+	runtimeNoSync          = "no_sync"
+	runtimePort            = "port"
+	runtimeReadOnly        = "read_only"
+	runtimeRequireAuth     = "require_auth"
+	startProbeTick         = 250 * time.Millisecond
 )
 
 // DaemonRuntime is the agentsview-specific view of a kit daemon runtime record.
 type DaemonRuntime struct {
-	Record   daemon.RuntimeRecord
-	Host     string
-	Port     int
-	ReadOnly bool
+	Record                  daemon.RuntimeRecord
+	Host                    string
+	Port                    int
+	ReadOnly                bool
+	RequireAuth             bool
+	NoSync                  bool
+	APIVersion              string
+	DataVersion             int
+	ProcessCreateTimeMillis int64
+	CaddyPID                int
+	CaddyCreateTimeMillis   int64
+}
+
+type daemonRuntimeOptions struct {
+	RequireAuth           bool
+	NoSync                bool
+	CaddyPID              int
+	CaddyCreateTimeMillis int64
 }
 
 func runtimeStore(dataDir string) daemon.RuntimeStore {
@@ -43,19 +67,53 @@ func runtimeStore(dataDir string) daemon.RuntimeStore {
 // server. It returns the path written.
 func WriteDaemonRuntime(
 	dataDir string, host string, port int, version string,
-	readOnly bool,
+	readOnly bool, opts ...daemonRuntimeOptions,
 ) (string, error) {
+	var options daemonRuntimeOptions
+	if len(opts) > 0 {
+		options = opts[0]
+	}
 	ep := daemon.Endpoint{
 		Network: daemon.NetworkTCP,
 		Address: net.JoinHostPort(probeHostForDial(host), strconv.Itoa(port)),
 	}
 	rec := daemon.NewRuntimeRecord(daemonService, version, ep)
 	rec.Metadata = map[string]string{
-		runtimeHost:     host,
-		runtimePort:     strconv.Itoa(port),
-		runtimeReadOnly: strconv.FormatBool(readOnly),
+		runtimeAPIVersion:  runtimeAPIVersionValue,
+		runtimeDataVersion: strconv.Itoa(db.CurrentDataVersion()),
+		runtimeHost:        host,
+		runtimeNoSync:      strconv.FormatBool(options.NoSync),
+		runtimePort:        strconv.Itoa(port),
+		runtimeReadOnly:    strconv.FormatBool(readOnly),
+		runtimeRequireAuth: strconv.FormatBool(options.RequireAuth),
+	}
+	if ct, ok := processCreateTimeMillis(os.Getpid()); ok {
+		rec.Metadata[runtimeCreateTime] = strconv.FormatInt(ct, 10)
+	}
+	if options.CaddyPID > 0 {
+		rec.Metadata[runtimeCaddyPID] = strconv.Itoa(options.CaddyPID)
+		if options.CaddyCreateTimeMillis > 0 {
+			rec.Metadata[runtimeCaddyCreateTime] = strconv.FormatInt(options.CaddyCreateTimeMillis, 10)
+		} else if ct, ok := processCreateTimeMillis(options.CaddyPID); ok {
+			rec.Metadata[runtimeCaddyCreateTime] = strconv.FormatInt(ct, 10)
+		}
 	}
 	return runtimeStore(dataDir).Write(rec)
+}
+
+func processCreateTimeMillis(pid int) (int64, bool) {
+	if pid <= 0 {
+		return 0, false
+	}
+	proc, err := process.NewProcess(int32(pid))
+	if err != nil {
+		return 0, false
+	}
+	created, err := proc.CreateTime()
+	if err != nil {
+		return 0, false
+	}
+	return created, true
 }
 
 // RemoveDaemonRuntime removes the current process's kit daemon runtime record.
@@ -71,34 +129,13 @@ func RemoveDaemonRuntime(dataDir string) {
 // daemons when both are discoverable. When authToken is non-empty, it is sent
 // as a bearer token so require_auth daemons remain discoverable.
 func FindDaemonRuntime(dataDir string, authToken ...string) *DaemonRuntime {
-	migrateLegacyDaemonRuntimes(dataDir, authToken...)
-
-	store := runtimeStore(dataDir)
-	_, _ = store.CleanupDead()
-
-	records, err := store.List()
-	if err != nil {
-		return nil
-	}
-
-	ctx := context.Background()
 	token := firstAuthToken(authToken)
 	var readOnly *DaemonRuntime
-	for _, rec := range records {
-		if rec.Service != "" && rec.Service != daemonService {
+	for _, target := range listDaemonRuntimeTargets(dataDir, token) {
+		if target.CompatibilityErr != nil || !target.Confirmed {
 			continue
 		}
-		if !daemon.ProcessAlive(rec.PID) {
-			continue
-		}
-		info, err := probeRuntime(ctx, rec, token, daemon.ProbeOptions{
-			ExpectedService: daemonService,
-			Timeout:         500 * time.Millisecond,
-		})
-		if err != nil || info.PID != rec.PID {
-			continue
-		}
-		rt := daemonRuntimeFromRecord(rec)
+		rt := target.Runtime
 		if !rt.ReadOnly {
 			return rt
 		}
@@ -176,31 +213,129 @@ func daemonRuntimeFromRecord(rec daemon.RuntimeRecord) *DaemonRuntime {
 		}
 	}
 	readOnly := false
+	requireAuth := false
+	noSync := false
+	apiVersion := ""
+	dataVersion := 0
+	processCreateTime := int64(0)
+	caddyPID := 0
+	caddyCreateTime := int64(0)
 	if rec.Metadata != nil {
 		readOnly, _ = strconv.ParseBool(rec.Metadata[runtimeReadOnly])
+		requireAuth, _ = strconv.ParseBool(rec.Metadata[runtimeRequireAuth])
+		noSync, _ = strconv.ParseBool(rec.Metadata[runtimeNoSync])
+		apiVersion = rec.Metadata[runtimeAPIVersion]
+		dataVersion, _ = strconv.Atoi(rec.Metadata[runtimeDataVersion])
+		processCreateTime, _ = strconv.ParseInt(rec.Metadata[runtimeCreateTime], 10, 64)
+		caddyPID, _ = strconv.Atoi(rec.Metadata[runtimeCaddyPID])
+		caddyCreateTime, _ = strconv.ParseInt(rec.Metadata[runtimeCaddyCreateTime], 10, 64)
 	}
 	return &DaemonRuntime{
-		Record:   rec,
-		Port:     port,
-		Host:     host,
-		ReadOnly: readOnly,
+		Record:                  rec,
+		Port:                    port,
+		Host:                    host,
+		ReadOnly:                readOnly,
+		RequireAuth:             requireAuth,
+		NoSync:                  noSync,
+		APIVersion:              apiVersion,
+		DataVersion:             dataVersion,
+		ProcessCreateTimeMillis: processCreateTime,
+		CaddyPID:                caddyPID,
+		CaddyCreateTimeMillis:   caddyCreateTime,
 	}
 }
 
-func hasLiveDaemonRuntime(dataDir string, authToken ...string) bool {
-	migrateLegacyDaemonRuntimes(dataDir, authToken...)
+type daemonRuntimeTarget struct {
+	Record           daemon.RuntimeRecord
+	Runtime          *DaemonRuntime
+	Confirmed        bool
+	CompatibilityErr error
+}
+
+func listDaemonRuntimeTargets(dataDir, authToken string) []daemonRuntimeTarget {
+	migrateLegacyDaemonRuntimes(dataDir, authToken)
+	cleanupMismatchedDaemonRuntimes(dataDir)
 
 	store := runtimeStore(dataDir)
 	_, _ = store.CleanupDead()
 	records, err := store.List()
 	if err != nil {
-		return false
+		return nil
 	}
+	var targets []daemonRuntimeTarget
 	for _, rec := range records {
 		if rec.Service != "" && rec.Service != daemonService {
 			continue
 		}
-		if daemon.ProcessAlive(rec.PID) {
+		if !processIsRunning(rec.PID) {
+			continue
+		}
+		target := daemonRuntimeTarget{
+			Record:           rec,
+			Runtime:          daemonRuntimeFromRecord(rec),
+			CompatibilityErr: daemonRuntimeCompatibilityError(rec),
+		}
+		info, err := probeRuntime(context.Background(), rec, authToken, daemon.ProbeOptions{
+			ExpectedService: daemonService,
+			Timeout:         500 * time.Millisecond,
+		})
+		target.Confirmed = err == nil && info.PID == rec.PID
+		targets = append(targets, target)
+	}
+	return targets
+}
+
+func daemonRuntimeCompatibilityError(rec daemon.RuntimeRecord) error {
+	if rec.Metadata == nil {
+		return nil
+	}
+	if api := rec.Metadata[runtimeAPIVersion]; api != "" && api != runtimeAPIVersionValue {
+		return fmt.Errorf("runtime API version %s is incompatible with %s", api, runtimeAPIVersionValue)
+	}
+	if raw := rec.Metadata[runtimeDataVersion]; raw != "" {
+		got, err := strconv.Atoi(raw)
+		if err != nil {
+			return fmt.Errorf("runtime data version %q is invalid", raw)
+		}
+		if got != db.CurrentDataVersion() {
+			return fmt.Errorf("runtime data version %d is incompatible with %d", got, db.CurrentDataVersion())
+		}
+	}
+	return nil
+}
+
+func cleanupMismatchedDaemonRuntimes(dataDir string) {
+	store := runtimeStore(dataDir)
+	records, err := store.List()
+	if err != nil {
+		return
+	}
+	for _, rec := range records {
+		if rec.SourcePath == "" || rec.Metadata == nil {
+			continue
+		}
+		raw := rec.Metadata[runtimeCreateTime]
+		if raw == "" {
+			continue
+		}
+		if processIsRunning(rec.PID) && !processCreateTimeMatches(rec.PID, raw) {
+			_ = os.Remove(rec.SourcePath)
+		}
+	}
+}
+
+func liveDaemonRecords(dataDir string) []daemon.RuntimeRecord {
+	targets := listDaemonRuntimeTargets(dataDir, "")
+	records := make([]daemon.RuntimeRecord, 0, len(targets))
+	for _, target := range targets {
+		records = append(records, target.Record)
+	}
+	return records
+}
+
+func hasLiveDaemonRuntime(dataDir string, authToken ...string) bool {
+	for _, target := range listDaemonRuntimeTargets(dataDir, firstAuthToken(authToken)) {
+		if target.CompatibilityErr == nil {
 			return true
 		}
 	}
@@ -240,7 +375,7 @@ func migrateLegacyDaemonRuntimes(dataDir string, authToken ...string) {
 		if err := json.Unmarshal(data, &sf); err != nil {
 			continue
 		}
-		if !daemon.ProcessAlive(sf.PID) {
+		if !processIsRunning(sf.PID) {
 			_ = os.Remove(path)
 			continue
 		}
@@ -300,22 +435,8 @@ func legacyRuntimeRecord(sf legacyStateFile) daemon.RuntimeRecord {
 }
 
 func hasLiveWritableDaemonRuntime(dataDir string, authToken ...string) bool {
-	migrateLegacyDaemonRuntimes(dataDir, authToken...)
-
-	store := runtimeStore(dataDir)
-	_, _ = store.CleanupDead()
-	records, err := store.List()
-	if err != nil {
-		return false
-	}
-	for _, rec := range records {
-		if rec.Service != "" && rec.Service != daemonService {
-			continue
-		}
-		if !daemon.ProcessAlive(rec.PID) {
-			continue
-		}
-		if !daemonRuntimeFromRecord(rec).ReadOnly {
+	for _, target := range listDaemonRuntimeTargets(dataDir, firstAuthToken(authToken)) {
+		if target.CompatibilityErr == nil && !target.Runtime.ReadOnly {
 			return true
 		}
 	}
@@ -402,7 +523,7 @@ func isLegacyDaemonStarting(dataDir string) bool {
 		if _, err := fmt.Sscanf(string(data), "%d", &pid); err != nil {
 			continue
 		}
-		if !daemon.ProcessAlive(pid) {
+		if !processIsRunning(pid) {
 			_ = os.Remove(path)
 			continue
 		}

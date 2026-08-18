@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/spf13/cobra"
 	"go.kenn.io/agentsview/internal/config"
-	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/service"
 	"go.kenn.io/agentsview/internal/sync"
 )
@@ -60,8 +60,7 @@ func syncService(
 		return service.NewHTTPBackend(tr.URL, cfg.AuthToken, tr.ReadOnly),
 			func() {}, nil
 	}
-	applyClassifierConfig(cfg)
-	d, err := db.Open(cfg.DBPath)
+	d, err := openWriteDB(context.Background(), cfg)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening db: %w", err)
 	}
@@ -70,7 +69,7 @@ func syncService(
 		Machine:                "local",
 		SyncIncludeCWDPrefixes: cfg.SyncIncludeCWDPrefixes,
 	})
-	cleanup := func() { d.Close() }
+	cleanup := func() { _ = closeWriteDB(d) }
 	return service.NewDirectBackend(d, engine), cleanup, nil
 }
 

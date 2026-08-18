@@ -264,7 +264,9 @@ or read them, and treats sidecars as untrusted structured input — see
 
 | Command                                       | What it does                                                                          |
 | --------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `agentsview serve`                            | Start the server and web UI (default port 8080)                                       |
+| `agentsview serve`                            | Start the server and web UI (default port 8080; `--background` to detach)             |
+| `agentsview daemon ...`                       | Config-driven writable daemon: `start`, `status`, `stop`, `restart`                   |
+| `agentsview mcp`                              | Serve the archive to an MCP client, read-only (stdio or loopback HTTP)                |
 | `agentsview sync`                             | Sync session data without serving (`--host` for SSH)                                  |
 | `agentsview usage daily` / `usage statusline` | Token cost reports                                                                    |
 | `agentsview stats`                            | Window-scoped analytics (default: last 28 days)                                       |
@@ -280,6 +282,63 @@ or read them, and treats sidecars as untrusted structured input — see
 | `agentsview openapi`                          | Print the REST API's OpenAPI 3.1 schema                                               |
 
 Run `agentsview <command> --help` for the full flag list.
+
+## Background server and daemon
+
+Two commands start agentsview in the background. They start the same process;
+they differ in where the settings come from and in what they promise you.
+
+```bash
+agentsview serve --background   # detach the serve command you just typed
+agentsview serve status         # is a background server up?
+agentsview serve stop           # stop it
+
+agentsview daemon start         # start the writable daemon from config.toml
+agentsview daemon status        # writable daemon only
+agentsview daemon stop
+agentsview daemon restart
+```
+
+`serve --background` is the interactive form. It re-executes the flags you typed
+(`--port`, `--public-url`, ...) as a detached child, so it is the right choice
+when you want a one-off server with particular flags out of your terminal.
+
+`daemon start` is the canonical, config-driven form. It takes no serve flags:
+everything comes from `~/.agentsview/config.toml`, so a login item, a launch
+agent or an MCP client that starts a daemon gets the same server every time.
+Before starting it takes the data directory's write-owner lock, rejects a
+`data_dir` that changed underneath the lock, and validates the archive's data
+version, which is why it is the form that other tooling calls.
+
+Both write a runtime record into the data directory, so `serve status` and
+`daemon status` see each other's process. The difference in the other direction:
+`daemon status` and `daemon stop` only ever report on, or stop, a *writable*
+daemon, and refuse to act when more than one is running or when the recorded
+process cannot be confirmed (matching PID *and* process start time, plus a
+health check). Read-only servers such as `pg serve` and `duckdb serve` are
+invisible to the daemon commands.
+
+Only one process may own the archive for writing at a time. A second writable
+start fails on the write-owner lock instead of corrupting the database; a lock
+left behind by a killed process is reclaimed after the recorded owner is
+confirmed dead.
+
+## MCP server
+
+`agentsview mcp` exposes the archive to an MCP client (Claude Code, Claude
+Desktop, any MCP-capable agent) through six read-only tools. It speaks stdio by
+default, starts a daemon on demand rather than opening the SQLite file itself,
+and offers no write, delete or sync-trigger tool.
+
+```bash
+agentsview mcp                          # stdio, for a client config
+agentsview mcp --http 8085              # loopback HTTP instead
+agentsview mcp --server http://host:8080  # read from a running server
+agentsview mcp --pg                     # read from the PostgreSQL mirror
+```
+
+See [docs/mcp.md](docs/mcp.md) for the tool list, client configuration and the
+security rules on the HTTP transport.
 
 ## Remote / forwarded access
 

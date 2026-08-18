@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -104,7 +103,7 @@ func runServe(cfg config.Config) {
 		if err := cfg.EnsureAuthToken(); err != nil {
 			log.Fatalf("Failed to generate auth token: %v", err)
 		}
-		if cfg.AuthToken != "" {
+		if cfg.AuthToken != "" && !runningAsBackgroundChild() {
 			fmt.Printf("Auth enabled. Token: %s\n", cfg.AuthToken)
 		}
 	}
@@ -114,10 +113,20 @@ func runServe(cfg config.Config) {
 	// with no lock and no runtime record during startup.
 	MarkDaemonStarting(cfg.DataDir)
 	defer UnmarkDaemonStarting(cfg.DataDir)
+	if err := writeStartupState(cfg.DataDir, startupState{
+		Phase:   "opening-db",
+		LogPath: os.Getenv(backgroundLogEnvVar),
+	}); err != nil {
+		log.Printf("warning: could not write startup state: %v", err)
+	}
+	defer cleanupStartupState(cfg.DataDir)
 
-	applyClassifierConfig(cfg)
 	database := mustOpenDB(cfg)
-	defer database.Close()
+	defer func() {
+		if err := closeWriteDB(database); err != nil {
+			log.Printf("close database: %v", err)
+		}
+	}()
 
 	if n := len(db.UserAutomationPrefixes()); n > 0 {
 		log.Printf("loaded %d user automation prefix(es) from config", n)
@@ -305,6 +314,12 @@ func runServe(cfg config.Config) {
 	// on-demand sync against our live DB.
 	if _, sfErr := WriteDaemonRuntime(
 		rt.Cfg.DataDir, rt.Cfg.Host, rt.Cfg.Port, version, false,
+		daemonRuntimeOptions{
+			RequireAuth:           rt.Cfg.RequireAuth,
+			NoSync:                rt.Cfg.NoSync,
+			CaddyPID:              rt.Caddy.Pid(),
+			CaddyCreateTimeMillis: rt.Caddy.CreateTimeMillis(),
+		},
 	); sfErr != nil {
 		log.Printf(
 			"warning: could not write daemon runtime record: %v"+
@@ -428,13 +443,7 @@ func truncateLogFile(path string, limit int64) {
 }
 
 func openDB(cfg config.Config) (*db.DB, error) {
-	applyClassifierConfig(cfg)
-	database, err := db.Open(cfg.DBPath)
-	if err != nil {
-		return nil, err
-	}
-	applyCustomPricing(database, cfg)
-	return database, nil
+	return openWriteDB(context.Background(), cfg)
 }
 
 func mustOpenDB(cfg config.Config) *db.DB {
@@ -442,15 +451,6 @@ func mustOpenDB(cfg config.Config) *db.DB {
 	if err != nil {
 		fatal("opening database: %v", err)
 	}
-
-	if cfg.CursorSecret != "" {
-		secret, err := base64.StdEncoding.DecodeString(cfg.CursorSecret)
-		if err != nil {
-			fatal("invalid cursor secret: %v", err)
-		}
-		database.SetCursorSecret(secret)
-	}
-
 	return database
 }
 

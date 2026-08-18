@@ -853,6 +853,9 @@ func upsertSessionArgs(s Session) []any {
 // Sessions that were permanently deleted (in excluded_sessions)
 // or currently in the trash are rejected.
 func (db *DB) UpsertSession(s Session) error {
+	if db.readOnly {
+		return ErrReadOnly
+	}
 	_ = ValidateAndSanitize(&s, nil, nil)
 	db.mu.Lock()
 	defer db.mu.Unlock()

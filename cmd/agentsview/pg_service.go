@@ -178,9 +178,13 @@ func runServiceStatus() {
 	if out != "" && !strings.HasSuffix(out, "\n") {
 		fmt.Println()
 	}
-	// Show the last successful push time from local sync state.
-	appCfg := loadServiceConfig()
-	database, derr := openDB(appCfg)
+	// Show the last successful push time from local sync state without taking
+	// SQLite write ownership from the running pg-watch service.
+	appCfg, derr := config.LoadReadOnly()
+	if derr != nil {
+		return
+	}
+	database, derr := openReadOnlyDB(appCfg)
 	if derr != nil {
 		return
 	}

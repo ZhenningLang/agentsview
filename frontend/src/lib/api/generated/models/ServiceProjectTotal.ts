@@ -2,11 +2,11 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export type ModelTotal = {
+export type ServiceProjectTotal = {
   cacheCreationTokens: number;
   cacheReadTokens: number;
   cost: number;
   inputTokens: number;
-  model: string;
   outputTokens: number;
+  project: string;
 };

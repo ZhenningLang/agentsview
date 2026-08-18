@@ -64,7 +64,7 @@ type UsageDailyConfig struct {
 
 func runUsageDaily(cfg UsageDailyConfig) {
 	database, appCfg := openUsageDB()
-	defer database.Close()
+	defer func() { _ = closeWriteDB(database) }()
 
 	ensureFreshData(appCfg, database, cfg.NoSync)
 	ensurePricing(database, cfg.Offline)
@@ -126,7 +126,7 @@ type usageStatuslineOutput struct {
 
 func runUsageStatusline(cfg UsageStatuslineConfig) {
 	database, appCfg := openUsageDB()
-	defer database.Close()
+	defer func() { _ = closeWriteDB(database) }()
 
 	ensureFreshData(appCfg, database, cfg.NoSync)
 	ensurePricing(database, cfg.Offline)
@@ -208,7 +208,7 @@ func openUsageDB() (*db.DB, config.Config) {
 		os.Exit(1)
 	}
 
-	database, err := openDB(cfg)
+	database, err := openWriteDB(context.Background(), cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr,
 			"error opening database: %v\n", err)

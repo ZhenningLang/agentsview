@@ -51,6 +51,13 @@ func seedSession(t *testing.T, dataDir, id, project string) {
 	seedSessionWithOpts(t, dataDir, id, project, nil)
 }
 
+func seedEmptyArchive(t *testing.T, dataDir string) {
+	t.Helper()
+	d, err := db.Open(filepath.Join(dataDir, "sessions.db"))
+	require.NoError(t, err)
+	require.NoError(t, d.Close())
+}
+
 // seedSessionWithOpts is like seedSession but allows mutation of
 // the db.Session before insert via the optional mut callback.
 // Use this when a test needs to set signal counts or other
@@ -559,6 +566,7 @@ func TestSessionExport_FailsWhenSourceMissing(t *testing.T) {
 func TestSessionExport_FailsWhenNotInLocalArchive(t *testing.T) {
 	dataDir := t.TempDir()
 	t.Setenv("AGENTSVIEW_DATA_DIR", dataDir)
+	seedEmptyArchive(t, dataDir)
 
 	_, err := executeCommand(newRootCommand(),
 		"session", "export", "unknown-id")

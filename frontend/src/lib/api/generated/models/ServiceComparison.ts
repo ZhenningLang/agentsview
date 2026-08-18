@@ -2,7 +2,7 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-export type Comparison = {
+export type ServiceComparison = {
   deltaPct: number;
   priorFrom: string;
   priorTo: string;

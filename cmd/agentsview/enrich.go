@@ -54,7 +54,7 @@ func runEnrich(cmd *cobra.Command, cfg config.Config, opts enrichCLIOptions) err
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
-	defer database.Close()
+	defer func() { _ = closeWriteDB(database) }()
 	runner := enrich.New(database, llm.New(llmCfg), llmCfg)
 	stats, err := runner.Run(cmd.Context(), enrich.Options{
 		Project: opts.Project,

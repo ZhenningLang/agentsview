@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -98,14 +99,25 @@ func newService(
 		return service.NewHTTPBackend(tr.URL, cfg.AuthToken, tr.ReadOnly),
 			func() {}, nil
 	default:
-		applyClassifierConfig(cfg)
-		d, err := db.Open(cfg.DBPath)
+		var d *db.DB
+		var err error
+		if tr.DirectReadOnly {
+			d, err = openReadOnlyDB(cfg)
+		} else {
+			d, err = openWriteDB(context.Background(), cfg)
+		}
 		if err != nil {
 			return nil, nil, fmt.Errorf(
 				"opening db: %w", err,
 			)
 		}
-		cleanup := func() { d.Close() }
+		cleanup := func() {
+			if tr.DirectReadOnly {
+				_ = d.Close()
+				return
+			}
+			_ = closeWriteDB(d)
+		}
 		if tr.DirectReadOnly {
 			return service.NewReadOnlyBackend(d), cleanup, nil
 		}

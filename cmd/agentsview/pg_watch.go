@@ -162,9 +162,12 @@ func runPGPushWatch(cfg PGPushConfig) {
 		}
 	}()
 
-	applyClassifierConfig(appCfg)
 	database := mustOpenDB(appCfg)
-	defer database.Close()
+	defer func() {
+		if err := closeWriteDB(database); err != nil {
+			log.Printf("close database: %v", err)
+		}
+	}()
 
 	for _, def := range parser.Registry {
 		if !appCfg.IsUserConfigured(def.Type) {

@@ -12,13 +12,12 @@ import (
 )
 
 func runProjects(jsonOutput bool) {
-	appCfg, err := config.LoadMinimal()
+	appCfg, err := config.LoadReadOnly()
 	if err != nil {
 		log.Fatalf("loading config: %v", err)
 	}
 
-	applyClassifierConfig(appCfg)
-	database, err := db.Open(appCfg.DBPath)
+	database, err := openReadOnlyDB(appCfg)
 	if err != nil {
 		fatal("opening database: %v", err)
 	}

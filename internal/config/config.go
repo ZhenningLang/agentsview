@@ -841,6 +841,25 @@ func LoadMinimal() (Config, error) {
 	return cfg, nil
 }
 
+// LoadReadOnly builds a Config for diagnostics/status paths that must not write
+// config files. It reads defaults, environment, and config.toml, but deliberately
+// skips JSON migration and cursor-secret persistence.
+func LoadReadOnly() (Config, error) {
+	cfg, err := Default()
+	if err != nil {
+		return cfg, err
+	}
+	cfg.loadEnv()
+	if err := cfg.loadFileReadOnly(); err != nil {
+		return cfg, fmt.Errorf("loading config file: %w", err)
+	}
+	if err := finalize(&cfg); err != nil {
+		return cfg, err
+	}
+	cfg.DBPath = filepath.Join(cfg.DataDir, "sessions.db")
+	return cfg, nil
+}
+
 func (c *Config) configPath() string {
 	return filepath.Join(c.DataDir, "config.toml")
 }
@@ -889,7 +908,10 @@ func (c *Config) loadFile() error {
 	if err := c.migrateJSONToTOML(); err != nil {
 		return err
 	}
+	return c.loadFileReadOnly()
+}
 
+func (c *Config) loadFileReadOnly() error {
 	path := c.configPath()
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil

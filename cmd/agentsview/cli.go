@@ -57,6 +57,7 @@ func newRootCommand() *cobra.Command {
 	)
 
 	root.AddCommand(newServeCommand())
+	root.AddCommand(newDaemonCommand())
 	root.AddCommand(newSyncCommand())
 	root.AddCommand(newPruneCommand())
 	root.AddCommand(newUpdateCommand())
@@ -65,6 +66,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newProjectsCommand())
 	root.AddCommand(newHealthCommand())
 	root.AddCommand(newUsageCommand())
+	root.AddCommand(newMCPCommand())
 	root.AddCommand(newPGCommand())
 	root.AddCommand(newDuckDBCommand())
 	root.AddCommand(newSessionCommand())
@@ -88,6 +90,7 @@ func newRootCommand() *cobra.Command {
 }
 
 func newServeCommand() *cobra.Command {
+	var background bool
 	cmd := &cobra.Command{
 		Use:          "serve",
 		Short:        "Start server",
@@ -95,10 +98,50 @@ func newServeCommand() *cobra.Command {
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
+			if background {
+				runServeBackgroundCommand(cmd)
+				return
+			}
 			runServe(mustLoadConfig(cmd))
 		},
 	}
 	config.RegisterServePFlags(cmd.Flags())
+	cmd.Flags().BoolVar(&background, "background", false, "Start server in the background")
+	cmd.AddCommand(&cobra.Command{
+		Use:          "status",
+		Short:        "Show background server status",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			cfg, err := config.LoadReadOnly()
+			if err != nil {
+				fatal("loading config: %v", err)
+			}
+			runServeStatus(cmd.OutOrStdout(), cfg)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:          "stop",
+		Short:        "Stop a background server",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			cfg, err := config.LoadReadOnly()
+			if err != nil {
+				fatal("loading config: %v", err)
+			}
+			runServeStop(cmd.OutOrStdout(), cfg)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:          "restart",
+		Short:        "Restart the writable daemon",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDaemonRestartCommand(cmd)
+		},
+	})
 	return cmd
 }
 
