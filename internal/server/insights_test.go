@@ -1160,3 +1160,371 @@ func TestPhase25InsightMarkdownExportNotFoundIsJSON404(t *testing.T) {
 	assert.NotContains(t, w.Header().Get("Content-Type"), "text/html")
 	assert.Contains(t, w.Body.String(), "insight not found")
 }
+
+// --- Phase 25: insight Gist publish through an injected endpoint ---
+
+// phase25Token is a fixture credential. It is deliberately not shaped
+// like a real GitHub token so secret scanners have nothing to match.
+const phase25Token = "phase25-token"
+
+type phase25GistFile struct {
+	Content string `json:"content"`
+}
+
+type phase25GistPayload struct {
+	Description string                     `json:"description"`
+	Public      bool                       `json:"public"`
+	Files       map[string]phase25GistFile `json:"files"`
+}
+
+type phase25GistRequest struct {
+	Method        string
+	UserAgent     string
+	Authorization string
+	Accept        string
+	ContentType   string
+	Payload       phase25GistPayload
+}
+
+// phase25GistStub is a loopback stand-in for GitHub's Create Gist API.
+// Every publish test points the server at one of these, so no test can
+// reach api.github.com or create a real gist.
+type phase25GistStub struct {
+	server   *httptest.Server
+	mu       sync.Mutex
+	requests []phase25GistRequest
+}
+
+func newPhase25GistStub(
+	t *testing.T, status int, body string,
+) *phase25GistStub {
+	t.Helper()
+	stub := &phase25GistStub{}
+	stub.server = httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			stub.record(t, r)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			if body != "" {
+				_, _ = io.WriteString(w, body)
+			}
+		}))
+	t.Cleanup(stub.server.Close)
+	return stub
+}
+
+func (g *phase25GistStub) record(t *testing.T, r *http.Request) {
+	t.Helper()
+	raw, err := io.ReadAll(r.Body)
+	if !assert.NoError(t, err) {
+		return
+	}
+	rec := phase25GistRequest{
+		Method:        r.Method,
+		UserAgent:     r.Header.Get("User-Agent"),
+		Authorization: r.Header.Get("Authorization"),
+		Accept:        r.Header.Get("Accept"),
+		ContentType:   r.Header.Get("Content-Type"),
+	}
+	assert.NoError(t, json.Unmarshal(raw, &rec.Payload),
+		"gist payload: %s", raw)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.requests = append(g.requests, rec)
+}
+
+func (g *phase25GistStub) captured() []phase25GistRequest {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]phase25GistRequest(nil), g.requests...)
+}
+
+func (g *phase25GistStub) only(t *testing.T) phase25GistRequest {
+	t.Helper()
+	got := g.captured()
+	require.Len(t, got, 1, "expected exactly one gist request")
+	return got[0]
+}
+
+// setupPhase25Publish wires a server whose Create Gist endpoint is the
+// given loopback stub and whose GitHub token is the fixture token.
+func setupPhase25Publish(
+	t *testing.T, stub *phase25GistStub,
+) *testEnv {
+	t.Helper()
+	te := setupWithServerOpts(t, []server.Option{
+		server.WithGithubGistAPIURL(stub.server.URL),
+	})
+	te.srv.SetGithubToken(phase25Token)
+	return te
+}
+
+func phase25DailyInsight() db.Insight {
+	return db.Insight{
+		Type:     "daily_activity",
+		DateFrom: "2025-01-15",
+		DateTo:   "2025-01-15",
+		Project:  new("my-app"),
+		Agent:    "claude",
+		Model:    new("opus-5"),
+		Content:  "Shipped the export route.",
+	}
+}
+
+const phase25GistOKBody = `{
+  "id": "gist-id-123",
+  "html_url": "https://gist.github.com/example-user/gist-id-123",
+  "owner": {"login": "example-user"}
+}`
+
+func TestPhase25InsightPublishSuccessSendsAuthenticatedPOST(t *testing.T) {
+	stub := newPhase25GistStub(t, http.StatusCreated, phase25GistOKBody)
+	te := setupPhase25Publish(t, stub)
+	id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+	w := te.post(t, fmt.Sprintf(
+		"/api/v1/insights/%d/publish", id), "{}")
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	got := stub.only(t)
+	assert.Equal(t, http.MethodPost, got.Method)
+	assert.Equal(t, "agentsview", got.UserAgent)
+	assert.Equal(t, "token "+phase25Token, got.Authorization)
+	assert.Equal(t, "application/vnd.github.v3+json", got.Accept)
+	assert.Equal(t, "application/json", got.ContentType)
+}
+
+func TestPhase25InsightPublishPayloadMatchesHTMLExport(t *testing.T) {
+	stub := newPhase25GistStub(t, http.StatusCreated, phase25GistOKBody)
+	te := setupPhase25Publish(t, stub)
+	id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+	// The gist must carry the same document the export route serves,
+	// not a separately rendered near-copy.
+	exported := te.get(t, fmt.Sprintf(
+		"/api/v1/insights/%d/export", id))
+	require.Equal(t, http.StatusOK, exported.Code)
+
+	w := te.post(t, fmt.Sprintf(
+		"/api/v1/insights/%d/publish", id), "{}")
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	got := stub.only(t)
+	assert.Equal(t,
+		"Insight: Daily Activity - my-app - 2025-01-15",
+		got.Payload.Description)
+	require.Len(t, got.Payload.Files, 1)
+	file, ok := got.Payload.Files["insight-daily_activity-my-app-20250115.html"]
+	require.True(t, ok, "files: %#v", got.Payload.Files)
+	assert.Equal(t, exported.Body.String(), file.Content)
+}
+
+func TestPhase25InsightPublishVisibilityMapsSecretToPublicFlag(t *testing.T) {
+	tests := []struct {
+		name       string
+		query      string
+		wantPublic bool
+	}{
+		{"DefaultIsPublic", "", true},
+		{"SecretFalseIsPublic", "?secret=false", true},
+		// The important direction: a secret publish must never go out
+		// as a public gist, which would expose session-derived content.
+		{"SecretTrueIsPrivate", "?secret=true", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := newPhase25GistStub(
+				t, http.StatusCreated, phase25GistOKBody)
+			te := setupPhase25Publish(t, stub)
+			id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+			w := te.post(t, fmt.Sprintf(
+				"/api/v1/insights/%d/publish%s", id, tt.query), "{}")
+
+			require.Equal(t, http.StatusOK, w.Code,
+				"body: %s", w.Body.String())
+			assert.Equal(t, tt.wantPublic, stub.only(t).Payload.Public)
+		})
+	}
+}
+
+func TestPhase25InsightPublishResultURLs(t *testing.T) {
+	stub := newPhase25GistStub(t, http.StatusCreated, phase25GistOKBody)
+	te := setupPhase25Publish(t, stub)
+	id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+	w := te.post(t, fmt.Sprintf(
+		"/api/v1/insights/%d/publish", id), "{}")
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	var got struct {
+		GistID  string `json:"gist_id"`
+		GistURL string `json:"gist_url"`
+		ViewURL string `json:"view_url"`
+		RawURL  string `json:"raw_url"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+
+	rawURL := "https://gist.githubusercontent.com/example-user/" +
+		"gist-id-123/raw/insight-daily_activity-my-app-20250115.html"
+	assert.Equal(t, "gist-id-123", got.GistID)
+	assert.Equal(t,
+		"https://gist.github.com/example-user/gist-id-123", got.GistURL)
+	assert.Equal(t, rawURL, got.RawURL)
+	assert.Equal(t, "https://htmlpreview.github.io/?"+rawURL, got.ViewURL)
+}
+
+func TestPhase25InsightPublishNoTokenIs401AndSendsNothing(t *testing.T) {
+	stub := newPhase25GistStub(t, http.StatusCreated, phase25GistOKBody)
+	te := setupWithServerOpts(t, []server.Option{
+		server.WithGithubGistAPIURL(stub.server.URL),
+	})
+	id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+	w := te.post(t, fmt.Sprintf(
+		"/api/v1/insights/%d/publish", id), "{}")
+
+	require.Equal(t, http.StatusUnauthorized, w.Code,
+		"body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "GitHub token not configured")
+	assert.Empty(t, stub.captured(),
+		"unauthenticated publish must not reach the gist API")
+}
+
+func TestPhase25InsightPublishNotFoundIs404AndSendsNothing(t *testing.T) {
+	stub := newPhase25GistStub(t, http.StatusCreated, phase25GistOKBody)
+	te := setupPhase25Publish(t, stub)
+
+	w := te.post(t, "/api/v1/insights/999999/publish", "{}")
+
+	require.Equal(t, http.StatusNotFound, w.Code,
+		"body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "insight not found")
+	assert.Empty(t, stub.captured(),
+		"a missing insight must not reach the gist API")
+}
+
+func TestPhase25InsightPublishGithubErrorIs502(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"Unauthorized", http.StatusUnauthorized, `{"message":"Bad credentials"}`},
+		{"Forbidden", http.StatusForbidden, `{"message":"rate limited"}`},
+		{"Unprocessable", http.StatusUnprocessableEntity, `{"message":"invalid"}`},
+		{"ServerError", http.StatusInternalServerError, `{"message":"boom"}`},
+		{"Unavailable", http.StatusServiceUnavailable, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := newPhase25GistStub(t, tt.status, tt.body)
+			te := setupPhase25Publish(t, stub)
+			id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+			w := te.post(t, fmt.Sprintf(
+				"/api/v1/insights/%d/publish", id), "{}")
+
+			require.Equal(t, http.StatusBadGateway, w.Code,
+				"body: %s", w.Body.String())
+			assert.NotContains(t, w.Body.String(), phase25Token,
+				"error response must not echo the token")
+			assert.Len(t, stub.captured(), 1,
+				"a failed publish must not be retried")
+		})
+	}
+}
+
+func TestPhase25InsightPublishIncompleteGistIs502(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"EmptyObject", `{}`},
+		{"MissingHTMLURL", `{"id":"gist-id-123"}`},
+		{"MissingID", `{"html_url":"https://gist.github.com/x/y"}`},
+		{"BlankFields", `{"id":"","html_url":""}`},
+		{"NotJSON", `<!doctype html><html></html>`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := newPhase25GistStub(t, http.StatusCreated, tt.body)
+			te := setupPhase25Publish(t, stub)
+			id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+			w := te.post(t, fmt.Sprintf(
+				"/api/v1/insights/%d/publish", id), "{}")
+
+			require.Equal(t, http.StatusBadGateway, w.Code,
+				"body: %s", w.Body.String())
+			assert.NotContains(t, w.Body.String(), phase25Token)
+		})
+	}
+}
+
+func TestPhase25InsightPublishCancelledRequestIsReported(t *testing.T) {
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	ts := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			once.Do(func() { close(reached) })
+			// Hold the response open so the cancellation is observed
+			// rather than raced against a timer. `release` is what
+			// unblocks the handler at teardown; the request context is
+			// only an early exit, because an HTTP/1 server does not
+			// reliably notice a cancelled client before then.
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}))
+	t.Cleanup(func() {
+		close(release)
+		ts.Close()
+	})
+
+	te := setupWithServerOpts(t, []server.Option{
+		server.WithGithubGistAPIURL(ts.URL),
+	})
+	te.srv.SetGithubToken(phase25Token)
+	id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-reached
+		cancel()
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf(
+		"/api/v1/insights/%d/publish", id),
+		strings.NewReader("{}")).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:0")
+	w := httptest.NewRecorder()
+	te.handler.ServeHTTP(w, req)
+
+	// A cancelled request never reaches the publish handler's own error
+	// mapping: humaTimeout's http.TimeoutHandler answers 503 with an
+	// empty body for every route. What matters here is that the caller
+	// cannot mistake this for a completed publish.
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code,
+		"body: %s", w.Body.String())
+	assert.NotEqual(t, http.StatusOK, w.Code)
+	assert.NotContains(t, w.Body.String(), "gist_url")
+	assert.NotContains(t, w.Body.String(), phase25Token)
+	// The request did go out, so the cancellation is a real in-flight
+	// one rather than a request that was never attempted. This is a
+	// non-blocking check on purpose: by the time ServeHTTP returns the
+	// stub has either been reached or never will be, and a blocking
+	// receive here would hang the suite instead of failing it.
+	select {
+	case <-reached:
+	default:
+		assert.Fail(t, "publish never reached the gist stub")
+	}
+}

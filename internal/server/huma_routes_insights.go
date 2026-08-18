@@ -24,6 +24,7 @@ func (s *Server) registerInsightsRoutes() {
 		"Export insight as HTML", s.humaExportInsight)
 	raw(s, group, http.MethodGet, "/{id}/md",
 		"Export insight as Markdown", s.humaMarkdownInsight)
+	post(s, group, "/{id}/publish", "Publish insight", s.humaPublishInsight)
 	deleteRoute(s, group, "/{id}", "Delete insight", s.humaDeleteInsight)
 	stream(s, group, http.MethodPost, "/generate", "Generate insight", s.humaGenerateInsight)
 }
@@ -41,6 +42,11 @@ type insightsResponse struct {
 
 type generateInsightInput struct {
 	Body generateInsightRequest
+}
+
+type publishInsightInput struct {
+	ID     int64 `path:"id" required:"true" doc:"Insight ID"`
+	Secret bool  `query:"secret" doc:"Create a secret gist instead of a public one"`
 }
 
 func (s *Server) humaListInsights(
@@ -122,6 +128,39 @@ func (s *Server) humaMarkdownInsight(
 			insightExportMarkdownFilename(item)),
 		Body: []byte(item.Content),
 	}, nil
+}
+
+// humaPublishInsight uploads the insight's HTML export as a gist. It goes
+// through publishExportHTMLWithURL with s.gistAPIEndpoint() rather than the
+// hardcoded createGist, so the destination is a single injectable seam.
+func (s *Server) humaPublishInsight(
+	ctx context.Context,
+	in *publishInsightInput,
+) (*jsonOutput[publishResponse], error) {
+	token := s.githubToken()
+	if token == "" {
+		return nil, apiError(http.StatusUnauthorized,
+			"GitHub token not configured")
+	}
+	item, err := s.insightByID(ctx, in.ID)
+	if err != nil {
+		return nil, err
+	}
+	// Secret is the caller's opt-in to a private gist, so it inverts
+	// into GitHub's "public" flag exactly once, here.
+	resp, err := publishExportHTMLWithURL(
+		ctx,
+		s.gistAPIEndpoint(),
+		token,
+		insightExportHTMLFilename(item),
+		insightPublishDescription(item),
+		generateInsightExportHTML(item),
+		!in.Secret,
+	)
+	if err != nil {
+		return nil, apiError(http.StatusBadGateway, err.Error())
+	}
+	return &jsonOutput[publishResponse]{Body: *resp}, nil
 }
 
 func (s *Server) humaDeleteInsight(

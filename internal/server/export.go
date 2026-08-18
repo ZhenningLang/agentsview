@@ -26,6 +26,11 @@ type gistResponse struct {
 	} `json:"owner"`
 }
 
+// defaultGistAPIURL is the single literal for GitHub's Create Gist
+// endpoint. Everything that publishes resolves to this unless a caller
+// explicitly injected another URL.
+const defaultGistAPIURL = "https://api.github.com/gists"
+
 func createGist(
 	ctx context.Context,
 	token, filename, description, content string,
@@ -33,7 +38,7 @@ func createGist(
 ) (*gistResponse, error) {
 	return createGistWithURL(
 		ctx,
-		"https://api.github.com/gists",
+		defaultGistAPIURL,
 		token, filename, description, content, public,
 	)
 }
@@ -860,6 +865,46 @@ func derefString(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+func insightPublishDescription(item *db.Insight) string {
+	return fmt.Sprintf(
+		"Insight: %s - %s - %s",
+		insightTypeLabel(item.Type),
+		insightProjectLabel(item.Project),
+		insightDateRangeLabel(item.DateFrom, item.DateTo),
+	)
+}
+
+// publishExportHTMLWithURL creates a gist through an explicitly supplied
+// endpoint. The URL is a required parameter rather than a default so a
+// handler cannot accidentally publish to an unintended host, and so tests
+// can capture the request without touching api.github.com.
+func publishExportHTMLWithURL(
+	ctx context.Context,
+	apiURL, token, filename, description, htmlContent string,
+	public bool,
+) (*publishResponse, error) {
+	gist, err := createGistWithURL(
+		ctx, apiURL, token, filename, description, htmlContent, public,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if gist.ID == "" || gist.HTMLURL == "" {
+		return nil, fmt.Errorf("GitHub API returned incomplete gist data")
+	}
+	encoded := urlPathEscape(filename)
+	rawURL := fmt.Sprintf(
+		"https://gist.githubusercontent.com/%s/%s/raw/%s",
+		gist.Owner.Login, gist.ID, encoded,
+	)
+	return &publishResponse{
+		GistID:  gist.ID,
+		GistURL: gist.HTMLURL,
+		ViewURL: "https://htmlpreview.github.io/?" + rawURL,
+		RawURL:  rawURL,
+	}, nil
 }
 
 func truncateStr(s string, max int) string {

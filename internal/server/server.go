@@ -126,6 +126,24 @@ type Server struct {
 	// synthesizeCtl is the runtime handle to the background topic-synthesis
 	// worker. Nil means prerequisites were missing and the route reports unavailable.
 	synthesizeCtl *synthesize.Controller
+
+	// gistAPIURL is the GitHub Create Gist endpoint used by the insight
+	// publish route. Empty means "not explicitly configured" and resolves
+	// to defaultGistAPIURL, so a Server that never saw
+	// WithGithubGistAPIURL -- including one built without New -- always
+	// talks to the real GitHub. Only tests set it, and they set it to a
+	// loopback httptest.Server.
+	gistAPIURL string
+}
+
+// gistAPIEndpoint returns the Create Gist endpoint to POST to. It never
+// returns an empty string, so a missing or blank configuration degrades
+// to production GitHub rather than to whatever a caller passed last.
+func (s *Server) gistAPIEndpoint() string {
+	if s.gistAPIURL == "" {
+		return defaultGistAPIURL
+	}
+	return s.gistAPIURL
 }
 
 // New creates a new Server.
@@ -289,6 +307,21 @@ func WithGHRunner(r ghconnect.Runner) Option {
 func WithBasePath(path string) Option {
 	return func(s *Server) {
 		s.basePath = strings.TrimRight(path, "/")
+	}
+}
+
+// WithGithubGistAPIURL overrides the GitHub Create Gist endpoint used by
+// the insight publish route. It exists for explicit configuration and for
+// tests, which point it at a local httptest.Server so no request ever
+// reaches api.github.com. An empty URL is ignored: the server keeps its
+// current setting and an unconfigured server stays on production GitHub,
+// so a blank value can never silently redirect a real publish.
+func WithGithubGistAPIURL(url string) Option {
+	return func(s *Server) {
+		if url == "" {
+			return
+		}
+		s.gistAPIURL = url
 	}
 }
 
