@@ -1307,6 +1307,31 @@
     flex-shrink: 0;
   }
 
+  /* Narrow viewports: the two-column grid leaves the content column about
+     120px wide, and .content-panel clips its overflow, so the action row was
+     laid out off-screen while the page reported no overflow at all. A
+     narrower sidebar plus a wrapping header row keeps every action inside
+     the viewport. */
+  @media (max-width: 720px) {
+    .insights-page {
+      grid-template-columns: 150px 1fr;
+    }
+
+    .reading-area {
+      padding: 20px 14px 32px;
+    }
+
+    .header-top {
+      flex-wrap: wrap;
+    }
+
+    .header-actions {
+      /* Flush right is what pushed the row out of the clipped column; on a
+         wrapped line the actions simply start where the line starts. */
+      margin-left: 0;
+    }
+  }
+
   .action-btn {
     width: 28px;
     height: 28px;

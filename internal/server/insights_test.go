@@ -1447,6 +1447,12 @@ func TestPhase25InsightPublishIncompleteGistIs502(t *testing.T) {
 		{"MissingID", `{"html_url":"https://gist.github.com/x/y"}`},
 		{"BlankFields", `{"id":"","html_url":""}`},
 		{"NotJSON", `<!doctype html><html></html>`},
+		// The owner login is not decoration: it is a path segment of
+		// raw_url, so a response without it yields a 200 carrying a
+		// broken link instead of an error.
+		{"MissingOwner", `{"id":"gist-id-123","html_url":"https://gist.github.com/example-user/gist-id-123"}`},
+		{"EmptyOwnerObject", `{"id":"gist-id-123","html_url":"https://gist.github.com/example-user/gist-id-123","owner":{}}`},
+		{"BlankOwnerLogin", `{"id":"gist-id-123","html_url":"https://gist.github.com/example-user/gist-id-123","owner":{"login":"   "}}`},
 	}
 
 	for _, tt := range tests {
@@ -1461,6 +1467,64 @@ func TestPhase25InsightPublishIncompleteGistIs502(t *testing.T) {
 			require.Equal(t, http.StatusBadGateway, w.Code,
 				"body: %s", w.Body.String())
 			assert.NotContains(t, w.Body.String(), phase25Token)
+			assert.NotContains(t, w.Body.String(),
+				"gist.githubusercontent.com",
+				"an incomplete response must not produce a raw URL")
+		})
+	}
+}
+
+// TestPhase25InsightPublishGithubErrorBodyNeverReachesClient pins that the
+// upstream error body never crosses the API boundary. GitHub (or any proxy in
+// front of it) can echo the request back in an error shape, and this 502 body
+// is what lands in the UI, the browser console and a user's screenshot, so the
+// handler must report a sanitized error rather than relay what it received.
+func TestPhase25InsightPublishGithubErrorBodyNeverReachesClient(t *testing.T) {
+	tests := []struct {
+		name string
+		// body echoes the credential the way a careless upstream would.
+		body string
+		// marker is a distinctive fragment of body that must not appear
+		// in the response either: proving only "token absent" would pass
+		// for a redactor that misses any other encoding of it.
+		marker string
+	}{
+		{
+			"TokenInMessage",
+			`{"message":"Bad credentials for token phase25-token"}`,
+			"Bad credentials",
+		},
+		{
+			"TokenInEchoedRequest",
+			`{"message":"invalid","request":{"Authorization":"token phase25-token"}}`,
+			"Authorization",
+		},
+		{
+			"TokenInPlainText",
+			"authorization: token phase25-token",
+			"authorization",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := newPhase25GistStub(t, http.StatusUnauthorized, tt.body)
+			te := setupPhase25Publish(t, stub)
+			id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+			w := te.post(t, fmt.Sprintf(
+				"/api/v1/insights/%d/publish", id), "{}")
+
+			require.Equal(t, http.StatusBadGateway, w.Code,
+				"body: %s", w.Body.String())
+			assert.NotContains(t, w.Body.String(), phase25Token,
+				"the response must never carry our credential")
+			assert.NotContains(t, w.Body.String(), tt.marker,
+				"the upstream body must not be relayed verbatim")
+			assert.Contains(t, w.Body.String(), "401",
+				"the upstream status is the diagnostic that may cross")
+			assert.Len(t, stub.captured(), 1,
+				"a failed publish must not be retried")
 		})
 	}
 }

@@ -1,4 +1,10 @@
-import { expect, test, type BrowserContext, type Page } from "@playwright/test";
+import {
+  expect,
+  test,
+  type BrowserContext,
+  type Locator,
+  type Page,
+} from "@playwright/test";
 
 /**
  * Browser acceptance for insight HTML export and Gist publish.
@@ -57,7 +63,37 @@ interface Recorder {
   githubRequests: string[];
   /** Uncaught page errors, kept out of the request log. */
   pageErrors: string[];
+  /**
+   * API calls this spec never stubbed. Must stay empty: an unstubbed call
+   * used to be handed to the real e2e Go server, and that server answers
+   * /api/v1/update/check by fetching github.com from its own process --
+   * an escape no browser-side recorder can observe.
+   */
+  unstubbed: string[];
 }
+
+/**
+ * Startup calls this app makes that are inert here: the e2e server answers
+ * them from a temp fixture DB whose agent directories all point at an empty
+ * dir, so letting them through touches nothing outside the test.
+ *
+ * The list is explicit on purpose. /api/v1/update/check used to land in a
+ * blanket route.fallback() and made the Go process fetch github.com -- an
+ * outbound request no browser-side recorder can see. Anything not named here
+ * is answered locally and fails the spec, so a new endpoint has to be looked
+ * at before it is trusted.
+ */
+const LOCAL_ONLY_PATHS = new Set([
+  "/api/v1/agents",
+  "/api/v1/events",
+  "/api/v1/llm/balance",
+  "/api/v1/sessions/sidebar-index",
+  "/api/v1/settings",
+  "/api/v1/starred",
+  "/api/v1/stats",
+  "/api/v1/sync/status",
+  "/api/v1/version",
+]);
 
 const EXPORT_HTML =
   "<!doctype html><html><body><h1>Daily insight</h1></body></html>";
@@ -70,6 +106,7 @@ async function installMocks(
     requests: [],
     githubRequests: [],
     pageErrors: [],
+    unstubbed: [],
   };
 
   context.on("request", (request) => {
@@ -100,6 +137,17 @@ async function installMocks(
 
     if (path === "/api/v1/config/github") {
       await route.fulfill({ json: { configured: true } });
+      return;
+    }
+
+    // The app checks for updates on mount. Left to the real server this is
+    // an outbound request to github.com made by the Go process, so it is
+    // answered here and the server is additionally started with
+    // AGENTSVIEW_DISABLE_UPDATE_CHECK=1 (scripts/e2e-server.sh).
+    if (path === "/api/v1/update/check") {
+      await route.fulfill({
+        json: { current_version: "e2e", update_available: false },
+      });
       return;
     }
 
@@ -137,7 +185,16 @@ async function installMocks(
       return;
     }
 
-    await route.fallback();
+    // Fail closed: only reviewed, inert endpoints reach the local server.
+    if (LOCAL_ONLY_PATHS.has(path)) {
+      await route.fallback();
+      return;
+    }
+    // Everything else is answered here and recorded as a failure, so a call
+    // this spec has not vetted breaks the test instead of quietly leaving
+    // for the network by way of the server process.
+    recorder.unstubbed.push(`${request.method()} ${path}`);
+    await route.fulfill({ json: {} });
   });
 
   // Nothing should reach GitHub, but if the wiring regresses, fail on a local
@@ -151,6 +208,68 @@ async function installMocks(
   });
 
   return recorder;
+}
+
+/**
+ * Assert an action is actually reachable, not merely "visible".
+ *
+ * Playwright's visibility check passes for an element an ancestor has clipped
+ * with overflow:hidden, and a page-level scrollWidth check passes too, because
+ * the clip is what stops the page from growing. So this checks the two things
+ * that actually decide whether a user can hit the control: its box lies inside
+ * the viewport, and the element painted at its own corners is the element
+ * itself rather than whatever clipped it.
+ */
+async function expectReachable(
+  page: Page,
+  locator: Locator,
+  label: string,
+) {
+  const box = await locator.boundingBox();
+  expect(box, `${label}: no layout box`).not.toBeNull();
+  const viewport = page.viewportSize();
+  expect(viewport, "viewport size is unknown").not.toBeNull();
+
+  expect(box!.width, `${label}: zero width`).toBeGreaterThan(0);
+  expect(box!.height, `${label}: zero height`).toBeGreaterThan(0);
+  expect(box!.x, `${label}: starts left of the viewport`)
+    .toBeGreaterThanOrEqual(0);
+  expect(box!.y, `${label}: starts above the viewport`)
+    .toBeGreaterThanOrEqual(0);
+  expect(
+    box!.x + box!.width,
+    `${label}: right edge ${box!.x + box!.width} exceeds viewport width ` +
+      `${viewport!.width}`,
+  ).toBeLessThanOrEqual(viewport!.width);
+  expect(
+    box!.y + box!.height,
+    `${label}: bottom edge exceeds viewport height`,
+  ).toBeLessThanOrEqual(viewport!.height);
+
+  const painted = await locator.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    // Inset rather than the literal corner: these controls are rounded, so
+    // the corner pixel legitimately belongs to the parent even when nothing
+    // clipped anything.
+    const inset = Math.max(2, Math.min(r.width, r.height) * 0.25);
+    const probes: [number, number][] = [
+      [r.left + inset, r.top + inset],
+      [r.right - inset, r.top + inset],
+      [r.left + inset, r.bottom - inset],
+      [r.right - inset, r.bottom - inset],
+      [r.left + r.width / 2, r.top + r.height / 2],
+    ];
+    return probes.every(([x, y]) => {
+      const top = document.elementFromPoint(x, y);
+      // The element itself or something inside it. An ancestor answering
+      // here means the ancestor clipped or covered the control, which is
+      // exactly the failure this probe exists to catch.
+      return top !== null && (top === el || el.contains(top));
+    });
+  });
+  expect(painted, `${label}: clipped or covered at its own corners`).toBe(
+    true,
+  );
 }
 
 function exportButton(page: Page) {
@@ -220,6 +339,7 @@ test.describe("Insight export and publish", () => {
       .poll(() => recorder.requests)
       .toContain("GET /api/v1/insights/501/export");
     expect(recorder.githubRequests).toEqual([]);
+    expect(recorder.unstubbed).toEqual([]);
     expect(recorder.pageErrors).toEqual([]);
     for (const other of context.pages()) {
       if (other !== page) {
@@ -260,6 +380,7 @@ test.describe("Insight export and publish", () => {
       "POST /api/v1/insights/501/publish?secret=true",
     );
     expect(recorder.githubRequests).toEqual([]);
+    expect(recorder.unstubbed).toEqual([]);
   });
 
   test("reopening publishes the new selection, not the previous one", async ({
@@ -293,6 +414,7 @@ test.describe("Insight export and publish", () => {
       "POST /api/v1/insights/502/publish?secret=false",
     ]);
     expect(recorder.githubRequests).toEqual([]);
+    expect(recorder.unstubbed).toEqual([]);
   });
 
   for (const viewport of [
@@ -303,7 +425,7 @@ test.describe("Insight export and publish", () => {
       context,
       page,
     }) => {
-      await installMocks(context, page);
+      const recorder = await installMocks(context, page);
       await page.setViewportSize({
         width: viewport.width,
         height: viewport.height,
@@ -316,12 +438,26 @@ test.describe("Insight export and publish", () => {
       await expect(publicPublishButton(page)).toBeVisible();
       await expect(secretPublishButton(page)).toBeVisible();
 
+      await expectReachable(page, exportButton(page), "export");
+      await expectReachable(
+        page,
+        publicPublishButton(page),
+        "publish public",
+      );
+      await expectReachable(
+        page,
+        secretPublishButton(page),
+        "publish secret",
+      );
+
       const noOverflow = await page.evaluate(
         () =>
           document.documentElement.scrollWidth <=
           document.documentElement.clientWidth,
       );
       expect(noOverflow).toBe(true);
+      expect(recorder.githubRequests).toEqual([]);
+      expect(recorder.unstubbed).toEqual([]);
     });
   }
 });

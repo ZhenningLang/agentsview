@@ -313,6 +313,78 @@ describe("Phase 25 PublishModal target dispatch", () => {
     expect(viewUrlValue()).toBeNull();
   });
 
+  // The token save is the third awaited step, and the only one whose
+  // continuation both publishes and writes state. A modal closed while it is
+  // in flight must do neither: the user has already dismissed the dialog, so
+  // a late publish sends data they never confirmed.
+  async function startPendingSave(id: number) {
+    const save = deferred<unknown>();
+    mocks.getGithubConfig.mockResolvedValue({ configured: false });
+    mocks.saveGithubConfig.mockReturnValue(save.promise);
+    ui.openPublish({ kind: "insight", id }, false);
+    mountModal();
+    await flush();
+
+    const input = document.querySelector<HTMLInputElement>(
+      "input.token-input",
+    );
+    expect(input).not.toBeNull();
+    input!.value = "phase25-token";
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+    await tick();
+
+    buttonByText("Save & Publish")!.click();
+    await flush();
+
+    expect(mocks.saveGithubConfig).toHaveBeenCalledTimes(1);
+    expect(mocks.publishInsight).not.toHaveBeenCalled();
+    return save;
+  }
+
+  it("does not publish when closed while the save call is pending", async () => {
+    const save = await startPendingSave(21);
+
+    closeButton().click();
+    await tick();
+
+    save.resolve({});
+    await flush();
+
+    expect(mocks.publishInsight).not.toHaveBeenCalled();
+    expect(mocks.publishSession).not.toHaveBeenCalled();
+    expect(viewUrlValue()).toBeNull();
+    expect(errorText()).toBeNull();
+    expect(ui.activeModal).toBeNull();
+    expect(ui.publishTarget).toBeNull();
+  });
+
+  it("does not publish when unmounted while the save call is pending", async () => {
+    const save = await startPendingSave(22);
+
+    unmount(component!);
+    component = undefined;
+
+    save.resolve({});
+    await flush();
+
+    expect(mocks.publishInsight).not.toHaveBeenCalled();
+    expect(mocks.publishSession).not.toHaveBeenCalled();
+  });
+
+  it("does not write error state when the save fails after close", async () => {
+    const save = await startPendingSave(23);
+
+    closeButton().click();
+    await tick();
+
+    save.reject(new Error("late save failure"));
+    await flush();
+
+    expect(errorText()).toBeNull();
+    expect(viewUrlValue()).toBeNull();
+    expect(mocks.publishInsight).not.toHaveBeenCalled();
+  });
+
   it("clears the target when the overlay closes the modal", async () => {
     ui.openPublish({ kind: "insight", id: 14 }, false);
     mountModal();

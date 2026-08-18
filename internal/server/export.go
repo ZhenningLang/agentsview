@@ -7,6 +7,7 @@ import (
 	"html"
 	"html/template"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -24,6 +25,31 @@ type gistResponse struct {
 	Owner   struct {
 		Login string `json:"login"`
 	} `json:"owner"`
+}
+
+// githubAPIError is the only shape an upstream failure takes on its way
+// back to a caller. It carries the status code and nothing else, because
+// handlers surface Error() verbatim in a 502 and the upstream body is
+// attacker- and vendor-controlled text that may quote the credential we
+// just sent. Redacting the body instead would only cover the encodings
+// we happened to think of, so the body never crosses this boundary.
+type githubAPIError struct {
+	StatusCode int
+}
+
+func (e *githubAPIError) Error() string {
+	return fmt.Sprintf("github API error: %d", e.StatusCode)
+}
+
+// redactSecret masks a known credential in text that stays inside the
+// process (a server log). It is best-effort by construction -- it only
+// catches the literal value, not a re-encoded one -- which is exactly
+// why it is not what protects the HTTP response.
+func redactSecret(text, secret string) string {
+	if secret == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, secret, "[redacted]")
 }
 
 // defaultGistAPIURL is the single literal for GitHub's Create Gist
@@ -78,12 +104,19 @@ func createGistWithURL(
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 512))
-		if err != nil {
-			return nil, fmt.Errorf("github API error: %d: reading body: %w", resp.StatusCode, err)
+		// The body is read for the server log only. It is never part of
+		// the returned error: this request carried our token, GitHub and
+		// any proxy in front of it can echo request material back, and
+		// the error text ends up in a 502 the browser renders.
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if readErr != nil {
+			log.Printf("gist publish: github API error %d: reading body: %v",
+				resp.StatusCode, readErr)
+		} else if len(body) > 0 {
+			log.Printf("gist publish: github API error %d: %s",
+				resp.StatusCode, redactSecret(string(body), token))
 		}
-		return nil, fmt.Errorf("github API error: %d: %s",
-			resp.StatusCode, string(body))
+		return nil, &githubAPIError{StatusCode: resp.StatusCode}
 	}
 
 	var result gistResponse
@@ -891,17 +924,26 @@ func publishExportHTMLWithURL(
 	if err != nil {
 		return nil, err
 	}
-	if gist.ID == "" || gist.HTMLURL == "" {
+	// The owner login is a path segment of the raw URL, so a response
+	// missing it is incomplete in the same way a missing ID is: the
+	// request would otherwise succeed and hand back a broken link.
+	owner := strings.TrimSpace(gist.Owner.Login)
+	id := strings.TrimSpace(gist.ID)
+	htmlURL := strings.TrimSpace(gist.HTMLURL)
+	if id == "" || htmlURL == "" || owner == "" {
 		return nil, fmt.Errorf("GitHub API returned incomplete gist data")
 	}
+	// The trimmed values are what gets returned as well, so a padded
+	// field cannot reach the client through one path after being
+	// validated through another.
 	encoded := urlPathEscape(filename)
 	rawURL := fmt.Sprintf(
 		"https://gist.githubusercontent.com/%s/%s/raw/%s",
-		gist.Owner.Login, gist.ID, encoded,
+		owner, id, encoded,
 	)
 	return &publishResponse{
-		GistID:  gist.ID,
-		GistURL: gist.HTMLURL,
+		GistID:  id,
+		GistURL: htmlURL,
 		ViewURL: "https://htmlpreview.github.io/?" + rawURL,
 		RawURL:  rawURL,
 	}, nil
