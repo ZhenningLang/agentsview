@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -233,6 +234,57 @@ func TestPhase21ManagedCaddyRuntimeMetadataAndConfirmedOrphanCleanup(t *testing.
 	assert.Nil(t, runtime, "unprobeable runtime must not become confirmed")
 }
 
+func TestPhase21ManagedCaddyRuntimeUsesCapturedCreateTimeAfterChildExit(t *testing.T) {
+	dataDir := runtimeTestDir(t)
+	child := phase21StartHelperProcess(t, "runtime-caddy-child")
+	ct, ok := processCreateTimeMillis(child.Process.Pid)
+	require.True(t, ok)
+	caddy := &managedCaddy{pid: child.Process.Pid, createTimeMillis: ct}
+	require.NoError(t, child.Process.Kill())
+	_ = child.Wait()
+
+	path, err := WriteDaemonRuntime(dataDir, "127.0.0.1", 1, "phase21", false, daemonRuntimeOptions{
+		CaddyPID:              caddy.Pid(),
+		CaddyCreateTimeMillis: caddy.CreateTimeMillis(),
+	})
+	require.NoError(t, err)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var rec daemon.RuntimeRecord
+	require.NoError(t, json.Unmarshal(data, &rec))
+
+	assert.Equal(t, strconv.Itoa(child.Process.Pid), rec.Metadata[runtimeCaddyPID])
+	assert.Equal(t, strconv.FormatInt(ct, 10), rec.Metadata[runtimeCaddyCreateTime])
+}
+
+func TestPhase21ManagedCaddyMetadataOmittedWhenUnconfigured(t *testing.T) {
+	dataDir := runtimeTestDir(t)
+	path, err := WriteDaemonRuntime(dataDir, "127.0.0.1", 1, "phase21", false)
+	require.NoError(t, err)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var rec daemon.RuntimeRecord
+	require.NoError(t, json.Unmarshal(data, &rec))
+
+	assert.NotContains(t, rec.Metadata, runtimeCaddyPID)
+	assert.NotContains(t, rec.Metadata, runtimeCaddyCreateTime)
+}
+
+func TestPhase21ManagedCaddyStopClosesGuard(t *testing.T) {
+	guard := &recordingManagedCaddyGuard{}
+	canceled := false
+	caddy := &managedCaddy{
+		cancel: func() { canceled = true },
+		guard:  guard,
+	}
+
+	caddy.Stop()
+	caddy.Stop()
+
+	assert.True(t, canceled)
+	assert.Equal(t, 1, guard.closeCount)
+}
+
 func TestPhase21ManagedCaddyMismatchedPIDDoesNotSignal(t *testing.T) {
 	child := phase21StartHelperProcess(t, "runtime-caddy-child")
 	rec := daemon.RuntimeRecord{Metadata: map[string]string{
@@ -261,4 +313,12 @@ func phase21StartHelperProcess(t *testing.T, mode string) *exec.Cmd {
 		return strings.Contains(stdout.String(), "ready")
 	}, 5*time.Second, 25*time.Millisecond)
 	return cmd
+}
+
+type recordingManagedCaddyGuard struct {
+	closeCount int
+}
+
+func (g *recordingManagedCaddyGuard) Close() {
+	g.closeCount++
 }

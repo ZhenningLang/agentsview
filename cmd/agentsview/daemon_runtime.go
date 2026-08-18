@@ -22,19 +22,19 @@ import (
 )
 
 const (
-	daemonService           = "agentsview"
-	runtimeAPIVersion       = "api_version"
-	runtimeAPIVersionValue  = "1"
-	runtimeCaddyCreateTime  = "caddy_create_time_ms"
-	runtimeCaddyPID         = "caddy_pid"
-	runtimeCreateTime       = "create_time_ms"
-	runtimeDataVersion      = "data_version"
-	runtimeHost             = "host"
-	runtimeNoSync           = "no_sync"
-	runtimePort             = "port"
-	runtimeReadOnly         = "read_only"
-	runtimeRequireAuth      = "require_auth"
-	startProbeTick          = 250 * time.Millisecond
+	daemonService          = "agentsview"
+	runtimeAPIVersion      = "api_version"
+	runtimeAPIVersionValue = "1"
+	runtimeCaddyCreateTime = "caddy_create_time_ms"
+	runtimeCaddyPID        = "caddy_pid"
+	runtimeCreateTime      = "create_time_ms"
+	runtimeDataVersion     = "data_version"
+	runtimeHost            = "host"
+	runtimeNoSync          = "no_sync"
+	runtimePort            = "port"
+	runtimeReadOnly        = "read_only"
+	runtimeRequireAuth     = "require_auth"
+	startProbeTick         = 250 * time.Millisecond
 )
 
 // DaemonRuntime is the agentsview-specific view of a kit daemon runtime record.
@@ -53,9 +53,10 @@ type DaemonRuntime struct {
 }
 
 type daemonRuntimeOptions struct {
-	RequireAuth bool
-	NoSync      bool
-	CaddyPID    int
+	RequireAuth           bool
+	NoSync                bool
+	CaddyPID              int
+	CaddyCreateTimeMillis int64
 }
 
 func runtimeStore(dataDir string) daemon.RuntimeStore {
@@ -91,7 +92,9 @@ func WriteDaemonRuntime(
 	}
 	if options.CaddyPID > 0 {
 		rec.Metadata[runtimeCaddyPID] = strconv.Itoa(options.CaddyPID)
-		if ct, ok := processCreateTimeMillis(options.CaddyPID); ok {
+		if options.CaddyCreateTimeMillis > 0 {
+			rec.Metadata[runtimeCaddyCreateTime] = strconv.FormatInt(options.CaddyCreateTimeMillis, 10)
+		} else if ct, ok := processCreateTimeMillis(options.CaddyPID); ok {
 			rec.Metadata[runtimeCaddyCreateTime] = strconv.FormatInt(ct, 10)
 		}
 	}

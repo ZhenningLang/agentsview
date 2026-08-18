@@ -298,9 +298,10 @@ func runPGServe(appCfg config.Config, basePath string) {
 	if _, sfErr := WriteDaemonRuntime(
 		rt.Cfg.DataDir, rt.Cfg.Host, rt.Cfg.Port, version, true,
 		daemonRuntimeOptions{
-			RequireAuth: rt.Cfg.RequireAuth,
-			NoSync:      rt.Cfg.NoSync,
-			CaddyPID:    rt.Caddy.Pid(),
+			RequireAuth:           rt.Cfg.RequireAuth,
+			NoSync:                rt.Cfg.NoSync,
+			CaddyPID:              rt.Caddy.Pid(),
+			CaddyCreateTimeMillis: rt.Caddy.CreateTimeMillis(),
 		},
 	); sfErr != nil {
 		log.Printf(

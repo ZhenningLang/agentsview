@@ -18,9 +18,11 @@ import (
 const managedCaddyStartGrace = 300 * time.Millisecond
 
 type managedCaddy struct {
-	cancel context.CancelFunc
-	errCh  chan error
-	pid    int
+	cancel           context.CancelFunc
+	errCh            chan error
+	pid              int
+	createTimeMillis int64
+	guard            managedCaddyGuard
 }
 
 func (m *managedCaddy) Pid() int {
@@ -28,6 +30,13 @@ func (m *managedCaddy) Pid() int {
 		return 0
 	}
 	return m.pid
+}
+
+func (m *managedCaddy) CreateTimeMillis() int64 {
+	if m == nil {
+		return 0
+	}
+	return m.createTimeMillis
 }
 
 func browserURL(cfg config.Config) string {
@@ -261,6 +270,15 @@ func startManagedCaddy(
 		cancel()
 		return nil, fmt.Errorf("starting managed caddy: %w", err)
 	}
+	pid := cmd.Process.Pid
+	createTimeMillis, _ := processCreateTimeMillis(pid)
+	guard, err := guardManagedCaddyProcess(cmd.Process)
+	if err != nil {
+		cancel()
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+		return nil, fmt.Errorf("guarding managed caddy: %w", err)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -270,6 +288,7 @@ func startManagedCaddy(
 	select {
 	case err := <-errCh:
 		cancel()
+		guard.Close()
 		if err == nil {
 			return nil, fmt.Errorf("managed caddy exited immediately")
 		}
@@ -277,13 +296,16 @@ func startManagedCaddy(
 	case <-time.After(managedCaddyStartGrace):
 	case <-parent.Done():
 		cancel()
+		guard.Close()
 		return nil, parent.Err()
 	}
 
 	return &managedCaddy{
-		cancel: cancel,
-		errCh:  errCh,
-		pid:    cmd.Process.Pid,
+		cancel:           cancel,
+		errCh:            errCh,
+		pid:              pid,
+		createTimeMillis: createTimeMillis,
+		guard:            guard,
 	}, nil
 }
 
@@ -292,6 +314,11 @@ func (m *managedCaddy) Stop() {
 		return
 	}
 	m.cancel()
+	if m.guard != nil {
+		guard := m.guard
+		m.guard = nil
+		guard.Close()
+	}
 }
 
 func (m *managedCaddy) Err() <-chan error {
