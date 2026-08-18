@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -879,4 +880,715 @@ func (te *testEnv) seedInsight(
 	})
 	require.NoError(t, err)
 	return id
+}
+
+// --- Phase 25: insight HTML / Markdown export routes ---
+
+// phase25EventAttrRe matches an HTML event-handler attribute that lives
+// inside a real tag. Escaped text such as
+// `&lt;img src=x onerror=alert(1)&gt;` contains neither `<` nor `>`, so a
+// zero match count proves hostile input never reopened a tag.
+var phase25EventAttrRe = regexp.MustCompile(`<[^>]*\son[a-zA-Z]+\s*=`)
+
+// phase25ChipRe extracts the metadata chips from an exported insight so
+// tests can assert the full ordered set, including absent optional chips.
+var phase25ChipRe = regexp.MustCompile(
+	`<span class="chip">(.*?)</span>`)
+
+func (te *testEnv) seedPhase25Insight(
+	t *testing.T, in db.Insight,
+) int64 {
+	t.Helper()
+	id, err := te.db.InsertInsight(in)
+	require.NoError(t, err)
+	return id
+}
+
+func phase25Chips(body string) []string {
+	matches := phase25ChipRe.FindAllStringSubmatch(body, -1)
+	chips := make([]string, 0, len(matches))
+	for _, m := range matches {
+		chips = append(chips, m[1])
+	}
+	return chips
+}
+
+func TestPhase25InsightHTMLExport(t *testing.T) {
+	tests := []struct {
+		name         string
+		insight      db.Insight
+		wantFilename string
+		wantTitle    string
+		wantChips    []string
+		wantContains []string
+	}{
+		{
+			name: "DailyActivityProjectScopedWithModel",
+			insight: db.Insight{
+				Type:     "daily_activity",
+				DateFrom: "2025-01-15",
+				DateTo:   "2025-01-15",
+				Project:  new("my-app"),
+				Agent:    "claude",
+				Model:    new("opus-5"),
+				Content:  "Shipped the export route.",
+			},
+			wantFilename: "insight-daily_activity-my-app-20250115.html",
+			wantTitle:    "Daily Activity Insight",
+			wantChips: []string{
+				"Daily Activity", "my-app", "2025-01-15",
+				"Claude Code", "opus-5",
+			},
+			wantContains: []string{"Shipped the export route."},
+		},
+		{
+			name: "AgentAnalysisGlobalDateRangeNoModel",
+			insight: db.Insight{
+				Type:     "agent_analysis",
+				DateFrom: "2025-01-15",
+				DateTo:   "2025-01-20",
+				Project:  nil,
+				Agent:    "claude",
+				Model:    nil,
+				Content:  "Agent comparison.",
+			},
+			wantFilename: "insight-agent_analysis-global-20250115-20250120.html",
+			wantTitle:    "Agent Analysis Insight",
+			wantChips: []string{
+				"Agent Analysis", "global", "2025-01-15 to 2025-01-20",
+				"Claude Code",
+			},
+			wantContains: []string{"Agent comparison."},
+		},
+		{
+			name: "UnknownAgentFallsBackToRawName",
+			insight: db.Insight{
+				Type:     "daily_activity",
+				DateFrom: "2025-02-01",
+				DateTo:   "2025-02-01",
+				Project:  new("my-app"),
+				Agent:    "not-a-registered-agent",
+				Content:  "Body.",
+			},
+			wantFilename: "insight-daily_activity-my-app-20250201.html",
+			wantTitle:    "Daily Activity Insight",
+			wantChips: []string{
+				"Daily Activity", "my-app", "2025-02-01",
+				"not-a-registered-agent",
+			},
+		},
+		{
+			name: "EmptyProjectStringIsGlobal",
+			insight: db.Insight{
+				Type:     "daily_activity",
+				DateFrom: "2025-03-01",
+				DateTo:   "",
+				Project:  new("   "),
+				Agent:    "claude",
+				Content:  "Body.",
+			},
+			wantFilename: "insight-daily_activity-global-20250301.html",
+			wantTitle:    "Daily Activity Insight",
+			wantChips: []string{
+				"Daily Activity", "global", "2025-03-01", "Claude Code",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			te := setup(t)
+			id := te.seedPhase25Insight(t, tt.insight)
+
+			w := te.get(t, fmt.Sprintf(
+				"/api/v1/insights/%d/export", id))
+
+			require.Equal(t, http.StatusOK, w.Code,
+				"body: %.200s", w.Body.String())
+			assert.Equal(t, "text/html; charset=utf-8",
+				w.Header().Get("Content-Type"))
+			assert.Equal(t,
+				fmt.Sprintf(`attachment; filename="%s"`, tt.wantFilename),
+				w.Header().Get("Content-Disposition"))
+
+			body := w.Body.String()
+			assert.Contains(t, body,
+				"<title>"+tt.wantTitle+"</title>")
+			assert.Contains(t, body, "<h1>"+tt.wantTitle+"</h1>")
+			// The trailing chip is the DB-assigned created_at, so it
+			// is pinned by shape rather than by value.
+			chips := phase25Chips(body)
+			require.Len(t, chips, len(tt.wantChips)+1,
+				"chips: %#v", chips)
+			assert.Equal(t, tt.wantChips, chips[:len(tt.wantChips)])
+			assert.Regexp(t,
+				`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$`,
+				chips[len(chips)-1])
+			for _, want := range tt.wantContains {
+				assert.Contains(t, body, want)
+			}
+			assert.Empty(t, phase25EventAttrRe.FindAllString(body, -1),
+				"exported insight must not contain event attributes")
+		})
+	}
+}
+
+func TestPhase25InsightHTMLExportEscapesHostileMetadataAndContent(t *testing.T) {
+	te := setup(t)
+	id := te.seedPhase25Insight(t, db.Insight{
+		Type:     "daily_activity",
+		DateFrom: "2025-01-15",
+		DateTo:   "2025-01-15",
+		Project:  new(`<img src=x onerror=alert(1)>`),
+		Agent:    `<svg onload=alert(2)>`,
+		Model:    new(`" onmouseover="alert(3)`),
+		Content: "<script>alert('xss')</script>\n" +
+			"<div onclick=\"steal()\">click</div>\n" +
+			"```js\n<script>alert('in-code')</script>\n```\n" +
+			"`<b>inline</b>`\n",
+	})
+
+	w := te.get(t, fmt.Sprintf("/api/v1/insights/%d/export", id))
+
+	require.Equal(t, http.StatusOK, w.Code,
+		"body: %.200s", w.Body.String())
+	body := w.Body.String()
+
+	// No hostile input may reopen a tag or introduce a handler.
+	assert.Empty(t, phase25EventAttrRe.FindAllString(body, -1),
+		"hostile metadata/content must not produce event attributes")
+	assert.NotContains(t, body, "<script")
+	assert.NotContains(t, body, "<img")
+	assert.NotContains(t, body, "<svg")
+	assert.NotContains(t, body, "<b>inline</b>")
+	assert.NotContains(t, body, `" onmouseover=`)
+
+	// The hostile text must still be visible, escaped.
+	assert.Contains(t, body, "&lt;script&gt;")
+	assert.Contains(t, body, "&lt;img src=x onerror=alert(1)&gt;")
+	assert.Contains(t, body, "&lt;svg onload=alert(2)&gt;")
+	assert.Contains(t, body, "&lt;b&gt;inline&lt;/b&gt;")
+
+	// A hostile project name must not escape the filename either.
+	disposition := w.Header().Get("Content-Disposition")
+	require.True(t,
+		strings.HasPrefix(disposition, `attachment; filename="`),
+		"disposition: %q", disposition)
+	filename := strings.TrimSuffix(
+		strings.TrimPrefix(disposition, `attachment; filename="`), `"`)
+	assert.True(t, strings.HasSuffix(filename, ".html"),
+		"filename: %q", filename)
+	assert.Regexp(t, `^[\w.\-]+$`, filename)
+}
+
+func TestPhase25InsightHTMLExportNotFoundIsJSON404(t *testing.T) {
+	te := setup(t)
+
+	w := te.get(t, "/api/v1/insights/999999/export")
+
+	require.Equal(t, http.StatusNotFound, w.Code,
+		"body: %.200s", w.Body.String())
+	assert.NotContains(t, w.Header().Get("Content-Type"), "text/html")
+	assert.Contains(t, w.Body.String(), "insight not found")
+}
+
+func TestPhase25InsightMarkdownExport(t *testing.T) {
+	tests := []struct {
+		name         string
+		insight      db.Insight
+		wantFilename string
+	}{
+		{
+			name: "ProjectScopedSingleDay",
+			insight: db.Insight{
+				Type:     "daily_activity",
+				DateFrom: "2025-01-15",
+				DateTo:   "2025-01-15",
+				Project:  new("my-app"),
+				Agent:    "claude",
+				Model:    new("opus-5"),
+				Content: "# Heading\n\n" +
+					"<script>alert('raw')</script>\n\n" +
+					"```js\nconst a = 1 < 2 && 3 > 2;\n```\n" +
+					"中文 & \"quotes\" 'apostrophes'\n",
+			},
+			wantFilename: "insight-daily_activity-my-app-20250115.md",
+		},
+		{
+			name: "GlobalDateRange",
+			insight: db.Insight{
+				Type:     "agent_analysis",
+				DateFrom: "2025-01-15",
+				DateTo:   "2025-01-20",
+				Project:  nil,
+				Agent:    "claude",
+				Content:  "- item\n- item\n",
+			},
+			wantFilename: "insight-agent_analysis-global-20250115-20250120.md",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			te := setup(t)
+			id := te.seedPhase25Insight(t, tt.insight)
+
+			w := te.get(t, fmt.Sprintf(
+				"/api/v1/insights/%d/md", id))
+
+			require.Equal(t, http.StatusOK, w.Code,
+				"body: %.200s", w.Body.String())
+			assert.Equal(t, "text/markdown; charset=utf-8",
+				w.Header().Get("Content-Type"))
+			assert.Equal(t,
+				fmt.Sprintf(`inline; filename="%s"`, tt.wantFilename),
+				w.Header().Get("Content-Disposition"))
+			// Byte-for-byte: the Markdown route must never rewrite,
+			// escape or re-render the stored content.
+			assert.Equal(t, tt.insight.Content, w.Body.String())
+		})
+	}
+}
+
+func TestPhase25InsightMarkdownExportNotFoundIsJSON404(t *testing.T) {
+	te := setup(t)
+
+	w := te.get(t, "/api/v1/insights/999999/md")
+
+	require.Equal(t, http.StatusNotFound, w.Code,
+		"body: %.200s", w.Body.String())
+	assert.NotContains(t, w.Header().Get("Content-Type"), "text/html")
+	assert.Contains(t, w.Body.String(), "insight not found")
+}
+
+// --- Phase 25: insight Gist publish through an injected endpoint ---
+
+// phase25Token is a fixture credential. It is deliberately not shaped
+// like a real GitHub token so secret scanners have nothing to match.
+const phase25Token = "phase25-token"
+
+type phase25GistFile struct {
+	Content string `json:"content"`
+}
+
+type phase25GistPayload struct {
+	Description string                     `json:"description"`
+	Public      bool                       `json:"public"`
+	Files       map[string]phase25GistFile `json:"files"`
+}
+
+type phase25GistRequest struct {
+	Method        string
+	UserAgent     string
+	Authorization string
+	Accept        string
+	ContentType   string
+	Payload       phase25GistPayload
+}
+
+// phase25GistStub is a loopback stand-in for GitHub's Create Gist API.
+// Every publish test points the server at one of these, so no test can
+// reach api.github.com or create a real gist.
+type phase25GistStub struct {
+	server   *httptest.Server
+	mu       sync.Mutex
+	requests []phase25GistRequest
+}
+
+func newPhase25GistStub(
+	t *testing.T, status int, body string,
+) *phase25GistStub {
+	t.Helper()
+	stub := &phase25GistStub{}
+	stub.server = httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			stub.record(t, r)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			if body != "" {
+				_, _ = io.WriteString(w, body)
+			}
+		}))
+	t.Cleanup(stub.server.Close)
+	return stub
+}
+
+func (g *phase25GistStub) record(t *testing.T, r *http.Request) {
+	t.Helper()
+	raw, err := io.ReadAll(r.Body)
+	if !assert.NoError(t, err) {
+		return
+	}
+	rec := phase25GistRequest{
+		Method:        r.Method,
+		UserAgent:     r.Header.Get("User-Agent"),
+		Authorization: r.Header.Get("Authorization"),
+		Accept:        r.Header.Get("Accept"),
+		ContentType:   r.Header.Get("Content-Type"),
+	}
+	assert.NoError(t, json.Unmarshal(raw, &rec.Payload),
+		"gist payload: %s", raw)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.requests = append(g.requests, rec)
+}
+
+func (g *phase25GistStub) captured() []phase25GistRequest {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]phase25GistRequest(nil), g.requests...)
+}
+
+func (g *phase25GistStub) only(t *testing.T) phase25GistRequest {
+	t.Helper()
+	got := g.captured()
+	require.Len(t, got, 1, "expected exactly one gist request")
+	return got[0]
+}
+
+// setupPhase25Publish wires a server whose Create Gist endpoint is the
+// given loopback stub and whose GitHub token is the fixture token.
+func setupPhase25Publish(
+	t *testing.T, stub *phase25GistStub,
+) *testEnv {
+	t.Helper()
+	te := setupWithServerOpts(t, []server.Option{
+		server.WithGithubGistAPIURL(stub.server.URL),
+	})
+	te.srv.SetGithubToken(phase25Token)
+	return te
+}
+
+func phase25DailyInsight() db.Insight {
+	return db.Insight{
+		Type:     "daily_activity",
+		DateFrom: "2025-01-15",
+		DateTo:   "2025-01-15",
+		Project:  new("my-app"),
+		Agent:    "claude",
+		Model:    new("opus-5"),
+		Content:  "Shipped the export route.",
+	}
+}
+
+const phase25GistOKBody = `{
+  "id": "gist-id-123",
+  "html_url": "https://gist.github.com/example-user/gist-id-123",
+  "owner": {"login": "example-user"}
+}`
+
+func TestPhase25InsightPublishSuccessSendsAuthenticatedPOST(t *testing.T) {
+	stub := newPhase25GistStub(t, http.StatusCreated, phase25GistOKBody)
+	te := setupPhase25Publish(t, stub)
+	id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+	w := te.post(t, fmt.Sprintf(
+		"/api/v1/insights/%d/publish", id), "{}")
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	got := stub.only(t)
+	assert.Equal(t, http.MethodPost, got.Method)
+	assert.Equal(t, "agentsview", got.UserAgent)
+	assert.Equal(t, "token "+phase25Token, got.Authorization)
+	assert.Equal(t, "application/vnd.github.v3+json", got.Accept)
+	assert.Equal(t, "application/json", got.ContentType)
+}
+
+func TestPhase25InsightPublishPayloadMatchesHTMLExport(t *testing.T) {
+	stub := newPhase25GistStub(t, http.StatusCreated, phase25GistOKBody)
+	te := setupPhase25Publish(t, stub)
+	id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+	// The gist must carry the same document the export route serves,
+	// not a separately rendered near-copy.
+	exported := te.get(t, fmt.Sprintf(
+		"/api/v1/insights/%d/export", id))
+	require.Equal(t, http.StatusOK, exported.Code)
+
+	w := te.post(t, fmt.Sprintf(
+		"/api/v1/insights/%d/publish", id), "{}")
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+
+	got := stub.only(t)
+	assert.Equal(t,
+		"Insight: Daily Activity - my-app - 2025-01-15",
+		got.Payload.Description)
+	require.Len(t, got.Payload.Files, 1)
+	file, ok := got.Payload.Files["insight-daily_activity-my-app-20250115.html"]
+	require.True(t, ok, "files: %#v", got.Payload.Files)
+	assert.Equal(t, exported.Body.String(), file.Content)
+}
+
+func TestPhase25InsightPublishVisibilityMapsSecretToPublicFlag(t *testing.T) {
+	tests := []struct {
+		name       string
+		query      string
+		wantPublic bool
+	}{
+		{"DefaultIsPublic", "", true},
+		{"SecretFalseIsPublic", "?secret=false", true},
+		// The important direction: a secret publish must never go out
+		// as a public gist, which would expose session-derived content.
+		{"SecretTrueIsPrivate", "?secret=true", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := newPhase25GistStub(
+				t, http.StatusCreated, phase25GistOKBody)
+			te := setupPhase25Publish(t, stub)
+			id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+			w := te.post(t, fmt.Sprintf(
+				"/api/v1/insights/%d/publish%s", id, tt.query), "{}")
+
+			require.Equal(t, http.StatusOK, w.Code,
+				"body: %s", w.Body.String())
+			assert.Equal(t, tt.wantPublic, stub.only(t).Payload.Public)
+		})
+	}
+}
+
+func TestPhase25InsightPublishResultURLs(t *testing.T) {
+	stub := newPhase25GistStub(t, http.StatusCreated, phase25GistOKBody)
+	te := setupPhase25Publish(t, stub)
+	id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+	w := te.post(t, fmt.Sprintf(
+		"/api/v1/insights/%d/publish", id), "{}")
+
+	require.Equal(t, http.StatusOK, w.Code, "body: %s", w.Body.String())
+	var got struct {
+		GistID  string `json:"gist_id"`
+		GistURL string `json:"gist_url"`
+		ViewURL string `json:"view_url"`
+		RawURL  string `json:"raw_url"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &got))
+
+	rawURL := "https://gist.githubusercontent.com/example-user/" +
+		"gist-id-123/raw/insight-daily_activity-my-app-20250115.html"
+	assert.Equal(t, "gist-id-123", got.GistID)
+	assert.Equal(t,
+		"https://gist.github.com/example-user/gist-id-123", got.GistURL)
+	assert.Equal(t, rawURL, got.RawURL)
+	assert.Equal(t, "https://htmlpreview.github.io/?"+rawURL, got.ViewURL)
+}
+
+func TestPhase25InsightPublishNoTokenIs401AndSendsNothing(t *testing.T) {
+	stub := newPhase25GistStub(t, http.StatusCreated, phase25GistOKBody)
+	te := setupWithServerOpts(t, []server.Option{
+		server.WithGithubGistAPIURL(stub.server.URL),
+	})
+	id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+	w := te.post(t, fmt.Sprintf(
+		"/api/v1/insights/%d/publish", id), "{}")
+
+	require.Equal(t, http.StatusUnauthorized, w.Code,
+		"body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "GitHub token not configured")
+	assert.Empty(t, stub.captured(),
+		"unauthenticated publish must not reach the gist API")
+}
+
+func TestPhase25InsightPublishNotFoundIs404AndSendsNothing(t *testing.T) {
+	stub := newPhase25GistStub(t, http.StatusCreated, phase25GistOKBody)
+	te := setupPhase25Publish(t, stub)
+
+	w := te.post(t, "/api/v1/insights/999999/publish", "{}")
+
+	require.Equal(t, http.StatusNotFound, w.Code,
+		"body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "insight not found")
+	assert.Empty(t, stub.captured(),
+		"a missing insight must not reach the gist API")
+}
+
+func TestPhase25InsightPublishGithubErrorIs502(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"Unauthorized", http.StatusUnauthorized, `{"message":"Bad credentials"}`},
+		{"Forbidden", http.StatusForbidden, `{"message":"rate limited"}`},
+		{"Unprocessable", http.StatusUnprocessableEntity, `{"message":"invalid"}`},
+		{"ServerError", http.StatusInternalServerError, `{"message":"boom"}`},
+		{"Unavailable", http.StatusServiceUnavailable, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := newPhase25GistStub(t, tt.status, tt.body)
+			te := setupPhase25Publish(t, stub)
+			id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+			w := te.post(t, fmt.Sprintf(
+				"/api/v1/insights/%d/publish", id), "{}")
+
+			require.Equal(t, http.StatusBadGateway, w.Code,
+				"body: %s", w.Body.String())
+			assert.NotContains(t, w.Body.String(), phase25Token,
+				"error response must not echo the token")
+			assert.Len(t, stub.captured(), 1,
+				"a failed publish must not be retried")
+		})
+	}
+}
+
+func TestPhase25InsightPublishIncompleteGistIs502(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"EmptyObject", `{}`},
+		{"MissingHTMLURL", `{"id":"gist-id-123"}`},
+		{"MissingID", `{"html_url":"https://gist.github.com/x/y"}`},
+		{"BlankFields", `{"id":"","html_url":""}`},
+		{"NotJSON", `<!doctype html><html></html>`},
+		// The owner login is not decoration: it is a path segment of
+		// raw_url, so a response without it yields a 200 carrying a
+		// broken link instead of an error.
+		{"MissingOwner", `{"id":"gist-id-123","html_url":"https://gist.github.com/example-user/gist-id-123"}`},
+		{"EmptyOwnerObject", `{"id":"gist-id-123","html_url":"https://gist.github.com/example-user/gist-id-123","owner":{}}`},
+		{"BlankOwnerLogin", `{"id":"gist-id-123","html_url":"https://gist.github.com/example-user/gist-id-123","owner":{"login":"   "}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := newPhase25GistStub(t, http.StatusCreated, tt.body)
+			te := setupPhase25Publish(t, stub)
+			id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+			w := te.post(t, fmt.Sprintf(
+				"/api/v1/insights/%d/publish", id), "{}")
+
+			require.Equal(t, http.StatusBadGateway, w.Code,
+				"body: %s", w.Body.String())
+			assert.NotContains(t, w.Body.String(), phase25Token)
+			assert.NotContains(t, w.Body.String(),
+				"gist.githubusercontent.com",
+				"an incomplete response must not produce a raw URL")
+		})
+	}
+}
+
+// TestPhase25InsightPublishGithubErrorBodyNeverReachesClient pins that the
+// upstream error body never crosses the API boundary. GitHub (or any proxy in
+// front of it) can echo the request back in an error shape, and this 502 body
+// is what lands in the UI, the browser console and a user's screenshot, so the
+// handler must report a sanitized error rather than relay what it received.
+func TestPhase25InsightPublishGithubErrorBodyNeverReachesClient(t *testing.T) {
+	tests := []struct {
+		name string
+		// body echoes the credential the way a careless upstream would.
+		body string
+		// marker is a distinctive fragment of body that must not appear
+		// in the response either: proving only "token absent" would pass
+		// for a redactor that misses any other encoding of it.
+		marker string
+	}{
+		{
+			"TokenInMessage",
+			`{"message":"Bad credentials for token phase25-token"}`,
+			"Bad credentials",
+		},
+		{
+			"TokenInEchoedRequest",
+			`{"message":"invalid","request":{"Authorization":"token phase25-token"}}`,
+			"Authorization",
+		},
+		{
+			"TokenInPlainText",
+			"authorization: token phase25-token",
+			"authorization",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stub := newPhase25GistStub(t, http.StatusUnauthorized, tt.body)
+			te := setupPhase25Publish(t, stub)
+			id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+			w := te.post(t, fmt.Sprintf(
+				"/api/v1/insights/%d/publish", id), "{}")
+
+			require.Equal(t, http.StatusBadGateway, w.Code,
+				"body: %s", w.Body.String())
+			assert.NotContains(t, w.Body.String(), phase25Token,
+				"the response must never carry our credential")
+			assert.NotContains(t, w.Body.String(), tt.marker,
+				"the upstream body must not be relayed verbatim")
+			assert.Contains(t, w.Body.String(), "401",
+				"the upstream status is the diagnostic that may cross")
+			assert.Len(t, stub.captured(), 1,
+				"a failed publish must not be retried")
+		})
+	}
+}
+
+func TestPhase25InsightPublishCancelledRequestIsReported(t *testing.T) {
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	ts := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			once.Do(func() { close(reached) })
+			// Hold the response open so the cancellation is observed
+			// rather than raced against a timer. `release` is what
+			// unblocks the handler at teardown; the request context is
+			// only an early exit, because an HTTP/1 server does not
+			// reliably notice a cancelled client before then.
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		}))
+	t.Cleanup(func() {
+		close(release)
+		ts.Close()
+	})
+
+	te := setupWithServerOpts(t, []server.Option{
+		server.WithGithubGistAPIURL(ts.URL),
+	})
+	te.srv.SetGithubToken(phase25Token)
+	id := te.seedPhase25Insight(t, phase25DailyInsight())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-reached
+		cancel()
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, fmt.Sprintf(
+		"/api/v1/insights/%d/publish", id),
+		strings.NewReader("{}")).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", "http://127.0.0.1:0")
+	w := httptest.NewRecorder()
+	te.handler.ServeHTTP(w, req)
+
+	// A cancelled request never reaches the publish handler's own error
+	// mapping: humaTimeout's http.TimeoutHandler answers 503 with an
+	// empty body for every route. What matters here is that the caller
+	// cannot mistake this for a completed publish.
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code,
+		"body: %s", w.Body.String())
+	assert.NotEqual(t, http.StatusOK, w.Code)
+	assert.NotContains(t, w.Body.String(), "gist_url")
+	assert.NotContains(t, w.Body.String(), phase25Token)
+	// The request did go out, so the cancellation is a real in-flight
+	// one rather than a request that was never attempted. This is a
+	// non-blocking check on purpose: by the time ServeHTTP returns the
+	// stub has either been reached or never will be, and a blocking
+	// receive here would hang the suite instead of failing it.
+	select {
+	case <-reached:
+	default:
+		assert.Fail(t, "publish never reached the gist stub")
+	}
 }

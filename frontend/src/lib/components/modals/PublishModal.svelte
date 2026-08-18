@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { ui } from "../../stores/ui.svelte.js";
-  import { sessions } from "../../stores/sessions.svelte.js";
+  import { onDestroy } from "svelte";
+  import { ui, type PublishTarget } from "../../stores/ui.svelte.js";
   import {
     ConfigService,
+    InsightsService,
     SessionsService,
   } from "../../api/generated/index";
   import { configureGeneratedClient } from "../../api/runtime.js";
@@ -10,21 +11,41 @@
 
   type View = "setup" | "progress" | "success" | "error";
 
+  // Snapshot the target and the visibility once, at mount. Setup, publish and
+  // retry all sit behind awaits, and re-reading the store after one of them
+  // would publish whatever was selected last instead of what was clicked.
+  const target: PublishTarget | null = ui.publishTarget;
+  const secret: boolean = ui.publishSecret;
+
   let view: View = $state("progress");
   let tokenInput: string = $state("");
   let errorMessage: string = $state("");
   let result: PublishResponse | null = $state(null);
+  // Not $state: nothing renders it. Every awaited step reads it to decide
+  // whether this modal is still the dialog the user is looking at.
+  let closed = false;
+
+  onDestroy(() => {
+    closed = true;
+  });
+
+  function close() {
+    closed = true;
+    ui.activeModal = null;
+  }
 
   async function init() {
     try {
       configureGeneratedClient();
       const config = await ConfigService.getApiV1ConfigGithub();
+      if (closed) return;
       if (config.configured) {
         await doPublish();
       } else {
         view = "setup";
       }
     } catch {
+      if (closed) return;
       view = "setup";
     }
   }
@@ -39,8 +60,10 @@
       await ConfigService.postApiV1ConfigGithub({
         requestBody: { token },
       });
+      if (closed) return;
       await doPublish();
     } catch (err) {
+      if (closed) return;
       errorMessage =
         err instanceof Error ? err.message : "Failed to save token";
       view = "error";
@@ -48,9 +71,12 @@
   }
 
   async function doPublish() {
-    const id = sessions.activeSessionId;
-    if (!id) {
-      errorMessage = "No session selected";
+    if (closed) return;
+    if (!target) {
+      // Deliberately an error rather than a fallback to the active session:
+      // publishing something the user did not pick is exactly the failure the
+      // explicit target exists to prevent.
+      errorMessage = "No publish target selected";
       view = "error";
       return;
     }
@@ -58,13 +84,21 @@
     view = "progress";
     try {
       configureGeneratedClient();
-      result =
-        await SessionsService.postApiV1SessionsIdPublish({
-          id,
-          secret: ui.publishSecret,
-        }) as unknown as PublishResponse;
+      const response =
+        target.kind === "insight"
+          ? await InsightsService.postApiV1InsightsIdPublish({
+              id: target.id,
+              secret,
+            })
+          : await SessionsService.postApiV1SessionsIdPublish({
+              id: target.id,
+              secret,
+            });
+      if (closed) return;
+      result = response as unknown as PublishResponse;
       view = "success";
     } catch (err) {
+      if (closed) return;
       errorMessage =
         err instanceof Error ? err.message : "Publish failed";
       view = "error";
@@ -81,7 +115,7 @@
         "modal-overlay",
       )
     ) {
-      ui.activeModal = null;
+      close();
     }
   }
 
@@ -93,17 +127,17 @@
   class="modal-overlay"
   onclick={handleOverlayClick}
   onkeydown={(e) => {
-    if (e.key === "Escape") ui.activeModal = null;
+    if (e.key === "Escape") close();
   }}
 >
   <div class="modal-panel publish-panel">
     <div class="modal-header">
       <h3 class="modal-title">
-        Publish to {ui.publishSecret ? "secret" : "public"} GitHub Gist
+        Publish to {secret ? "secret" : "public"} GitHub Gist
       </h3>
       <button
         class="modal-close"
-        onclick={() => ui.activeModal = null}
+        onclick={close}
         title="Close publish dialog"
         aria-label="Close publish dialog"
       >
@@ -148,7 +182,7 @@
         <div class="progress-view">
           <div class="modal-spinner"></div>
           <p>
-            Creating {ui.publishSecret ? "secret" : "public"} GitHub Gist...
+            Creating {secret ? "secret" : "public"} GitHub Gist...
           </p>
         </div>
 
@@ -203,7 +237,7 @@
             </button>
             <button
               class="modal-btn"
-              onclick={() => ui.activeModal = null}
+              onclick={close}
             >
               Close
             </button>
@@ -222,7 +256,7 @@
             </button>
             <button
               class="modal-btn"
-              onclick={() => ui.activeModal = null}
+              onclick={close}
             >
               Close
             </button>

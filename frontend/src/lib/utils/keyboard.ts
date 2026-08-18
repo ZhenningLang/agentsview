@@ -188,9 +188,11 @@ export function registerShortcuts(
         }
       },
       p: () => {
-        if (sessions.activeSessionId) {
-          ui.publishSecret = false;
-          ui.activeModal = "publish";
+        // Snapshot the session now: the modal outlives this handler, and a
+        // later selection change must not redirect the publish.
+        const id = sessions.activeSessionId;
+        if (id) {
+          ui.openPublish({ kind: "session", id }, false);
         }
       },
       s: () => {

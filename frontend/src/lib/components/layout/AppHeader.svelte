@@ -278,10 +278,13 @@
   }
 
   function openPublish(secret: boolean) {
-    ui.publishSecret = secret;
-    ui.activeModal = "publish";
+    // Snapshot the session id at click time rather than letting the modal read
+    // the active session later, which would publish whatever is selected then.
+    const id = sessions.activeSessionId;
     showPublishMenu = false;
     showOverflow = false;
+    if (!id) return;
+    ui.openPublish({ kind: "session", id }, secret);
   }
 
   const hasActiveSession = $derived(

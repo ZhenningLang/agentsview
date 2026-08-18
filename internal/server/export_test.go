@@ -1250,3 +1250,131 @@ func TestValidateGithubToken(t *testing.T) {
 		})
 	}
 }
+
+// --- Phase 25: Gist endpoint injection seam ---
+
+func TestPhase25GistAPIEndpointDefaultsToProductionGitHub(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		opts []Option
+		want string
+	}{
+		{
+			name: "Unconfigured",
+			want: defaultGistAPIURL,
+		},
+		{
+			name: "EmptyURLIsIgnored",
+			opts: []Option{WithGithubGistAPIURL("")},
+			want: defaultGistAPIURL,
+		},
+		{
+			name: "ExplicitURLWins",
+			opts: []Option{
+				WithGithubGistAPIURL("http://127.0.0.1:1/gists"),
+			},
+			want: "http://127.0.0.1:1/gists",
+		},
+		{
+			name: "EmptyURLDoesNotClearAnExplicitOne",
+			opts: []Option{
+				WithGithubGistAPIURL("http://127.0.0.1:1/gists"),
+				WithGithubGistAPIURL(""),
+			},
+			want: "http://127.0.0.1:1/gists",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// A bare &Server{} stands in for any construction path that
+			// never ran the option list; it must still resolve to
+			// production GitHub rather than to an empty URL.
+			s := &Server{}
+			for _, opt := range tt.opts {
+				opt(s)
+			}
+			assert.Equal(t, tt.want, s.gistAPIEndpoint())
+			assert.NotEmpty(t, s.gistAPIEndpoint())
+		})
+	}
+}
+
+func TestPhase25InsightPublishCancelledContextSurfacesError(t *testing.T) {
+	t.Parallel()
+	ts := stubServer(t, http.MethodPost, "phase25-token",
+		http.StatusCreated, `{"id":"x","html_url":"https://gist/x"}`)
+	defer ts.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	got, err := publishExportHTMLWithURL(
+		ctx, ts.URL, "phase25-token",
+		"insight.html", "desc", "<html></html>", true,
+	)
+
+	assert.Nil(t, got, "no publish result may be returned")
+	assertContextCancelled(t, err)
+}
+
+// TestPhase25InsightPublishRejectsUpstreamErrorBodyEcho is the helper-level
+// half of the boundary rule: whatever the upstream says on an error, the
+// returned error carries the status and nothing else, so no caller can relay
+// a credential it never had to see.
+func TestPhase25InsightPublishRejectsUpstreamErrorBodyEcho(t *testing.T) {
+	t.Parallel()
+	ts := stubServer(t, http.MethodPost, "phase25-token",
+		http.StatusUnprocessableEntity,
+		`{"message":"invalid request: token phase25-token"}`)
+	defer ts.Close()
+
+	got, err := publishExportHTMLWithURL(
+		context.Background(), ts.URL, "phase25-token",
+		"insight.html", "desc", "<html></html>", true,
+	)
+
+	assert.Nil(t, got, "no publish result may be returned")
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "phase25-token",
+		"the credential must not survive into the error")
+	assert.NotContains(t, err.Error(), "invalid request",
+		"the upstream body must not survive into the error")
+	assert.Contains(t, err.Error(), "422",
+		"the upstream status is what a caller may report")
+}
+
+func TestPhase25InsightPublishRejectsIncompleteGistResponse(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"EmptyObject", `{}`},
+		{"MissingHTMLURL", `{"id":"gist-id-123"}`},
+		{"MissingID", `{"html_url":"https://gist.github.com/x/y"}`},
+		// Without an owner login the raw URL loses a path segment and
+		// degrades into "gist.githubusercontent.com//<id>/raw/...".
+		{"MissingOwnerLogin", `{"id":"gist-id-123","html_url":"https://gist.github.com/x/gist-id-123","owner":{}}`},
+		{"BlankOwnerLogin", `{"id":"gist-id-123","html_url":"https://gist.github.com/x/gist-id-123","owner":{"login":" "}}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ts := stubServer(t, http.MethodPost, "phase25-token",
+				http.StatusCreated, tt.body)
+			defer ts.Close()
+
+			got, err := publishExportHTMLWithURL(
+				context.Background(), ts.URL, "phase25-token",
+				"insight.html", "desc", "<html></html>", true,
+			)
+
+			assert.Nil(t, got)
+			assertErrorContains(t, err, "incomplete gist data")
+		})
+	}
+}

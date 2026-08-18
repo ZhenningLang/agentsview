@@ -28,6 +28,15 @@ type ModalType =
   | "confirmDelete"
   | null;
 
+/**
+ * What the shared publish modal will publish. Explicit rather than inferred
+ * from whatever session happens to be active, so opening the modal from an
+ * insight cannot publish a session instead.
+ */
+export type PublishTarget =
+  | { kind: "session"; id: string }
+  | { kind: "insight"; id: number };
+
 /** Block types that can be toggled visible/hidden. */
 export type BlockType =
   | "user"
@@ -221,9 +230,11 @@ class UIStore {
     readStoredTranscriptMode(),
   );
   sidebarWidth: number = $state(readStoredSidebarWidth());
-  activeModal: ModalType = $state(null);
+  #activeModal: ModalType = $state(null);
   /** Whether the next gist publish should be secret instead of public. */
   publishSecret: boolean = $state(false);
+  /** Explicit target of the shared publish modal; null when nothing is set. */
+  publishTarget: PublishTarget | null = $state(null);
   selectedOrdinal: number | null = $state(null);
   pendingScrollOrdinal: number | null = $state(null);
   pendingScrollSession: string | null = $state(null);
@@ -473,6 +484,34 @@ class UIStore {
         }
       });
     }
+  }
+
+  get activeModal(): ModalType {
+    return this.#activeModal;
+  }
+
+  /**
+   * Every close path in the app writes activeModal directly, so the publish
+   * target is dropped here rather than in each caller. A target left behind
+   * would make the next open publish the previous object.
+   */
+  set activeModal(next: ModalType) {
+    if (this.#activeModal === "publish" && next !== "publish") {
+      this.publishTarget = null;
+    }
+    this.#activeModal = next;
+  }
+
+  /** Open the shared publish modal against an explicit target. */
+  openPublish(target: PublishTarget, secret: boolean) {
+    this.publishTarget = target;
+    this.publishSecret = secret;
+    this.activeModal = "publish";
+  }
+
+  /** Close the shared publish modal and drop its target. */
+  closePublish() {
+    this.activeModal = null;
   }
 
   /** Resolved light/dark theme, with "system" mapped to the OS scheme. */

@@ -50,6 +50,9 @@ fi
 # the server from discovering real sessions on the host.
 agent_env=(
   "AGENTSVIEW_DATA_DIR=$TMPDIR"
+  # The update check fetches github.com from this process, which no
+  # browser-side route mock can intercept. E2E runs stay offline.
+  "AGENTSVIEW_DISABLE_UPDATE_CHECK=1"
   "CLAUDE_PROJECTS_DIR=$EMPTY_DIR"
   "CLAUDE_CONFIG_DIR=$TMPDIR/claude-config"
   "CODEX_SESSIONS_DIR=$EMPTY_DIR"

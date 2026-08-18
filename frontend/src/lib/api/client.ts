@@ -315,6 +315,11 @@ export function getExportUrl(sessionId: string): string {
   return `${getBase()}/sessions/${sessionId}/export`;
 }
 
+/** Get the HTML export URL for a generated insight. */
+export function getInsightExportUrl(insightId: number): string {
+  return `${getBase()}/insights/${insightId}/export`;
+}
+
 /** Get markdown export URL for a session, with optional child depth. */
 export function getMarkdownExportUrl(
   sessionId: string,
@@ -330,10 +335,44 @@ export function getMarkdownExportUrl(
   return `${url.pathname}${url.search}`;
 }
 
+/** Get the raw Markdown URL for a generated insight. */
+export function getInsightMarkdownExportUrl(
+  insightId: number,
+): string {
+  return `${getBase()}/insights/${insightId}/md`;
+}
+
 /** Download a session export using fetch with auth headers,
  *  avoiding token leakage in the URL for remote connections. */
 export async function downloadExport(sessionId: string): Promise<void> {
-  const url = getExportUrl(sessionId);
+  await downloadAuthenticatedExport(
+    getExportUrl(sessionId),
+    // The route serves HTML, so the fallback name must say .html.
+    `session-${sessionId}.html`,
+  );
+}
+
+/** Download an insight's HTML export. */
+export async function downloadInsightExport(
+  insightId: number,
+): Promise<void> {
+  await downloadAuthenticatedExport(
+    getInsightExportUrl(insightId),
+    `insight-${insightId}.html`,
+  );
+}
+
+/** Fetch an export and hand it to the browser as a download.
+ *
+ * The token is only ever sent as an Authorization header: putting it in
+ * the URL would leak it into browser history, server logs and Referer.
+ * `fallbackFilename` is used only when the response carries no
+ * Content-Disposition filename.
+ */
+async function downloadAuthenticatedExport(
+  url: string,
+  fallbackFilename: string,
+): Promise<void> {
   const token = getAuthToken();
   if (!token) {
     // Local connection — simple navigation is fine.
@@ -353,7 +392,7 @@ export async function downloadExport(sessionId: string): Promise<void> {
   // Extract filename from Content-Disposition if available.
   const cd = res.headers.get("Content-Disposition");
   const match = cd?.match(/filename="?([^"]+)"?/);
-  a.download = match?.[1] ?? `session-${sessionId}.md`;
+  a.download = match?.[1] ?? fallbackFilename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);

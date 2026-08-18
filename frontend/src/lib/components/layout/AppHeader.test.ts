@@ -516,3 +516,141 @@ describe("AppHeader export actions", () => {
     });
   });
 });
+
+describe("Phase 25 AppHeader publish target", () => {
+  let component: ReturnType<typeof mount> | undefined;
+  const originalStorage = globalThis.localStorage;
+  let store: Map<string, string>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    store = new Map();
+    Object.defineProperty(globalThis, "localStorage", {
+      value: {
+        getItem: vi.fn((key: string) => store.get(key) ?? null),
+        setItem: vi.fn((key: string, value: string) => {
+          store.set(key, value);
+        }),
+        removeItem: vi.fn((key: string) => {
+          store.delete(key);
+        }),
+        clear: vi.fn(() => {
+          store.clear();
+        }),
+      },
+      writable: true,
+      configurable: true,
+    });
+    mocks.fetchBalance.mockResolvedValue({
+      supported: false,
+      available: false,
+    });
+    sessions.activeSessionId = "sess-123";
+    sessions.sessions = [testSession()];
+    ui.isMobileViewport = false;
+    ui.activeModal = null;
+    ui.publishTarget = null;
+    ui.publishSecret = false;
+    setLocale("en");
+  });
+
+  afterEach(() => {
+    if (component) {
+      unmount(component);
+      component = undefined;
+    }
+    sessions.sessions = [];
+    sessions.activeSessionId = null;
+    ui.activeModal = null;
+    ui.publishTarget = null;
+    ui.publishSecret = false;
+    setLocale("en");
+    document.body.innerHTML = "";
+    Object.defineProperty(globalThis, "localStorage", {
+      value: originalStorage,
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  async function openPublishMenu() {
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+    const publishButton = document.querySelector<HTMLButtonElement>(
+      'button[aria-label="Publish to Gist"]',
+    );
+    expect(publishButton).not.toBeNull();
+    publishButton!.click();
+    await tick();
+  }
+
+  it("snapshots the active session for a public gist", async () => {
+    await openPublishMenu();
+
+    menuButtonByText("Publish public Gist")!.click();
+    await tick();
+
+    expect(ui.activeModal).toBe("publish");
+    expect(ui.publishTarget).toEqual({
+      kind: "session",
+      id: "sess-123",
+    });
+    expect(ui.publishSecret).toBe(false);
+  });
+
+  it("snapshots the active session for a secret gist", async () => {
+    await openPublishMenu();
+
+    menuButtonByText("Publish secret Gist")!.click();
+    await tick();
+
+    expect(ui.activeModal).toBe("publish");
+    expect(ui.publishTarget).toEqual({
+      kind: "session",
+      id: "sess-123",
+    });
+    expect(ui.publishSecret).toBe(true);
+  });
+
+  it("keeps the snapshot when the active session changes later", async () => {
+    await openPublishMenu();
+
+    menuButtonByText("Publish public Gist")!.click();
+    await tick();
+    sessions.activeSessionId = "sess-999";
+    await tick();
+
+    expect(ui.publishTarget).toEqual({
+      kind: "session",
+      id: "sess-123",
+    });
+  });
+
+  it("replaces a stale insight target with the session", async () => {
+    ui.publishTarget = { kind: "insight", id: 3 };
+
+    await openPublishMenu();
+    menuButtonByText("Publish public Gist")!.click();
+    await tick();
+
+    expect(ui.publishTarget).toEqual({
+      kind: "session",
+      id: "sess-123",
+    });
+  });
+
+  it("offers no session publish entry without an active session", async () => {
+    sessions.activeSessionId = null;
+    sessions.sessions = [];
+
+    component = mount(AppHeader, { target: document.body });
+    await tick();
+
+    expect(
+      document.querySelector('button[aria-label="Publish to Gist"]'),
+    ).toBeNull();
+    expect(menuButtonByText("Publish public Gist")).toBeUndefined();
+    expect(ui.activeModal).toBeNull();
+    expect(ui.publishTarget).toBeNull();
+  });
+});

@@ -7,6 +7,7 @@ import (
 	"html"
 	"html/template"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -26,6 +27,36 @@ type gistResponse struct {
 	} `json:"owner"`
 }
 
+// githubAPIError is the only shape an upstream failure takes on its way
+// back to a caller. It carries the status code and nothing else, because
+// handlers surface Error() verbatim in a 502 and the upstream body is
+// attacker- and vendor-controlled text that may quote the credential we
+// just sent. Redacting the body instead would only cover the encodings
+// we happened to think of, so the body never crosses this boundary.
+type githubAPIError struct {
+	StatusCode int
+}
+
+func (e *githubAPIError) Error() string {
+	return fmt.Sprintf("github API error: %d", e.StatusCode)
+}
+
+// redactSecret masks a known credential in text that stays inside the
+// process (a server log). It is best-effort by construction -- it only
+// catches the literal value, not a re-encoded one -- which is exactly
+// why it is not what protects the HTTP response.
+func redactSecret(text, secret string) string {
+	if secret == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, secret, "[redacted]")
+}
+
+// defaultGistAPIURL is the single literal for GitHub's Create Gist
+// endpoint. Everything that publishes resolves to this unless a caller
+// explicitly injected another URL.
+const defaultGistAPIURL = "https://api.github.com/gists"
+
 func createGist(
 	ctx context.Context,
 	token, filename, description, content string,
@@ -33,7 +64,7 @@ func createGist(
 ) (*gistResponse, error) {
 	return createGistWithURL(
 		ctx,
-		"https://api.github.com/gists",
+		defaultGistAPIURL,
 		token, filename, description, content, public,
 	)
 }
@@ -73,12 +104,19 @@ func createGistWithURL(
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 512))
-		if err != nil {
-			return nil, fmt.Errorf("github API error: %d: reading body: %w", resp.StatusCode, err)
+		// The body is read for the server log only. It is never part of
+		// the returned error: this request carried our token, GitHub and
+		// any proxy in front of it can echo request material back, and
+		// the error text ends up in a 502 the browser renders.
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if readErr != nil {
+			log.Printf("gist publish: github API error %d: reading body: %v",
+				resp.StatusCode, readErr)
+		} else if len(body) > 0 {
+			log.Printf("gist publish: github API error %d: %s",
+				resp.StatusCode, redactSecret(string(body), token))
 		}
-		return nil, fmt.Errorf("github API error: %d: %s",
-			resp.StatusCode, string(body))
+		return nil, &githubAPIError{StatusCode: resp.StatusCode}
 	}
 
 	var result gistResponse
@@ -147,8 +185,22 @@ type exportMessage struct {
 	FocusedHidden bool
 }
 
+type insightExportData struct {
+	Title       string
+	Type        string
+	Project     string
+	DateRange   string
+	Agent       string
+	Model       string
+	CreatedAt   string
+	ContentHTML template.HTML
+}
+
 var exportTmpl = template.Must(
 	template.New("export").Parse(exportTemplateStr))
+
+var insightExportTmpl = template.Must(
+	template.New("insight-export").Parse(insightExportTemplateStr))
 
 const exportTemplateStr = `<!DOCTYPE html>
 <html lang="en">
@@ -408,16 +460,173 @@ footer a:hover { text-decoration: underline; }
 <footer>Exported from <a href="https://github.com/kenn-io/agentsview">agentsview</a></footer>
 </body></html>`
 
+const insightExportTemplateStr = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{.Title}}</title>
+<style>
+:root {
+  --bg-primary: #f7f7fa;
+  --bg-surface: #ffffff;
+  --bg-inset: #edeef3;
+  --border-default: #dfe1e8;
+  --border-muted: #e8eaf0;
+  --text-primary: #1a1d26;
+  --text-secondary: #5a6070;
+  --text-muted: #8b92a0;
+  --accent-blue: #2563eb;
+  --accent-purple: #7c3aed;
+  --accent-amber: #d97706;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI",
+    "Noto Sans", Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "SF Mono", "Fira Code",
+    "Fira Mono", Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+main {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 32px 20px 48px;
+}
+header {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 20px 24px;
+  margin-bottom: 20px;
+}
+h1 {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+.meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.chip {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--bg-inset);
+}
+.content {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 24px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.content h1,
+.content h2,
+.content h3,
+.content h4,
+.content p,
+.content ul,
+.content ol,
+.content blockquote,
+.content pre {
+  margin-bottom: 12px;
+}
+.content code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--bg-inset);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  padding: 0.15em 0.4em;
+}
+.content pre {
+  background: #1e1e2e;
+  color: #cdd6f4;
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  overflow-x: auto;
+}
+.content pre code {
+  background: none;
+  border: none;
+  color: inherit;
+  padding: 0;
+}
+.thinking-block {
+  border-left: 2px solid var(--accent-purple);
+  background: #f5f3ff;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 8px 14px 12px;
+  margin: 8px 0;
+  font-style: italic;
+  color: var(--text-secondary);
+}
+.thinking-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-purple);
+  margin-bottom: 4px;
+  font-style: normal;
+}
+.tool-block {
+  border-left: 2px solid var(--accent-amber);
+  background: #fffbf0;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  padding: 6px 10px;
+  margin: 8px 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+footer {
+  max-width: 860px;
+  margin: 0 auto 32px;
+  padding: 0 20px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+footer a {
+  color: var(--accent-blue);
+  text-decoration: none;
+}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>{{.Title}}</h1>
+    <div class="meta">
+      <span class="chip">{{.Type}}</span>
+      <span class="chip">{{.Project}}</span>
+      <span class="chip">{{.DateRange}}</span>
+      <span class="chip">{{.Agent}}</span>
+      {{if .Model}}<span class="chip">{{.Model}}</span>{{end}}
+      {{if .CreatedAt}}<span class="chip">{{.CreatedAt}}</span>{{end}}
+    </div>
+  </header>
+  <article class="content">{{.ContentHTML}}</article>
+</main>
+<footer>Exported from <a href="https://github.com/kenn-io/agentsview">agentsview</a></footer>
+</body>
+</html>`
+
 func generateExportHTML(
 	session *db.Session, msgs []db.Message,
 ) string {
-	agentDisplay := string(session.Agent)
-	if def, ok := parser.AgentByType(
-		parser.AgentType(session.Agent),
-	); ok {
-		agentDisplay = def.DisplayName
-	}
-
 	startedAt := ""
 	if session.StartedAt != nil {
 		startedAt = formatTimestamp(*session.StartedAt)
@@ -425,7 +634,7 @@ func generateExportHTML(
 
 	data := exportData{
 		Project:      session.Project,
-		Agent:        agentDisplay,
+		Agent:        agentDisplayName(session.Agent),
 		MessageCount: session.MessageCount,
 		StartedAt:    startedAt,
 		Messages:     make([]exportMessage, len(msgs)),
@@ -458,6 +667,36 @@ func generateExportHTML(
 		return fmt.Sprintf("template error: %s", err)
 	}
 	return b.String()
+}
+
+// generateInsightExportHTML renders a standalone HTML document for a
+// single generated insight. Metadata fields go through html/template's
+// contextual escaping and the body through formatContentForExport, so
+// untrusted transcript-derived text can never open a tag.
+func generateInsightExportHTML(item *db.Insight) string {
+	data := insightExportData{
+		Title:       insightExportTitle(item),
+		Type:        insightTypeLabel(item.Type),
+		Project:     insightProjectLabel(item.Project),
+		DateRange:   insightDateRangeLabel(item.DateFrom, item.DateTo),
+		Agent:       agentDisplayName(item.Agent),
+		Model:       strings.TrimSpace(derefString(item.Model)),
+		CreatedAt:   formatTimestamp(item.CreatedAt),
+		ContentHTML: template.HTML(formatContentForExport(item.Content)),
+	}
+
+	var b strings.Builder
+	if err := insightExportTmpl.Execute(&b, data); err != nil {
+		return fmt.Sprintf("template error: %s", err)
+	}
+	return b.String()
+}
+
+func agentDisplayName(agent string) string {
+	if def, ok := parser.AgentByType(parser.AgentType(agent)); ok {
+		return def.DisplayName
+	}
+	return agent
 }
 
 var (
@@ -598,6 +837,116 @@ func formatDateShort(ts *string) string {
 func sanitizeFilename(name string) string {
 	re := regexp.MustCompile(`[^\w.\-]`)
 	return re.ReplaceAllString(name, "_")
+}
+
+// insightExportStem builds the shared, filesystem-safe base name used by
+// both insight export routes so the .html and .md downloads of one
+// insight always agree.
+func insightExportStem(item *db.Insight) string {
+	dateRange := strings.ReplaceAll(item.DateFrom, "-", "")
+	if item.DateTo != "" && item.DateTo != item.DateFrom {
+		dateRange += "-" + strings.ReplaceAll(item.DateTo, "-", "")
+	}
+	return sanitizeFilename(fmt.Sprintf(
+		"insight-%s-%s-%s",
+		item.Type,
+		insightProjectLabel(item.Project),
+		dateRange,
+	))
+}
+
+func insightExportHTMLFilename(item *db.Insight) string {
+	return insightExportStem(item) + ".html"
+}
+
+func insightExportMarkdownFilename(item *db.Insight) string {
+	return insightExportStem(item) + ".md"
+}
+
+func insightExportTitle(item *db.Insight) string {
+	return insightTypeLabel(item.Type) + " Insight"
+}
+
+func insightTypeLabel(insightType string) string {
+	switch insightType {
+	case "daily_activity":
+		return "Daily Activity"
+	case "agent_analysis":
+		return "Agent Analysis"
+	default:
+		return strings.ReplaceAll(insightType, "_", " ")
+	}
+}
+
+func insightProjectLabel(project *string) string {
+	value := strings.TrimSpace(derefString(project))
+	if value == "" {
+		return "global"
+	}
+	return value
+}
+
+func insightDateRangeLabel(dateFrom, dateTo string) string {
+	if dateTo == "" || dateTo == dateFrom {
+		return dateFrom
+	}
+	return dateFrom + " to " + dateTo
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func insightPublishDescription(item *db.Insight) string {
+	return fmt.Sprintf(
+		"Insight: %s - %s - %s",
+		insightTypeLabel(item.Type),
+		insightProjectLabel(item.Project),
+		insightDateRangeLabel(item.DateFrom, item.DateTo),
+	)
+}
+
+// publishExportHTMLWithURL creates a gist through an explicitly supplied
+// endpoint. The URL is a required parameter rather than a default so a
+// handler cannot accidentally publish to an unintended host, and so tests
+// can capture the request without touching api.github.com.
+func publishExportHTMLWithURL(
+	ctx context.Context,
+	apiURL, token, filename, description, htmlContent string,
+	public bool,
+) (*publishResponse, error) {
+	gist, err := createGistWithURL(
+		ctx, apiURL, token, filename, description, htmlContent, public,
+	)
+	if err != nil {
+		return nil, err
+	}
+	// The owner login is a path segment of the raw URL, so a response
+	// missing it is incomplete in the same way a missing ID is: the
+	// request would otherwise succeed and hand back a broken link.
+	owner := strings.TrimSpace(gist.Owner.Login)
+	id := strings.TrimSpace(gist.ID)
+	htmlURL := strings.TrimSpace(gist.HTMLURL)
+	if id == "" || htmlURL == "" || owner == "" {
+		return nil, fmt.Errorf("GitHub API returned incomplete gist data")
+	}
+	// The trimmed values are what gets returned as well, so a padded
+	// field cannot reach the client through one path after being
+	// validated through another.
+	encoded := urlPathEscape(filename)
+	rawURL := fmt.Sprintf(
+		"https://gist.githubusercontent.com/%s/%s/raw/%s",
+		owner, id, encoded,
+	)
+	return &publishResponse{
+		GistID:  id,
+		GistURL: htmlURL,
+		ViewURL: "https://htmlpreview.github.io/?" + rawURL,
+		RawURL:  rawURL,
+	}, nil
 }
 
 func truncateStr(s string, max int) string {

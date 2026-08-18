@@ -9,7 +9,10 @@
   import type { InsightType, AgentName } from "../../api/types.js";
   import ProjectTypeahead from "../layout/ProjectTypeahead.svelte";
   import {
+    DownloadIcon,
+    GlobeIcon,
     LightbulbIcon,
+    LockIcon,
     MousePointer2Icon,
     PencilIcon,
     PlusIcon,
@@ -17,6 +20,7 @@
     TriangleAlertIcon,
     XIcon,
   } from "../../icons.js";
+  import { downloadInsightExport } from "../../api/client.js";
 
   type UIMode =
     | "daily_activity"
@@ -169,6 +173,24 @@
   ): string {
     if (type === "agent_analysis") return "Analysis";
     return from === to ? "Daily" : "Range";
+  }
+
+  async function handleExportInsight() {
+    const item = insights.selectedItem;
+    if (!item) return;
+    try {
+      await downloadInsightExport(item.id);
+    } catch (e) {
+      console.error("Insight export failed:", e);
+    }
+  }
+
+  function handlePublishInsight(secret: boolean) {
+    const item = insights.selectedItem;
+    if (!item) return;
+    // Snapshot the insight id at click time. The modal outlives this handler,
+    // so reading the selection again later could publish a different object.
+    ui.openPublish({ kind: "insight", id: item.id }, secret);
   }
 
   onMount(() => {
@@ -497,17 +519,46 @@
                 {formatDateShort(insights.selectedItem.date_from)} – {formatDateShort(insights.selectedItem.date_to)}
               {/if}
             </span>
-            <button
-              class="delete-btn"
-              onclick={() => {
-                if (insights.selectedItem) {
-                  insights.deleteItem(insights.selectedItem.id);
-                }
-              }}
-              title="Delete this insight"
-            >
-              <TrashIcon size="14" strokeWidth="1.8" aria-hidden="true" />
-            </button>
+            <div class="header-actions">
+              <button
+                type="button"
+                class="action-btn"
+                onclick={handleExportInsight}
+                title="Export this insight as HTML"
+                aria-label="Export insight as HTML"
+              >
+                <DownloadIcon size="14" strokeWidth="1.8" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                class="action-btn"
+                onclick={() => handlePublishInsight(false)}
+                title="Publish this insight as a public Gist"
+                aria-label="Publish insight as public Gist"
+              >
+                <GlobeIcon size="14" strokeWidth="1.8" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                class="action-btn"
+                onclick={() => handlePublishInsight(true)}
+                title="Publish this insight as a secret Gist"
+                aria-label="Publish insight as secret Gist"
+              >
+                <LockIcon size="14" strokeWidth="1.8" aria-hidden="true" />
+              </button>
+              <button
+                class="delete-btn"
+                onclick={() => {
+                  if (insights.selectedItem) {
+                    insights.deleteItem(insights.selectedItem.id);
+                  }
+                }}
+                title="Delete this insight"
+              >
+                <TrashIcon size="14" strokeWidth="1.8" aria-hidden="true" />
+              </button>
+            </div>
           </div>
           <div class="header-details">
             {#if insights.selectedItem.project}
@@ -1247,8 +1298,57 @@
     letter-spacing: -0.01em;
   }
 
-  .delete-btn {
+  .header-actions {
+    /* The row, not the single delete button, is now what sits flush right. */
     margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    flex-shrink: 0;
+  }
+
+  /* Narrow viewports: the two-column grid leaves the content column about
+     120px wide, and .content-panel clips its overflow, so the action row was
+     laid out off-screen while the page reported no overflow at all. A
+     narrower sidebar plus a wrapping header row keeps every action inside
+     the viewport. */
+  @media (max-width: 720px) {
+    .insights-page {
+      grid-template-columns: 150px 1fr;
+    }
+
+    .reading-area {
+      padding: 20px 14px 32px;
+    }
+
+    .header-top {
+      flex-wrap: wrap;
+    }
+
+    .header-actions {
+      /* Flush right is what pushed the row out of the clipped column; on a
+         wrapped line the actions simply start where the line starts. */
+      margin-left: 0;
+    }
+  }
+
+  .action-btn {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    transition: background 0.12s, color 0.12s;
+  }
+
+  .action-btn:hover {
+    background: var(--bg-surface-hover);
+    color: var(--text-primary);
+  }
+
+  .delete-btn {
     width: 28px;
     height: 28px;
     display: flex;
