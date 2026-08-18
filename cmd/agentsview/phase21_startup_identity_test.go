@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"testing"
 
@@ -26,10 +27,9 @@ func TestPhase21StartupStateRejectsReusedPIDWithDifferentCreateTime(t *testing.T
 	_, statErr := os.Stat(startupStatePath(dataDir))
 	assert.True(t, os.IsNotExist(statErr), "stale startup state was not removed")
 
-	out := captureStdout(t, func() {
-		runServeStatus(config.Config{DataDir: dataDir})
-	})
-	assert.Contains(t, out, "No agentsview server is running.")
+	out := &bytes.Buffer{}
+	runServeStatus(out, config.Config{DataDir: dataDir})
+	assert.Contains(t, out.String(), "No agentsview server is running.")
 }
 
 func TestPhase21StartupStateRecordsCreateTimeAndAcceptsItsOwner(t *testing.T) {

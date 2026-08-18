@@ -267,7 +267,7 @@ func listDaemonRuntimeTargets(dataDir, authToken string) []daemonRuntimeTarget {
 		if rec.Service != "" && rec.Service != daemonService {
 			continue
 		}
-		if !daemon.ProcessAlive(rec.PID) {
+		if !processIsRunning(rec.PID) {
 			continue
 		}
 		target := daemonRuntimeTarget{
@@ -318,7 +318,7 @@ func cleanupMismatchedDaemonRuntimes(dataDir string) {
 		if raw == "" {
 			continue
 		}
-		if daemon.ProcessAlive(rec.PID) && !processCreateTimeMatches(rec.PID, raw) {
+		if processIsRunning(rec.PID) && !processCreateTimeMatches(rec.PID, raw) {
 			_ = os.Remove(rec.SourcePath)
 		}
 	}
@@ -375,7 +375,7 @@ func migrateLegacyDaemonRuntimes(dataDir string, authToken ...string) {
 		if err := json.Unmarshal(data, &sf); err != nil {
 			continue
 		}
-		if !daemon.ProcessAlive(sf.PID) {
+		if !processIsRunning(sf.PID) {
 			_ = os.Remove(path)
 			continue
 		}
@@ -523,7 +523,7 @@ func isLegacyDaemonStarting(dataDir string) bool {
 		if _, err := fmt.Sscanf(string(data), "%d", &pid); err != nil {
 			continue
 		}
-		if !daemon.ProcessAlive(pid) {
+		if !processIsRunning(pid) {
 			_ = os.Remove(path)
 			continue
 		}

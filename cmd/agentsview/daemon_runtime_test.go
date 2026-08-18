@@ -139,7 +139,7 @@ func TestFindDaemonRuntime_NoFiles(t *testing.T) {
 func TestFindDaemonRuntime_StaleFile(t *testing.T) {
 	dir := runtimeTestDir(t)
 	deadPID := 999999999
-	if daemon.ProcessAlive(deadPID) {
+	if processIsRunning(deadPID) {
 		t.Skipf("pid %d is alive on this host", deadPID)
 	}
 	_, err := writeRuntimeRecordForTest(dir, daemon.RuntimeRecord{
@@ -246,7 +246,7 @@ func TestIsDaemonActive_LivePIDNoPingClaimsOwnership(t *testing.T) {
 func TestIsDaemonActive_DeadPIDDaemonRuntime(t *testing.T) {
 	dir := runtimeTestDir(t)
 	deadPID := 999999999
-	if daemon.ProcessAlive(deadPID) {
+	if processIsRunning(deadPID) {
 		t.Skipf("pid %d is alive on this host", deadPID)
 	}
 	path, err := writeRuntimeRecordForTest(dir, daemon.RuntimeRecord{
@@ -351,7 +351,7 @@ func TestFindDaemonRuntime_LegacyStateFileUsesPortFromName(t *testing.T) {
 func TestIsLocalDaemonActive_LegacyDeadPIDStateFileRemoved(t *testing.T) {
 	dir := runtimeTestDir(t)
 	deadPID := 999999999
-	if daemon.ProcessAlive(deadPID) {
+	if processIsRunning(deadPID) {
 		t.Skipf("pid %d is alive on this host", deadPID)
 	}
 	path := writeLegacyRuntimeStateForTest(t, dir, legacyStateFile{PID: deadPID})
@@ -586,7 +586,7 @@ func TestPhase21StartupStateRoundTripCleanupAndDeadOwnerRecovery(t *testing.T) {
 	assert.False(t, ok)
 
 	deadPID := 999999999
-	if daemon.ProcessAlive(deadPID) {
+	if processIsRunning(deadPID) {
 		t.Skipf("pid %d is alive on this host", deadPID)
 	}
 	require.NoError(t, writeStartupState(dir, startupState{PID: deadPID, Phase: "opening-db"}))

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"time"
@@ -13,33 +14,33 @@ import (
 
 const serveStopGraceTimeout = 10 * time.Second
 
-func runServeStatus(cfg config.Config) {
+func runServeStatus(out io.Writer, cfg config.Config) {
 	for _, target := range listDaemonRuntimeTargets(cfg.DataDir, cfg.AuthToken) {
 		if target.CompatibilityErr != nil {
-			fmt.Printf("agentsview runtime pid %d is incompatible: %v\n", target.Record.PID, target.CompatibilityErr)
+			fmt.Fprintf(out, "agentsview runtime pid %d is incompatible: %v\n", target.Record.PID, target.CompatibilityErr)
 			continue
 		}
 		if target.Confirmed {
 			for _, line := range serveStatusLines(target.Runtime) {
-				fmt.Println(line)
+				fmt.Fprintln(out, line)
 			}
 			return
 		}
-		fmt.Printf("agentsview process running (pid %d) but not responding to health checks.\n", target.Record.PID)
+		fmt.Fprintf(out, "agentsview process running (pid %d) but not responding to health checks.\n", target.Record.PID)
 		return
 	}
 	if state, ok := readStartupState(cfg.DataDir); ok {
-		fmt.Printf("agentsview is starting (pid %d, phase %s).\n", state.PID, state.Phase)
+		fmt.Fprintf(out, "agentsview is starting (pid %d, phase %s).\n", state.PID, state.Phase)
 		if state.LogPath != "" {
-			fmt.Printf("Logs: %s\n", state.LogPath)
+			fmt.Fprintf(out, "Logs: %s\n", state.LogPath)
 		}
 		return
 	}
 	if IsDaemonStarting(cfg.DataDir) {
-		fmt.Println("agentsview is starting up.")
+		fmt.Fprintln(out, "agentsview is starting up.")
 		return
 	}
-	fmt.Println("No agentsview server is running.")
+	fmt.Fprintln(out, "No agentsview server is running.")
 }
 
 func serveStatusLines(rt *DaemonRuntime) []string {
@@ -65,31 +66,31 @@ func serveStatusLines(rt *DaemonRuntime) []string {
 	return lines
 }
 
-func runServeStop(cfg config.Config) {
+func runServeStop(out io.Writer, cfg config.Config) {
 	records := liveDaemonRecords(cfg.DataDir)
 	if len(records) == 0 {
 		if readProcessStartupActive(cfg.DataDir) || IsDaemonStarting(cfg.DataDir) {
 			fatal("serve stop: a server is starting; retry once it is ready")
 		}
-		fmt.Println("No agentsview server is running.")
+		fmt.Fprintln(out, "No agentsview server is running.")
 		return
 	}
 	stopped, skipped := 0, 0
 	for _, rec := range records {
 		if !stopTargetConfirmed(rec, cfg.AuthToken) {
-			fmt.Printf("Skipping pid %d: cannot confirm it is the recorded agentsview daemon (stale record or reused pid).\n", rec.PID)
+			fmt.Fprintf(out, "Skipping pid %d: cannot confirm it is the recorded agentsview daemon (stale record or reused pid).\n", rec.PID)
 			skipped++
 			continue
 		}
 		if err := stopDaemonProcess(rec, serveStopGraceTimeout); err != nil {
 			fatal("serve stop: stopping pid %d: %v", rec.PID, err)
 		}
-		stopOrphanedCaddyChild(rec)
-		fmt.Printf("Stopped agentsview (pid %d).\n", rec.PID)
+		stopOrphanedCaddyChild(out, rec)
+		fmt.Fprintf(out, "Stopped agentsview (pid %d).\n", rec.PID)
 		stopped++
 	}
 	if stopped == 0 && skipped > 0 {
-		fmt.Println("No agentsview server was stopped; runtime records may be stale.")
+		fmt.Fprintln(out, "No agentsview server was stopped; runtime records may be stale.")
 	}
 }
 
@@ -129,22 +130,22 @@ func processCreateTimeMatches(pid int, recordedMillis string) bool {
 	return ok && live == recorded
 }
 
-func stopOrphanedCaddyChild(rec daemon.RuntimeRecord) {
+func stopOrphanedCaddyChild(out io.Writer, rec daemon.RuntimeRecord) {
 	if rec.Metadata == nil {
 		return
 	}
 	pid, err := strconv.Atoi(rec.Metadata[runtimeCaddyPID])
-	if err != nil || pid <= 0 || !daemon.ProcessAlive(pid) {
+	if err != nil || pid <= 0 || !processIsRunning(pid) {
 		return
 	}
 	if !processCreateTimeMatches(pid, rec.Metadata[runtimeCaddyCreateTime]) {
 		return
 	}
 	if err := stopDaemonProcess(caddyStopRecord(pid, rec.Metadata[runtimeCaddyCreateTime]), serveStopGraceTimeout); err != nil {
-		fmt.Printf("warning: could not stop managed caddy (pid %d): %v\n", pid, err)
+		fmt.Fprintf(out, "warning: could not stop managed caddy (pid %d): %v\n", pid, err)
 		return
 	}
-	fmt.Printf("Stopped managed caddy (pid %d).\n", pid)
+	fmt.Fprintf(out, "Stopped managed caddy (pid %d).\n", pid)
 }
 
 func caddyStopRecord(pid int, createTime string) daemon.RuntimeRecord {
@@ -156,6 +157,10 @@ func stopDaemonProcess(rec daemon.RuntimeRecord, grace time.Duration) error {
 	if err != nil {
 		return fmt.Errorf("finding process: %w", err)
 	}
+	// On Windows this handle keeps the process object alive after the
+	// process itself is gone, so it is released as soon as this
+	// operation is done with it rather than left to the finalizer.
+	defer func() { _ = proc.Release() }()
 	if err := terminateProcess(proc); err != nil {
 		return fmt.Errorf("signalling shutdown: %w", err)
 	}
@@ -187,12 +192,12 @@ func recordedDaemonStillPresent(rec daemon.RuntimeRecord) bool {
 func waitForProcessExit(pid int, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if !daemon.ProcessAlive(pid) {
+		if !processIsRunning(pid) {
 			return true
 		}
 		time.Sleep(startProbeTick)
 	}
-	return !daemon.ProcessAlive(pid)
+	return !processIsRunning(pid)
 }
 
 func removeRuntimeRecordFile(rec daemon.RuntimeRecord) {

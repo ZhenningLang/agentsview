@@ -22,7 +22,10 @@ type windowsManagedCaddyGuard struct {
 
 func guardManagedCaddyProcess(proc *os.Process) (managedCaddyGuard, error) {
 	if proc == nil || proc.Pid <= 0 {
-		return nil, nil
+		// A usable no-op guard, not a nil interface: the Unix half
+		// returns one for this input, and a caller that closed what it
+		// was handed would panic on Windows only.
+		return &windowsManagedCaddyGuard{}, nil
 	}
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {

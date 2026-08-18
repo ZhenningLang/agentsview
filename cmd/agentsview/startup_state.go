@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
-
-	"go.kenn.io/kit/daemon"
 )
 
 const startupStateFile = "serve.startup.json"
@@ -88,7 +86,7 @@ func readStartupState(dataDir string) (startupState, bool) {
 	if err := json.Unmarshal(body, &state); err != nil {
 		return startupState{}, false
 	}
-	if state.PID <= 0 || !daemon.ProcessAlive(state.PID) ||
+	if state.PID <= 0 || !processIsRunning(state.PID) ||
 		!startupStateOwnerAlive(state) {
 		_ = os.Remove(path)
 		return startupState{}, false

@@ -117,7 +117,7 @@ func newServeCommand() *cobra.Command {
 			if err != nil {
 				fatal("loading config: %v", err)
 			}
-			runServeStatus(cfg)
+			runServeStatus(cmd.OutOrStdout(), cfg)
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
@@ -130,7 +130,7 @@ func newServeCommand() *cobra.Command {
 			if err != nil {
 				fatal("loading config: %v", err)
 			}
-			runServeStop(cfg)
+			runServeStop(cmd.OutOrStdout(), cfg)
 		},
 	})
 	cmd.AddCommand(&cobra.Command{

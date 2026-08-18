@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -69,32 +71,38 @@ func TestPhase21ServeBackgroundStartsStatusStopsAndAppendsLog(t *testing.T) {
 	waitDone := make(chan error, 1)
 	go func() { waitDone <- child.Wait() }()
 
-	status := captureStdout(t, func() {
-		runServeStatus(config.Config{DataDir: dataDir})
-	})
-	assert.Contains(t, status, "agentsview running at")
-	assert.Contains(t, status, fmt.Sprintf("pid:     %d", child.Process.Pid))
+	status := &syncBuffer{}
+	runServeStatus(status, config.Config{DataDir: dataDir})
+	assert.Contains(t, status.String(), "agentsview running at")
+	assert.Contains(t, status.String(), fmt.Sprintf("pid:     %d", child.Process.Pid))
 
-	stopDone := make(chan string, 1)
+	// The stop runs in a goroutine so the test can time-box it, and it
+	// writes into a buffer of its own rather than swapping the global
+	// os.Stdout. When this test timed out on Windows, an abandoned
+	// capture goroutine left os.Stdout pointing at a pipe nobody was
+	// reading, and the next test that printed anything blocked forever
+	// once that pipe filled - which is how two failures became a
+	// ten-minute suite hang.
+	stopOut := &syncBuffer{}
+	stopDone := make(chan struct{}, 1)
 	go func() {
-		stopDone <- captureStdout(t, func() {
-			runServeStop(config.Config{DataDir: dataDir})
-		})
+		runServeStop(stopOut, config.Config{DataDir: dataDir})
+		stopDone <- struct{}{}
 	}()
 	select {
 	case <-waitDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("background child did not exit after stop")
 	}
-	var stop string
 	select {
-	case stop = <-stopDone:
+	case <-stopDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve stop did not return")
 	}
-	assert.Contains(t, stop, fmt.Sprintf("Stopped agentsview (pid %d).", child.Process.Pid))
+	assert.Contains(t, stopOut.String(),
+		fmt.Sprintf("Stopped agentsview (pid %d).", child.Process.Pid))
 	require.Eventually(t, func() bool {
-		return !daemon.ProcessAlive(child.Process.Pid)
+		return !processIsRunning(child.Process.Pid)
 	}, 5*time.Second, 25*time.Millisecond)
 	assert.Nil(t, FindDaemonRuntime(dataDir, ""))
 
@@ -171,11 +179,10 @@ func TestPhase21ServeLifecycleStatusShowsStartupState(t *testing.T) {
 		LogPath: filepath.Join(dataDir, "serve.log"),
 	}))
 
-	out := captureStdout(t, func() {
-		runServeStatus(config.Config{DataDir: dataDir})
-	})
-	assert.Contains(t, out, fmt.Sprintf("agentsview is starting (pid %d, phase opening-db).", os.Getpid()))
-	assert.Contains(t, out, filepath.Join(dataDir, "serve.log"))
+	out := &syncBuffer{}
+	runServeStatus(out, config.Config{DataDir: dataDir})
+	assert.Contains(t, out.String(), fmt.Sprintf("agentsview is starting (pid %d, phase opening-db).", os.Getpid()))
+	assert.Contains(t, out.String(), filepath.Join(dataDir, "serve.log"))
 }
 
 func TestPhase21ServeStopSkipsMismatchedCreateTimeRuntime(t *testing.T) {
@@ -191,10 +198,9 @@ func TestPhase21ServeStopSkipsMismatchedCreateTimeRuntime(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	out := captureStdout(t, func() {
-		runServeStop(config.Config{DataDir: dataDir})
-	})
-	assert.Contains(t, out, "No agentsview server is running.")
+	out := &syncBuffer{}
+	runServeStop(out, config.Config{DataDir: dataDir})
+	assert.Contains(t, out.String(), "No agentsview server is running.")
 }
 
 func TestPhase21ManagedCaddyRuntimeMetadataAndConfirmedOrphanCleanup(t *testing.T) {
@@ -207,9 +213,10 @@ func TestPhase21ManagedCaddyRuntimeMetadataAndConfirmedOrphanCleanup(t *testing.
 		runtimeCaddyCreateTime: strconv.FormatInt(ct, 10),
 	}}
 
+	caddyOut := &syncBuffer{}
 	stopDone := make(chan struct{}, 1)
 	go func() {
-		stopOrphanedCaddyChild(rec)
+		stopOrphanedCaddyChild(caddyOut, rec)
 		stopDone <- struct{}{}
 	}()
 	waitDone := make(chan error, 1)
@@ -225,7 +232,7 @@ func TestPhase21ManagedCaddyRuntimeMetadataAndConfirmedOrphanCleanup(t *testing.
 		t.Fatal("managed caddy cleanup did not return")
 	}
 	require.Eventually(t, func() bool {
-		return !daemon.ProcessAlive(child.Process.Pid)
+		return !processIsRunning(child.Process.Pid)
 	}, 5*time.Second, 25*time.Millisecond)
 
 	_, err := WriteDaemonRuntime(dataDir, "127.0.0.1", 1, "phase21", false, daemonRuntimeOptions{CaddyPID: os.Getpid()})
@@ -292,8 +299,8 @@ func TestPhase21ManagedCaddyMismatchedPIDDoesNotSignal(t *testing.T) {
 		runtimeCaddyCreateTime: "1",
 	}}
 
-	stopOrphanedCaddyChild(rec)
-	assert.True(t, daemon.ProcessAlive(child.Process.Pid))
+	stopOrphanedCaddyChild(io.Discard, rec)
+	assert.True(t, processIsRunning(child.Process.Pid))
 }
 
 func phase21StartHelperProcess(t *testing.T, mode string) *exec.Cmd {
@@ -305,14 +312,37 @@ func phase21StartHelperProcess(t *testing.T, mode string) *exec.Cmd {
 		"AGENTSVIEW_PHASE21_HELPER_MODE="+mode,
 		"AGENTSVIEW_PHASE21_HELPER_DATA_DIR="+dataDir,
 	)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
+	// A plain bytes.Buffer is not safe here: os/exec copies the child's
+	// stdout into it from its own goroutine, and the Eventually below
+	// reads it from this one. Under -race that is a reported data race,
+	// which is how CI caught it and a local run without -race did not.
+	stdout := &syncBuffer{}
+	cmd.Stdout = stdout
 	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	require.Eventually(t, func() bool {
 		return strings.Contains(stdout.String(), "ready")
 	}, 5*time.Second, 25*time.Millisecond)
 	return cmd
+}
+
+// syncBuffer is an io.Writer a test can read while os/exec is still
+// writing to it.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 type recordingManagedCaddyGuard struct {

@@ -269,7 +269,7 @@ func runDaemonStop(out io.Writer, cfg config.Config) error {
 	if err := daemonCommands.stop(target.Record); err != nil {
 		return fmt.Errorf("stopping writable agentsview daemon pid %d: %w", target.Record.PID, err)
 	}
-	stopOrphanedCaddyChild(target.Record)
+	stopOrphanedCaddyChild(out, target.Record)
 	fmt.Fprintf(out, "Stopped writable agentsview daemon (pid %d).\n", target.Record.PID)
 	return nil
 }

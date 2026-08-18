@@ -110,11 +110,10 @@ func TestPhase21LifecycleBoundaryStatusWidthsDifferOnOneDataDir(t *testing.T) {
 	_, err := writeRuntimeRecordForTest(dataDir, rec)
 	require.NoError(t, err)
 
-	serveOut := captureStdout(t, func() {
-		runServeStatus(config.Config{DataDir: dataDir})
-	})
-	assert.Contains(t, serveOut, "agentsview")
-	assert.NotContains(t, serveOut, "No agentsview server is running.",
+	serveOut := &bytes.Buffer{}
+	runServeStatus(serveOut, config.Config{DataDir: dataDir})
+	assert.Contains(t, serveOut.String(), "agentsview")
+	assert.NotContains(t, serveOut.String(), "No agentsview server is running.",
 		"serve status missed a live read-only runtime")
 
 	daemonCmd := newRootCommand()
