@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -879,4 +880,283 @@ func (te *testEnv) seedInsight(
 	})
 	require.NoError(t, err)
 	return id
+}
+
+// --- Phase 25: insight HTML / Markdown export routes ---
+
+// phase25EventAttrRe matches an HTML event-handler attribute that lives
+// inside a real tag. Escaped text such as
+// `&lt;img src=x onerror=alert(1)&gt;` contains neither `<` nor `>`, so a
+// zero match count proves hostile input never reopened a tag.
+var phase25EventAttrRe = regexp.MustCompile(`<[^>]*\son[a-zA-Z]+\s*=`)
+
+// phase25ChipRe extracts the metadata chips from an exported insight so
+// tests can assert the full ordered set, including absent optional chips.
+var phase25ChipRe = regexp.MustCompile(
+	`<span class="chip">(.*?)</span>`)
+
+func (te *testEnv) seedPhase25Insight(
+	t *testing.T, in db.Insight,
+) int64 {
+	t.Helper()
+	id, err := te.db.InsertInsight(in)
+	require.NoError(t, err)
+	return id
+}
+
+func phase25Chips(body string) []string {
+	matches := phase25ChipRe.FindAllStringSubmatch(body, -1)
+	chips := make([]string, 0, len(matches))
+	for _, m := range matches {
+		chips = append(chips, m[1])
+	}
+	return chips
+}
+
+func TestPhase25InsightHTMLExport(t *testing.T) {
+	tests := []struct {
+		name         string
+		insight      db.Insight
+		wantFilename string
+		wantTitle    string
+		wantChips    []string
+		wantContains []string
+	}{
+		{
+			name: "DailyActivityProjectScopedWithModel",
+			insight: db.Insight{
+				Type:     "daily_activity",
+				DateFrom: "2025-01-15",
+				DateTo:   "2025-01-15",
+				Project:  new("my-app"),
+				Agent:    "claude",
+				Model:    new("opus-5"),
+				Content:  "Shipped the export route.",
+			},
+			wantFilename: "insight-daily_activity-my-app-20250115.html",
+			wantTitle:    "Daily Activity Insight",
+			wantChips: []string{
+				"Daily Activity", "my-app", "2025-01-15",
+				"Claude Code", "opus-5",
+			},
+			wantContains: []string{"Shipped the export route."},
+		},
+		{
+			name: "AgentAnalysisGlobalDateRangeNoModel",
+			insight: db.Insight{
+				Type:     "agent_analysis",
+				DateFrom: "2025-01-15",
+				DateTo:   "2025-01-20",
+				Project:  nil,
+				Agent:    "claude",
+				Model:    nil,
+				Content:  "Agent comparison.",
+			},
+			wantFilename: "insight-agent_analysis-global-20250115-20250120.html",
+			wantTitle:    "Agent Analysis Insight",
+			wantChips: []string{
+				"Agent Analysis", "global", "2025-01-15 to 2025-01-20",
+				"Claude Code",
+			},
+			wantContains: []string{"Agent comparison."},
+		},
+		{
+			name: "UnknownAgentFallsBackToRawName",
+			insight: db.Insight{
+				Type:     "daily_activity",
+				DateFrom: "2025-02-01",
+				DateTo:   "2025-02-01",
+				Project:  new("my-app"),
+				Agent:    "not-a-registered-agent",
+				Content:  "Body.",
+			},
+			wantFilename: "insight-daily_activity-my-app-20250201.html",
+			wantTitle:    "Daily Activity Insight",
+			wantChips: []string{
+				"Daily Activity", "my-app", "2025-02-01",
+				"not-a-registered-agent",
+			},
+		},
+		{
+			name: "EmptyProjectStringIsGlobal",
+			insight: db.Insight{
+				Type:     "daily_activity",
+				DateFrom: "2025-03-01",
+				DateTo:   "",
+				Project:  new("   "),
+				Agent:    "claude",
+				Content:  "Body.",
+			},
+			wantFilename: "insight-daily_activity-global-20250301.html",
+			wantTitle:    "Daily Activity Insight",
+			wantChips: []string{
+				"Daily Activity", "global", "2025-03-01", "Claude Code",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			te := setup(t)
+			id := te.seedPhase25Insight(t, tt.insight)
+
+			w := te.get(t, fmt.Sprintf(
+				"/api/v1/insights/%d/export", id))
+
+			require.Equal(t, http.StatusOK, w.Code,
+				"body: %.200s", w.Body.String())
+			assert.Equal(t, "text/html; charset=utf-8",
+				w.Header().Get("Content-Type"))
+			assert.Equal(t,
+				fmt.Sprintf(`attachment; filename="%s"`, tt.wantFilename),
+				w.Header().Get("Content-Disposition"))
+
+			body := w.Body.String()
+			assert.Contains(t, body,
+				"<title>"+tt.wantTitle+"</title>")
+			assert.Contains(t, body, "<h1>"+tt.wantTitle+"</h1>")
+			// The trailing chip is the DB-assigned created_at, so it
+			// is pinned by shape rather than by value.
+			chips := phase25Chips(body)
+			require.Len(t, chips, len(tt.wantChips)+1,
+				"chips: %#v", chips)
+			assert.Equal(t, tt.wantChips, chips[:len(tt.wantChips)])
+			assert.Regexp(t,
+				`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$`,
+				chips[len(chips)-1])
+			for _, want := range tt.wantContains {
+				assert.Contains(t, body, want)
+			}
+			assert.Empty(t, phase25EventAttrRe.FindAllString(body, -1),
+				"exported insight must not contain event attributes")
+		})
+	}
+}
+
+func TestPhase25InsightHTMLExportEscapesHostileMetadataAndContent(t *testing.T) {
+	te := setup(t)
+	id := te.seedPhase25Insight(t, db.Insight{
+		Type:     "daily_activity",
+		DateFrom: "2025-01-15",
+		DateTo:   "2025-01-15",
+		Project:  new(`<img src=x onerror=alert(1)>`),
+		Agent:    `<svg onload=alert(2)>`,
+		Model:    new(`" onmouseover="alert(3)`),
+		Content: "<script>alert('xss')</script>\n" +
+			"<div onclick=\"steal()\">click</div>\n" +
+			"```js\n<script>alert('in-code')</script>\n```\n" +
+			"`<b>inline</b>`\n",
+	})
+
+	w := te.get(t, fmt.Sprintf("/api/v1/insights/%d/export", id))
+
+	require.Equal(t, http.StatusOK, w.Code,
+		"body: %.200s", w.Body.String())
+	body := w.Body.String()
+
+	// No hostile input may reopen a tag or introduce a handler.
+	assert.Empty(t, phase25EventAttrRe.FindAllString(body, -1),
+		"hostile metadata/content must not produce event attributes")
+	assert.NotContains(t, body, "<script")
+	assert.NotContains(t, body, "<img")
+	assert.NotContains(t, body, "<svg")
+	assert.NotContains(t, body, "<b>inline</b>")
+	assert.NotContains(t, body, `" onmouseover=`)
+
+	// The hostile text must still be visible, escaped.
+	assert.Contains(t, body, "&lt;script&gt;")
+	assert.Contains(t, body, "&lt;img src=x onerror=alert(1)&gt;")
+	assert.Contains(t, body, "&lt;svg onload=alert(2)&gt;")
+	assert.Contains(t, body, "&lt;b&gt;inline&lt;/b&gt;")
+
+	// A hostile project name must not escape the filename either.
+	disposition := w.Header().Get("Content-Disposition")
+	require.True(t,
+		strings.HasPrefix(disposition, `attachment; filename="`),
+		"disposition: %q", disposition)
+	filename := strings.TrimSuffix(
+		strings.TrimPrefix(disposition, `attachment; filename="`), `"`)
+	assert.True(t, strings.HasSuffix(filename, ".html"),
+		"filename: %q", filename)
+	assert.Regexp(t, `^[\w.\-]+$`, filename)
+}
+
+func TestPhase25InsightHTMLExportNotFoundIsJSON404(t *testing.T) {
+	te := setup(t)
+
+	w := te.get(t, "/api/v1/insights/999999/export")
+
+	require.Equal(t, http.StatusNotFound, w.Code,
+		"body: %.200s", w.Body.String())
+	assert.NotContains(t, w.Header().Get("Content-Type"), "text/html")
+	assert.Contains(t, w.Body.String(), "insight not found")
+}
+
+func TestPhase25InsightMarkdownExport(t *testing.T) {
+	tests := []struct {
+		name         string
+		insight      db.Insight
+		wantFilename string
+	}{
+		{
+			name: "ProjectScopedSingleDay",
+			insight: db.Insight{
+				Type:     "daily_activity",
+				DateFrom: "2025-01-15",
+				DateTo:   "2025-01-15",
+				Project:  new("my-app"),
+				Agent:    "claude",
+				Model:    new("opus-5"),
+				Content: "# Heading\n\n" +
+					"<script>alert('raw')</script>\n\n" +
+					"```js\nconst a = 1 < 2 && 3 > 2;\n```\n" +
+					"中文 & \"quotes\" 'apostrophes'\n",
+			},
+			wantFilename: "insight-daily_activity-my-app-20250115.md",
+		},
+		{
+			name: "GlobalDateRange",
+			insight: db.Insight{
+				Type:     "agent_analysis",
+				DateFrom: "2025-01-15",
+				DateTo:   "2025-01-20",
+				Project:  nil,
+				Agent:    "claude",
+				Content:  "- item\n- item\n",
+			},
+			wantFilename: "insight-agent_analysis-global-20250115-20250120.md",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			te := setup(t)
+			id := te.seedPhase25Insight(t, tt.insight)
+
+			w := te.get(t, fmt.Sprintf(
+				"/api/v1/insights/%d/md", id))
+
+			require.Equal(t, http.StatusOK, w.Code,
+				"body: %.200s", w.Body.String())
+			assert.Equal(t, "text/markdown; charset=utf-8",
+				w.Header().Get("Content-Type"))
+			assert.Equal(t,
+				fmt.Sprintf(`inline; filename="%s"`, tt.wantFilename),
+				w.Header().Get("Content-Disposition"))
+			// Byte-for-byte: the Markdown route must never rewrite,
+			// escape or re-render the stored content.
+			assert.Equal(t, tt.insight.Content, w.Body.String())
+		})
+	}
+}
+
+func TestPhase25InsightMarkdownExportNotFoundIsJSON404(t *testing.T) {
+	te := setup(t)
+
+	w := te.get(t, "/api/v1/insights/999999/md")
+
+	require.Equal(t, http.StatusNotFound, w.Code,
+		"body: %.200s", w.Body.String())
+	assert.NotContains(t, w.Header().Get("Content-Type"), "text/html")
+	assert.Contains(t, w.Body.String(), "insight not found")
 }
