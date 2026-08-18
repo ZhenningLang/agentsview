@@ -439,4 +439,66 @@ describe("registerShortcuts", () => {
       expect(ui.activeModal).toBeNull();
     });
   });
+
+  describe("Phase 25 p shortcut publish target", () => {
+    beforeEach(() => {
+      ui.publishTarget = null;
+      ui.publishSecret = false;
+    });
+
+    it("should snapshot the active session as the publish target", () => {
+      sessions.activeSessionId = "sess-abc";
+
+      fireKey("p");
+
+      expect(ui.activeModal).toBe("publish");
+      expect(ui.publishTarget).toEqual({
+        kind: "session",
+        id: "sess-abc",
+      });
+      expect(ui.publishSecret).toBe(false);
+    });
+
+    it("should keep the snapshot when the active session changes", () => {
+      sessions.activeSessionId = "sess-abc";
+      fireKey("p");
+
+      sessions.activeSessionId = "sess-xyz";
+
+      expect(ui.publishTarget).toEqual({
+        kind: "session",
+        id: "sess-abc",
+      });
+    });
+
+    it("should reset secret publishing to public", () => {
+      ui.publishSecret = true;
+      sessions.activeSessionId = "sess-abc";
+
+      fireKey("p");
+
+      expect(ui.publishSecret).toBe(false);
+    });
+
+    it("should not open publish without an active session", () => {
+      sessions.activeSessionId = null;
+
+      fireKey("p");
+
+      expect(ui.activeModal).toBeNull();
+      expect(ui.publishTarget).toBeNull();
+    });
+
+    it("should replace a stale insight target", () => {
+      ui.publishTarget = { kind: "insight", id: 9 };
+      sessions.activeSessionId = "sess-abc";
+
+      fireKey("p");
+
+      expect(ui.publishTarget).toEqual({
+        kind: "session",
+        id: "sess-abc",
+      });
+    });
+  });
 });

@@ -1441,4 +1441,100 @@ describe("UIStore", () => {
       );
     });
   });
+
+  describe("Phase 25 publish target", () => {
+    beforeEach(() => {
+      ui.activeModal = null;
+      ui.publishTarget = null;
+      ui.publishSecret = false;
+    });
+
+    it("defaults to no publish target", () => {
+      expect(ui.publishTarget).toBeNull();
+    });
+
+    it("records an explicit session target", () => {
+      ui.openPublish({ kind: "session", id: "sess-1" }, false);
+
+      expect(ui.publishTarget).toEqual({
+        kind: "session",
+        id: "sess-1",
+      });
+      expect(ui.publishSecret).toBe(false);
+      expect(ui.activeModal).toBe("publish");
+    });
+
+    it("records an explicit insight target and visibility", () => {
+      ui.openPublish({ kind: "insight", id: 42 }, true);
+
+      expect(ui.publishTarget).toEqual({ kind: "insight", id: 42 });
+      expect(ui.publishSecret).toBe(true);
+      expect(ui.activeModal).toBe("publish");
+    });
+
+    it("keeps the target while the publish modal stays open", () => {
+      ui.openPublish({ kind: "insight", id: 42 }, false);
+      ui.activeModal = "publish";
+
+      expect(ui.publishTarget).toEqual({ kind: "insight", id: 42 });
+    });
+
+    it("clears the target when the publish modal closes", () => {
+      ui.openPublish({ kind: "insight", id: 42 }, false);
+
+      ui.activeModal = null;
+
+      expect(ui.publishTarget).toBeNull();
+    });
+
+    it("clears the target when another modal replaces publish", () => {
+      ui.openPublish({ kind: "session", id: "sess-1" }, false);
+
+      ui.activeModal = "shortcuts";
+
+      expect(ui.publishTarget).toBeNull();
+    });
+
+    it("clears the target through closeAll", () => {
+      ui.openPublish({ kind: "insight", id: 42 }, false);
+
+      ui.closeAll();
+
+      expect(ui.activeModal).toBeNull();
+      expect(ui.publishTarget).toBeNull();
+    });
+
+    it("closePublish closes the modal and drops the target", () => {
+      ui.openPublish({ kind: "insight", id: 42 }, true);
+
+      ui.closePublish();
+
+      expect(ui.activeModal).toBeNull();
+      expect(ui.publishTarget).toBeNull();
+    });
+
+    it("does not reuse a stale insight target after close and reopen", () => {
+      ui.openPublish({ kind: "insight", id: 42 }, true);
+      ui.closePublish();
+
+      ui.openPublish({ kind: "session", id: "sess-2" }, false);
+
+      expect(ui.publishTarget).toEqual({
+        kind: "session",
+        id: "sess-2",
+      });
+      expect(ui.publishSecret).toBe(false);
+    });
+
+    it("leaves other modal transitions alone", () => {
+      ui.activeModal = "about";
+      ui.publishTarget = { kind: "insight", id: 3 };
+
+      ui.activeModal = "shortcuts";
+
+      // Only a publish -> non-publish transition owns the target lifecycle;
+      // an unrelated modal swap must not silently mutate it.
+      expect(ui.publishTarget).toEqual({ kind: "insight", id: 3 });
+    });
+  });
 });
