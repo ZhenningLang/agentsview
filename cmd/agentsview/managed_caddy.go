@@ -20,6 +20,14 @@ const managedCaddyStartGrace = 300 * time.Millisecond
 type managedCaddy struct {
 	cancel context.CancelFunc
 	errCh  chan error
+	pid    int
+}
+
+func (m *managedCaddy) Pid() int {
+	if m == nil {
+		return 0
+	}
+	return m.pid
 }
 
 func browserURL(cfg config.Config) string {
@@ -275,6 +283,7 @@ func startManagedCaddy(
 	return &managedCaddy{
 		cancel: cancel,
 		errCh:  errCh,
+		pid:    cmd.Process.Pid,
 	}, nil
 }
 

@@ -10,11 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/kit/daemon"
 )
 
@@ -454,4 +456,157 @@ func TestDaemonRuntime_ReadOnlyPersisted(t *testing.T) {
 	assert.Equal(t, "true", rec.Metadata[runtimeReadOnly])
 	assert.Equal(t, strconv.Itoa(port), rec.Metadata[runtimePort])
 	assert.Equal(t, "test", rec.Version)
+}
+
+func TestPhase21DaemonRuntimeMetadataRoundTrip(t *testing.T) {
+	dir := runtimeTestDir(t)
+	host, port := testPingServer(t)
+	caddy := phase21StartHelperProcess(t, "runtime-caddy-child")
+
+	path, err := WriteDaemonRuntime(dir, host, port, "phase21", false, daemonRuntimeOptions{
+		RequireAuth: true,
+		NoSync:      true,
+		CaddyPID:    caddy.Process.Pid,
+	})
+	require.NoError(t, err)
+
+	raw, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var rec daemon.RuntimeRecord
+	require.NoError(t, json.Unmarshal(raw, &rec))
+	assert.Equal(t, runtimeAPIVersionValue, rec.Metadata[runtimeAPIVersion])
+	assert.Equal(t, strconv.Itoa(db.CurrentDataVersion()), rec.Metadata[runtimeDataVersion])
+	assert.Equal(t, "true", rec.Metadata[runtimeRequireAuth])
+	assert.Equal(t, "true", rec.Metadata[runtimeNoSync])
+	assert.NotEmpty(t, rec.Metadata[runtimeCreateTime])
+	assert.Equal(t, strconv.Itoa(caddy.Process.Pid), rec.Metadata[runtimeCaddyPID])
+	assert.NotEmpty(t, rec.Metadata[runtimeCaddyCreateTime])
+
+	rt := daemonRuntimeFromRecord(rec)
+	assert.False(t, rt.ReadOnly)
+	assert.True(t, rt.RequireAuth)
+	assert.True(t, rt.NoSync)
+	assert.Equal(t, runtimeAPIVersionValue, rt.APIVersion)
+	assert.Equal(t, db.CurrentDataVersion(), rt.DataVersion)
+	assert.Positive(t, rt.ProcessCreateTimeMillis)
+	assert.Equal(t, caddy.Process.Pid, rt.CaddyPID)
+	assert.Positive(t, rt.CaddyCreateTimeMillis)
+}
+
+func TestPhase21DaemonRuntimeCompatibilityErrors(t *testing.T) {
+	records := map[string]daemon.RuntimeRecord{
+		"api": {
+			PID:     os.Getpid(),
+			Network: daemon.NetworkTCP,
+			Address: "127.0.0.1:1",
+			Service: daemonService,
+			Metadata: map[string]string{
+				runtimeAPIVersion: "999",
+			},
+		},
+		"data": {
+			PID:     os.Getpid(),
+			Network: daemon.NetworkTCP,
+			Address: "127.0.0.1:2",
+			Service: daemonService,
+			Metadata: map[string]string{
+				runtimeDataVersion: strconv.Itoa(db.CurrentDataVersion() + 1),
+			},
+		},
+	}
+	for name, rec := range records {
+		t.Run(name, func(t *testing.T) {
+			dir := runtimeTestDir(t)
+			_, err := writeRuntimeRecordForTest(dir, rec)
+			require.NoError(t, err)
+			targets := listDaemonRuntimeTargets(dir, "")
+			require.Len(t, targets, 1)
+			require.Error(t, targets[0].CompatibilityErr)
+			if name == "api" {
+				assert.Contains(t, targets[0].CompatibilityErr.Error(), "runtime API version 999 is incompatible")
+			} else {
+				assert.Contains(t, targets[0].CompatibilityErr.Error(), "runtime data version")
+			}
+		})
+	}
+}
+
+func TestPhase21ProcessIdentityCreateTimeMismatchCleansStaleRecord(t *testing.T) {
+	dir := runtimeTestDir(t)
+	path, err := writeRuntimeRecordForTest(dir, daemon.RuntimeRecord{
+		PID:        os.Getpid(),
+		Network:    daemon.NetworkTCP,
+		Address:    "127.0.0.1:1",
+		Service:    daemonService,
+		SourcePath: runtimePathForTest(dir, os.Getpid()),
+		Metadata: map[string]string{
+			runtimeCreateTime: "1",
+		},
+	})
+	require.NoError(t, err)
+
+	targets := listDaemonRuntimeTargets(dir, "")
+	assert.Empty(t, targets)
+	_, statErr := os.Stat(path)
+	assert.True(t, os.IsNotExist(statErr), "mismatched create-time record should be removed")
+}
+
+func TestPhase21ProcessIdentityRefusesUnknownOrMismatchedSignalTarget(t *testing.T) {
+	assert.False(t, processIdentityConfirmed(daemon.RuntimeRecord{PID: os.Getpid()}))
+	assert.False(t, stopTargetConfirmed(daemon.RuntimeRecord{
+		PID:     os.Getpid(),
+		Network: daemon.NetworkTCP,
+		Address: "127.0.0.1:1",
+		Service: daemonService,
+		Metadata: map[string]string{
+			runtimeCreateTime: "1",
+		},
+	}, ""))
+}
+
+func TestPhase21StartupStateRoundTripCleanupAndDeadOwnerRecovery(t *testing.T) {
+	dir := runtimeTestDir(t)
+	started := time.Now().Add(-time.Minute).UTC().Truncate(time.Millisecond)
+	require.NoError(t, writeStartupState(dir, startupState{
+		PID:       os.Getpid(),
+		StartedAt: started,
+		Phase:     "opening-db",
+		LogPath:   filepath.Join(dir, "serve.log"),
+	}))
+
+	got, ok := readStartupState(dir)
+	require.True(t, ok)
+	assert.Equal(t, os.Getpid(), got.PID)
+	assert.Equal(t, "opening-db", got.Phase)
+	assert.Equal(t, filepath.Join(dir, "serve.log"), got.LogPath)
+	assert.True(t, got.StartedAt.Equal(started))
+
+	cleanupStartupState(dir)
+	_, ok = readStartupState(dir)
+	assert.False(t, ok)
+
+	deadPID := 999999999
+	if daemon.ProcessAlive(deadPID) {
+		t.Skipf("pid %d is alive on this host", deadPID)
+	}
+	require.NoError(t, writeStartupState(dir, startupState{PID: deadPID, Phase: "opening-db"}))
+	_, ok = readStartupState(dir)
+	assert.False(t, ok)
+	_, statErr := os.Stat(startupStatePath(dir))
+	assert.True(t, os.IsNotExist(statErr), "dead-owner startup state should be cleaned up")
+}
+
+func TestPhase21StartupStateAtomicWriteFailureLeavesNoPartialTemp(t *testing.T) {
+	dir := runtimeTestDir(t)
+	require.NoError(t, os.Mkdir(startupStatePath(dir), 0o700))
+
+	err := writeStartupState(dir, startupState{PID: os.Getpid(), Phase: "opening-db"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rename startup state file")
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, entry := range entries {
+		assert.False(t, strings.HasPrefix(entry.Name(), startupStateFile+"."), entry.Name())
+	}
 }

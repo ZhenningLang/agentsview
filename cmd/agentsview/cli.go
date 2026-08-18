@@ -88,6 +88,7 @@ func newRootCommand() *cobra.Command {
 }
 
 func newServeCommand() *cobra.Command {
+	var background bool
 	cmd := &cobra.Command{
 		Use:          "serve",
 		Short:        "Start server",
@@ -95,10 +96,41 @@ func newServeCommand() *cobra.Command {
 		SilenceUsage: true,
 		Args:         cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
+			if background {
+				runServeBackgroundCommand(cmd)
+				return
+			}
 			runServe(mustLoadConfig(cmd))
 		},
 	}
 	config.RegisterServePFlags(cmd.Flags())
+	cmd.Flags().BoolVar(&background, "background", false, "Start server in the background")
+	cmd.AddCommand(&cobra.Command{
+		Use:          "status",
+		Short:        "Show background server status",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			cfg, err := config.LoadReadOnly()
+			if err != nil {
+				fatal("loading config: %v", err)
+			}
+			runServeStatus(cfg)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:          "stop",
+		Short:        "Stop a background server",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		Run: func(cmd *cobra.Command, args []string) {
+			cfg, err := config.LoadReadOnly()
+			if err != nil {
+				fatal("loading config: %v", err)
+			}
+			runServeStop(cfg)
+		},
+	})
 	return cmd
 }
 

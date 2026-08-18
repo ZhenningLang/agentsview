@@ -103,7 +103,7 @@ func runServe(cfg config.Config) {
 		if err := cfg.EnsureAuthToken(); err != nil {
 			log.Fatalf("Failed to generate auth token: %v", err)
 		}
-		if cfg.AuthToken != "" {
+		if cfg.AuthToken != "" && !runningAsBackgroundChild() {
 			fmt.Printf("Auth enabled. Token: %s\n", cfg.AuthToken)
 		}
 	}
@@ -113,6 +113,13 @@ func runServe(cfg config.Config) {
 	// with no lock and no runtime record during startup.
 	MarkDaemonStarting(cfg.DataDir)
 	defer UnmarkDaemonStarting(cfg.DataDir)
+	if err := writeStartupState(cfg.DataDir, startupState{
+		Phase:   "opening-db",
+		LogPath: os.Getenv(backgroundLogEnvVar),
+	}); err != nil {
+		log.Printf("warning: could not write startup state: %v", err)
+	}
+	defer cleanupStartupState(cfg.DataDir)
 
 	database := mustOpenDB(cfg)
 	defer func() {
@@ -307,6 +314,11 @@ func runServe(cfg config.Config) {
 	// on-demand sync against our live DB.
 	if _, sfErr := WriteDaemonRuntime(
 		rt.Cfg.DataDir, rt.Cfg.Host, rt.Cfg.Port, version, false,
+		daemonRuntimeOptions{
+			RequireAuth: rt.Cfg.RequireAuth,
+			NoSync:      rt.Cfg.NoSync,
+			CaddyPID:    rt.Caddy.Pid(),
+		},
 	); sfErr != nil {
 		log.Printf(
 			"warning: could not write daemon runtime record: %v"+
