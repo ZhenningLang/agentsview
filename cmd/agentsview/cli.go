@@ -66,6 +66,7 @@ func newRootCommand() *cobra.Command {
 	root.AddCommand(newProjectsCommand())
 	root.AddCommand(newHealthCommand())
 	root.AddCommand(newUsageCommand())
+	root.AddCommand(newMCPCommand())
 	root.AddCommand(newPGCommand())
 	root.AddCommand(newDuckDBCommand())
 	root.AddCommand(newSessionCommand())
