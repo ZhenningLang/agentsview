@@ -27,6 +27,18 @@ var SystemMsgPrefixes = []string{
 	"Stop hook feedback:",
 }
 
+// systemPrefixTrimCutset is the leading-whitespace cutset shared by the
+// SQL clause (via LTRIM) and IsSystemPrefixed (via strings.TrimLeft), so
+// the two classifiers cannot drift. It covers ASCII whitespace, the BOM
+// (U+FEFF), and the Unicode spaces U+0085, U+00A0, U+1680, U+2000-U+200A,
+// U+2028, U+2029, U+202F, U+205F, U+3000 - the same set the parser and
+// frontend isSystem helpers trim. It must never contain a single quote:
+// it is embedded verbatim in a SQL string literal.
+const systemPrefixTrimCutset = " \t\n\v\f\r" +
+	"\u0085\u00A0\u1680" +
+	"\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A" +
+	"\u2028\u2029\u202F\u205F\u3000\uFEFF"
+
 // SystemPrefixSQL returns a SQL clause that excludes user messages
 // matching any system prefix. The column alias for content must be
 // passed (e.g. "m.content" or "m2.content"). Uses case-sensitive
@@ -39,10 +51,7 @@ func SystemPrefixSQL(contentCol, roleCol string) string {
 	// spaces (U+0085, U+00A0, U+1680, U+2000–U+200A, U+2028,
 	// U+2029, U+202F, U+205F, U+3000). Both SQLite and PostgreSQL
 	// handle multi-byte UTF-8 characters in the trim set correctly.
-	trimmed := "LTRIM(" + contentCol + ", ' \t\n\v\f\r" +
-		"\u0085\u00A0\u1680" +
-		"\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A" +
-		"\u2028\u2029\u202F\u205F\u3000\uFEFF')"
+	trimmed := "LTRIM(" + contentCol + ", '" + systemPrefixTrimCutset + "')"
 	parts := make([]string, len(SystemMsgPrefixes))
 	for i, p := range SystemMsgPrefixes {
 		parts[i] = fmt.Sprintf(
@@ -51,6 +60,30 @@ func SystemPrefixSQL(contentCol, roleCol string) string {
 	}
 	return "NOT (" + roleCol + " = 'user' AND (" +
 		strings.Join(parts, " OR ") + "))"
+}
+
+// IsSystemPrefixed reports whether a message is a system-injected user
+// message, i.e. whether SystemPrefixSQL would exclude it. In-memory
+// consumers that filter rows they did not fetch through the search SQL
+// (the read-only tool surface) must use this instead of re-deriving the
+// rule: a mismatch produces no error anywhere, it just makes the same
+// session look different depending on which path answered.
+//
+// TrimLeft, not TrimSpace: SQL LTRIM only strips leading characters, and
+// only the leading run matters for a prefix comparison. TrimSpace would
+// also diverge on the BOM, which unicode.IsSpace excludes but the SQL
+// cutset trims.
+func IsSystemPrefixed(content, role string) bool {
+	if role != "user" {
+		return false
+	}
+	trimmed := strings.TrimLeft(content, systemPrefixTrimCutset)
+	for _, p := range SystemMsgPrefixes {
+		if strings.HasPrefix(trimmed, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // SearchResult holds a session-level match with the best-ranked snippet.

@@ -97,7 +97,7 @@ func validateWriteOwnership(cfg config.Config) error {
 	}
 	if IsDaemonStarting(dataDir) && !currentProcessOwnsStartLock(dataDir) {
 		return fmt.Errorf(
-			"local daemon is still starting and may own the SQLite archive; "+
+			"local daemon is still starting and may own the SQLite archive; " +
 				"run `agentsview daemon stop` if startup is stuck, or retry later",
 		)
 	}

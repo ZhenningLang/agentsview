@@ -5,10 +5,25 @@ package service
 
 import (
 	"context"
+	"errors"
 	"io"
 
 	"go.kenn.io/agentsview/internal/db"
 )
+
+// ErrSearchUnavailable is the transport-neutral sentinel for "this
+// backend cannot answer a session search". The direct backend returns
+// it when the store has no usable FTS index; the HTTP backend returns
+// it when the daemon answers 501, which is what the server sends when
+// its own store reports HasFTS()==false. Callers (CLI, MCP) can tell
+// "no index" apart from a transport failure without string matching.
+var ErrSearchUnavailable = errors.New("search: full-text search not available")
+
+// ErrSearchQueryRequired is returned when the query is empty or only
+// whitespace. Both backends validate locally so the two transports fail
+// identically, and the HTTP backend does not spend a round trip to
+// learn what it already knows.
+var ErrSearchQueryRequired = errors.New("search: query required")
 
 // SessionService is the canonical per-session operation interface.
 // Two implementations: directBackend (wraps *db.DB) and httpBackend
@@ -21,6 +36,7 @@ type SessionService interface {
 	Sync(ctx context.Context, in SyncInput) (*SessionDetail, error)
 	Watch(ctx context.Context, id string) (<-chan Event, error)
 	Stats(ctx context.Context, f StatsFilter) (*SessionStats, error)
+	Search(ctx context.Context, req SearchRequest) (*SessionSearchResult, error)
 	SearchContent(ctx context.Context, req ContentSearchRequest) (*ContentSearchResult, error)
 	ListSecrets(ctx context.Context, f SecretListFilter) (*SecretFindingList, error)
 	ScanSecrets(ctx context.Context, in SecretScanInput,
@@ -70,6 +86,44 @@ type SecretListFilter struct {
 type SecretFindingList struct {
 	Findings   []db.SecretFindingRow `json:"findings"`
 	NextCursor int                   `json:"next_cursor,omitempty"`
+}
+
+// SearchRequest is the transport-neutral session-search input. It
+// mirrors the query parameters of GET /api/v1/search one-for-one; the
+// json tags are the wire parameter names so the HTTP backend and the
+// server route cannot drift apart silently.
+type SearchRequest struct {
+	Query   string `json:"q"`
+	Project string `json:"project,omitempty"`
+	Sort    string `json:"sort,omitempty"` // "relevance" (default) or "recency"
+	Limit   int    `json:"limit,omitempty"`
+	Cursor  int    `json:"cursor,omitempty"`
+}
+
+// SessionSearchResult mirrors the GET /api/v1/search response body, so
+// the HTTP backend can decode the daemon response straight into it.
+// NextCursor keeps the wire name "next".
+type SessionSearchResult struct {
+	Query      string            `json:"query"`
+	Results    []db.SearchResult `json:"results"`
+	Count      int               `json:"count"`
+	NextCursor int               `json:"next"`
+}
+
+// clampSearchLimit reproduces the server-side clamp applied by
+// handleSearch (clampLimit(limit, DefaultSearchLimit, MaxSearchLimit))
+// rather than the stricter one inside db.DB.Search, which folds any
+// over-max limit back to the default. Both backends apply this clamp
+// before the store or the wire so a caller sees the same page size on
+// either transport.
+func clampSearchLimit(limit int) int {
+	if limit <= 0 {
+		return db.DefaultSearchLimit
+	}
+	if limit > db.MaxSearchLimit {
+		return db.MaxSearchLimit
+	}
+	return limit
 }
 
 // ContentSearchRequest is the transport-neutral content-search input.

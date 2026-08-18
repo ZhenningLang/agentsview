@@ -391,6 +391,47 @@ func (b *directBackend) Watch(
 	return out, nil
 }
 
+// Search runs a session-level full-text search. Validation, clamping,
+// query canonicalisation and the empty-page shape mirror the HTTP route
+// (humaSearch) step for step, so swapping transports cannot change what
+// a caller sees.
+func (b *directBackend) Search(
+	ctx context.Context, req SearchRequest,
+) (*SessionSearchResult, error) {
+	query := strings.TrimSpace(req.Query)
+	if query == "" {
+		return nil, ErrSearchQueryRequired
+	}
+	// The route answers 501 for a store with no usable FTS index. There
+	// is no status code on this path, so report the sentinel directly
+	// rather than letting the query fail as a driver error.
+	if !b.db.HasFTS() {
+		return nil, ErrSearchUnavailable
+	}
+	page, err := b.db.Search(ctx, db.SearchFilter{
+		Query:   db.PrepareFTSQuery(query),
+		Project: req.Project,
+		Sort:    req.Sort,
+		Cursor:  req.Cursor,
+		Limit:   clampSearchLimit(req.Limit),
+	})
+	if err != nil {
+		return nil, err
+	}
+	results := page.Results
+	if results == nil {
+		results = []db.SearchResult{}
+	}
+	return &SessionSearchResult{
+		// Echo the caller's text, not the FTS-canonical form, matching
+		// the route's response body.
+		Query:      query,
+		Results:    results,
+		Count:      len(results),
+		NextCursor: page.NextCursor,
+	}, nil
+}
+
 // SearchContent maps the transport-neutral request to a
 // db.ContentSearchFilter, calls the store, and redacts secret-shaped
 // spans from each snippet unless Reveal is set.

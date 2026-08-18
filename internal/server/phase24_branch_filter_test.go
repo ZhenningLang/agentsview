@@ -63,6 +63,12 @@ func (s *phase24SessionServiceSpy) Stats(
 	return &service.SessionStats{}, nil
 }
 
+func (s *phase24SessionServiceSpy) Search(
+	context.Context, service.SearchRequest,
+) (*service.SessionSearchResult, error) {
+	return &service.SessionSearchResult{Results: []db.SearchResult{}}, nil
+}
+
 func (s *phase24SessionServiceSpy) SearchContent(
 	_ context.Context, req service.ContentSearchRequest,
 ) (*service.ContentSearchResult, error) {

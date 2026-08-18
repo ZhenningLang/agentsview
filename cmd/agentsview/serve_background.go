@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	backgroundChildEnvVar      = "AGENTSVIEW_BACKGROUND_CHILD"
-	backgroundLogEnvVar        = "AGENTSVIEW_BACKGROUND_LOG"
+	backgroundChildEnvVar       = "AGENTSVIEW_BACKGROUND_CHILD"
+	backgroundLogEnvVar         = "AGENTSVIEW_BACKGROUND_LOG"
 	backgroundServeReadyTimeout = 5 * time.Second
 )
 

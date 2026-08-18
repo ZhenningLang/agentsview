@@ -26,6 +26,20 @@ import (
 // explicitly below.
 var errHTTPNotFound = errors.New("http: not found")
 
+// httpStatusError carries the status code of a non-OK daemon response so
+// callers can map a specific code to a transport-neutral sentinel without
+// string-matching. Its message is the same one getJSON used to build, so
+// callers that only print the error are unaffected.
+type httpStatusError struct {
+	Path   string
+	Status int
+	Body   string
+}
+
+func (e *httpStatusError) Error() string {
+	return fmt.Sprintf("GET %s: HTTP %d: %s", e.Path, e.Status, e.Body)
+}
+
 type httpBackend struct {
 	baseURL  string
 	client   *http.Client
@@ -278,6 +292,49 @@ func (b *httpBackend) Stats(
 	return nil, errors.New("stats over HTTP backend: not yet implemented")
 }
 
+// Search proxies GET /api/v1/search. Every SearchRequest field maps to
+// one query parameter; the empty query is rejected here so both backends
+// fail identically without a round trip.
+func (b *httpBackend) Search(
+	ctx context.Context, req SearchRequest,
+) (*SessionSearchResult, error) {
+	query := strings.TrimSpace(req.Query)
+	if query == "" {
+		return nil, ErrSearchQueryRequired
+	}
+	q := url.Values{}
+	q.Set("q", query)
+	if req.Project != "" {
+		q.Set("project", req.Project)
+	}
+	// Sort and cursor are left off when unset so the route applies its own
+	// documented defaults (relevance, offset 0) instead of the client
+	// pinning them. The limit is always sent: it is clamped here so the
+	// direct backend and the daemon agree on the page size.
+	if req.Sort != "" {
+		q.Set("sort", req.Sort)
+	}
+	q.Set("limit", strconv.Itoa(clampSearchLimit(req.Limit)))
+	if req.Cursor > 0 {
+		q.Set("cursor", strconv.Itoa(req.Cursor))
+	}
+	var out SessionSearchResult
+	err := b.getJSON(ctx, "/api/v1/search?"+q.Encode(), &out)
+	var status *httpStatusError
+	if errors.As(err, &status) &&
+		status.Status == http.StatusNotImplemented {
+		// The route sends 501 when its store reports HasFTS()==false.
+		return nil, ErrSearchUnavailable
+	}
+	if err != nil {
+		return nil, err
+	}
+	if out.Results == nil {
+		out.Results = []db.SearchResult{}
+	}
+	return &out, nil
+}
+
 func (b *httpBackend) SearchContent(
 	ctx context.Context, req ContentSearchRequest,
 ) (*ContentSearchResult, error) {
@@ -508,9 +565,9 @@ func (b *httpBackend) getJSON(
 	}
 	if resp.StatusCode != http.StatusOK {
 		msg, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf(
-			"GET %s: HTTP %d: %s", path, resp.StatusCode, msg,
-		)
+		return &httpStatusError{
+			Path: path, Status: resp.StatusCode, Body: string(msg),
+		}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
