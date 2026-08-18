@@ -214,9 +214,11 @@ test.describe("Insight export and publish", () => {
     expect(new URL(request.url()).origin).toBe(
       new URL(page.url()).origin,
     );
-    expect(recorder.requests).toContain(
-      "GET /api/v1/insights/501/export",
-    );
+    // Polled, not read once: the request event and the route handler that
+    // records it are independent, and webkit reaches the event first.
+    await expect
+      .poll(() => recorder.requests)
+      .toContain("GET /api/v1/insights/501/export");
     expect(recorder.githubRequests).toEqual([]);
     expect(recorder.pageErrors).toEqual([]);
     for (const other of context.pages()) {
