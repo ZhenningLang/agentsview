@@ -37,6 +37,10 @@ type SessionService interface {
 	Watch(ctx context.Context, id string) (<-chan Event, error)
 	Stats(ctx context.Context, f StatsFilter) (*SessionStats, error)
 	Search(ctx context.Context, req SearchRequest) (*SessionSearchResult, error)
+	UsageSummary(ctx context.Context, req UsageRequest) (*UsageSummaryResult, error)
+	UsagePairwiseComparison(
+		ctx context.Context, req UsagePairwiseComparisonRequest,
+	) (*PairwiseComparisonResponse, error)
 	SearchContent(ctx context.Context, req ContentSearchRequest) (*ContentSearchResult, error)
 	ListSecrets(ctx context.Context, f SecretListFilter) (*SecretFindingList, error)
 	ScanSecrets(ctx context.Context, in SecretScanInput,

@@ -335,6 +335,96 @@ func (b *httpBackend) Search(
 	return &out, nil
 }
 
+// usageQuery renders the shared usage filter as query parameters. Every
+// UsageRequest field maps to exactly one parameter; dropping one here
+// compiles and returns data, just for the wrong range or project.
+//
+// The two flags are only sent when the caller set them: an omitted
+// parameter takes the route default, which is what a nil pointer means,
+// so an unset request is identical on both transports.
+func usageQuery(req UsageRequest) url.Values {
+	q := url.Values{}
+	for k, v := range map[string]string{
+		"from":            req.From,
+		"to":              req.To,
+		"timezone":        req.Timezone,
+		"agent":           req.Agent,
+		"project":         req.Project,
+		"machine":         req.Machine,
+		"git_branch":      req.GitBranch,
+		"exclude_project": req.ExcludeProject,
+		"exclude_agent":   req.ExcludeAgent,
+		"exclude_model":   req.ExcludeModel,
+		"model":           req.Model,
+		"active_since":    req.ActiveSince,
+	} {
+		if v != "" {
+			q.Set(k, v)
+		}
+	}
+	if req.MinUserMessages > 0 {
+		q.Set("min_user_messages", strconv.Itoa(req.MinUserMessages))
+	}
+	if req.IncludeOneShot != nil {
+		q.Set("include_one_shot", strconv.FormatBool(*req.IncludeOneShot))
+	}
+	if req.IncludeAutomated != nil {
+		q.Set("include_automated", strconv.FormatBool(*req.IncludeAutomated))
+	}
+	if req.NoCache {
+		q.Set("no_cache", "true")
+	}
+	return q
+}
+
+// UsageSummary proxies GET /api/v1/usage/summary. The request is
+// validated with the shared rules first so both transports reject the
+// same input with the same message and without a round trip.
+func (b *httpBackend) UsageSummary(
+	ctx context.Context, req UsageRequest,
+) (*UsageSummaryResult, error) {
+	if _, err := UsageFilterFromRequest(req); err != nil {
+		return nil, err
+	}
+	var out UsageSummaryResult
+	if err := b.getJSON(
+		ctx, "/api/v1/usage/summary?"+usageQuery(req).Encode(), &out,
+	); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UsagePairwiseComparison proxies GET
+// /api/v1/usage/pairwise-comparison. The whole usage filter travels with
+// the four side parameters: the route intersects each side against it,
+// so a dropped filter param silently compares the wrong populations.
+func (b *httpBackend) UsagePairwiseComparison(
+	ctx context.Context, req UsagePairwiseComparisonRequest,
+) (*PairwiseComparisonResponse, error) {
+	if _, err := UsageFilterFromRequest(req.UsageRequest); err != nil {
+		return nil, err
+	}
+	if _, err := ParsePairwiseDimension(string(req.LeftDimension)); err != nil {
+		return nil, err
+	}
+	if _, err := ParsePairwiseDimension(string(req.RightDimension)); err != nil {
+		return nil, err
+	}
+	q := usageQuery(req.UsageRequest)
+	q.Set("left_dimension", string(req.LeftDimension))
+	q.Set("left_value", req.LeftValue)
+	q.Set("right_dimension", string(req.RightDimension))
+	q.Set("right_value", req.RightValue)
+	var out PairwiseComparisonResponse
+	if err := b.getJSON(
+		ctx, "/api/v1/usage/pairwise-comparison?"+q.Encode(), &out,
+	); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (b *httpBackend) SearchContent(
 	ctx context.Context, req ContentSearchRequest,
 ) (*ContentSearchResult, error) {

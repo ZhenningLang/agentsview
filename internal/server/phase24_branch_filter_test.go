@@ -69,6 +69,18 @@ func (s *phase24SessionServiceSpy) Search(
 	return &service.SessionSearchResult{Results: []db.SearchResult{}}, nil
 }
 
+func (s *phase24SessionServiceSpy) UsageSummary(
+	context.Context, service.UsageRequest,
+) (*service.UsageSummaryResult, error) {
+	return &service.UsageSummaryResult{}, nil
+}
+
+func (s *phase24SessionServiceSpy) UsagePairwiseComparison(
+	context.Context, service.UsagePairwiseComparisonRequest,
+) (*service.PairwiseComparisonResponse, error) {
+	return &service.PairwiseComparisonResponse{}, nil
+}
+
 func (s *phase24SessionServiceSpy) SearchContent(
 	_ context.Context, req service.ContentSearchRequest,
 ) (*service.ContentSearchResult, error) {

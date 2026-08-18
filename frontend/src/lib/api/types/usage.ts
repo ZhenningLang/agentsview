@@ -1,4 +1,4 @@
-/** Usage types — match Go structs in internal/server/usage.go
+/** Usage types — match Go structs in internal/service/usage_summary.go
  *  and internal/db/usage.go */
 
 export interface UsageTotals {

@@ -13,6 +13,7 @@ import (
 
 	"go.kenn.io/agentsview/internal/config"
 	"go.kenn.io/agentsview/internal/db"
+	"go.kenn.io/agentsview/internal/service"
 )
 
 type usageSummaryCountsSpy struct {
@@ -191,7 +192,7 @@ func TestComputeCacheStats_SavingsPassThrough(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cs := computeCacheStats(db.UsageTotals{
+			cs := service.ComputeCacheStats(db.UsageTotals{
 				CacheSavings: tc.in,
 			})
 			assert.InDelta(t, tc.in, cs.SavingsVsUncached, 1e-9)
@@ -200,7 +201,7 @@ func TestComputeCacheStats_SavingsPassThrough(t *testing.T) {
 }
 
 func TestComputeCacheStats_ZeroTotalsIsZero(t *testing.T) {
-	cs := computeCacheStats(db.UsageTotals{})
+	cs := service.ComputeCacheStats(db.UsageTotals{})
 	assert.Zero(t, cs.SavingsVsUncached)
 	assert.Zero(t, cs.HitRate)
 }
@@ -210,7 +211,7 @@ func TestComputeCacheStats_HitRate(t *testing.T) {
 	// (The HitRate denominator in this code is
 	// cacheRead + input where input is already the uncached
 	// portion — see the pass-through test below.)
-	cs := computeCacheStats(db.UsageTotals{
+	cs := service.ComputeCacheStats(db.UsageTotals{
 		InputTokens:     200,
 		CacheReadTokens: 800,
 	})
@@ -225,7 +226,7 @@ func TestComputeCacheStats_UncachedPassesInputThrough(t *testing.T) {
 	// InputTokens directly — not input minus the cache buckets,
 	// which would double-subtract and wrongly drive the value
 	// toward zero for any cached workload.
-	cs := computeCacheStats(db.UsageTotals{
+	cs := service.ComputeCacheStats(db.UsageTotals{
 		InputTokens:         100,
 		CacheReadTokens:     200,
 		CacheCreationTokens: 50,

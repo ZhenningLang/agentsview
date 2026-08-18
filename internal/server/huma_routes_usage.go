@@ -2,13 +2,12 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
-	"strings"
 	"time"
 
 	"go.kenn.io/agentsview/internal/db"
 	"go.kenn.io/agentsview/internal/service"
-	"go.kenn.io/agentsview/internal/timeutil"
 )
 
 func (s *Server) registerUsageRoutes() {
@@ -57,27 +56,32 @@ type usagePairwiseComparisonInput struct {
 	RightValue     string `query:"right_value" required:"true" doc:"Right comparison value"`
 }
 
+// usageFilterFromInput converts the route's query parameters into the
+// shared service request and runs the shared defaults and validation, so
+// this handler cannot drift from the direct/HTTP service backends. Only
+// the error mapping is route-specific.
 func usageFilterFromInput(in UsageFilterInput) (db.UsageFilter, error) {
-	tz := in.Timezone
-	if tz == "" {
-		tz = "UTC"
+	f, err := service.UsageFilterFromRequest(usageRequestFromInput(in))
+	if err != nil {
+		var inputErr *service.UsageInputError
+		if errors.As(err, &inputErr) {
+			return db.UsageFilter{}, apiError(
+				http.StatusBadRequest, inputErr.Msg)
+		}
+		return db.UsageFilter{}, err
 	}
-	if _, err := time.LoadLocation(tz); err != nil {
-		return db.UsageFilter{}, apiError(http.StatusBadRequest, "invalid timezone: "+tz)
-	}
-	from, to := defaultDateRange(in.From, in.To)
-	if !timeutil.IsValidDate(from) || !timeutil.IsValidDate(to) {
-		return db.UsageFilter{}, apiError(http.StatusBadRequest, "invalid date format: use YYYY-MM-DD")
-	}
-	if from > to {
-		return db.UsageFilter{}, apiError(http.StatusBadRequest, "from must not be after to")
-	}
-	if in.ActiveSince != "" && !timeutil.IsValidTimestamp(in.ActiveSince) {
-		return db.UsageFilter{}, apiError(http.StatusBadRequest, "invalid active_since: use RFC3339 timestamp")
-	}
-	return db.UsageFilter{
-		From:             from,
-		To:               to,
+	return f, nil
+}
+
+// usageRequestFromInput maps query parameters to the service request.
+// Huma has already applied the parameter defaults (include_one_shot
+// true, include_automated false) by the time the handler runs, so both
+// flags are passed as explicit values rather than left nil.
+func usageRequestFromInput(in UsageFilterInput) service.UsageRequest {
+	return service.UsageRequest{
+		From:             in.From,
+		To:               in.To,
+		Timezone:         in.Timezone,
 		Agent:            in.Agent,
 		Project:          in.Project,
 		Machine:          in.Machine,
@@ -86,13 +90,12 @@ func usageFilterFromInput(in UsageFilterInput) (db.UsageFilter, error) {
 		ExcludeAgent:     in.ExcludeAgent,
 		ExcludeModel:     in.ExcludeModel,
 		Model:            in.Model,
-		Timezone:         tz,
 		MinUserMessages:  in.MinUserMessages,
-		ExcludeOneShot:   !in.IncludeOneShot,
-		ExcludeAutomated: !in.IncludeAutomated,
 		ActiveSince:      in.ActiveSince,
-		Breakdowns:       true,
-	}, nil
+		IncludeOneShot:   &in.IncludeOneShot,
+		IncludeAutomated: &in.IncludeAutomated,
+		NoCache:          in.NoCache,
+	}
 }
 
 func (s *Server) humaUsageSummary(
@@ -113,19 +116,9 @@ func (s *Server) humaUsageSummary(
 		}
 		return nil, internalError("usage summary error", err)
 	}
-	resp := UsageSummaryResponse{
-		From:          f.From,
-		To:            f.To,
-		Totals:        result.Totals,
-		Daily:         result.Daily,
-		ProjectTotals: foldProjectTotals(result.Daily),
-		ModelTotals:   foldModelTotals(result.Daily),
-		AgentTotals:   foldAgentTotals(result.Daily),
-		MachineTotals: foldMachineTotals(result.Daily),
-		SessionCounts: result.SessionCounts,
-		CacheStats:    computeCacheStats(result.Totals),
-	}
-	return &jsonOutput[UsageSummaryResponse]{Body: resp}, nil
+	return &jsonOutput[UsageSummaryResponse]{
+		Body: *service.BuildUsageSummary(f, result),
+	}, nil
 }
 
 func (s *Server) humaUsagePairwiseComparison(
@@ -175,53 +168,30 @@ func (s *Server) humaUsagePairwiseComparison(
 }
 
 func parsePairwiseDimension(raw string) (PairwiseDimension, error) {
-	switch PairwiseDimension(raw) {
-	case PairwiseDimensionModel:
-		return PairwiseDimensionModel, nil
-	case PairwiseDimensionProject:
-		return PairwiseDimensionProject, nil
-	default:
-		return "", apiError(http.StatusBadRequest, "invalid pairwise dimension: "+raw)
+	dim, err := service.ParsePairwiseDimension(raw)
+	if err != nil {
+		var inputErr *service.UsageInputError
+		if errors.As(err, &inputErr) {
+			return "", apiError(http.StatusBadRequest, inputErr.Msg)
+		}
+		return "", err
 	}
+	return dim, nil
 }
 
 func (s *Server) pairwiseDailyUsage(
 	ctx context.Context, f db.UsageFilter, empty bool, noCache bool,
 ) (db.DailyUsageResult, error) {
 	if empty {
-		return db.DailyUsageResult{
-			Daily: []db.DailyUsageEntry{},
-			SessionCounts: db.UsageSessionCounts{
-				ByProject: map[string]int{},
-				ByAgent:   map[string]int{},
-			},
-		}, nil
+		return service.EmptyUsageResult(), nil
 	}
 	return s.cachedDailyUsage(ctx, f, noCache)
 }
 
-func pairwiseFilter(f db.UsageFilter, dim PairwiseDimension, value string) (db.UsageFilter, bool) {
-	f.Breakdowns = false
-	var empty bool
-	switch dim {
-	case PairwiseDimensionModel:
-		f.Model, empty = intersectCSV(f.Model, value)
-	case PairwiseDimensionProject:
-		f.Project, empty = intersectCSV(f.Project, value)
-	}
-	return f, empty
-}
-
-func intersectCSV(base, value string) (string, bool) {
-	if base == "" {
-		return value, false
-	}
-	for part := range strings.SplitSeq(base, ",") {
-		if strings.TrimSpace(part) == value {
-			return value, false
-		}
-	}
-	return "", true
+func pairwiseFilter(
+	f db.UsageFilter, dim PairwiseDimension, value string,
+) (db.UsageFilter, bool) {
+	return service.PairwiseFilter(f, dim, value)
 }
 
 func (s *Server) humaUsageComparison(

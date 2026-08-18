@@ -432,6 +432,79 @@ func (b *directBackend) Search(
 	}, nil
 }
 
+// UsageSummary computes the usage read model over the store. Defaults,
+// validation, the store filter and the folds are the shared ones in
+// usage_summary.go, so this path and the HTTP route report the same
+// numbers for the same request.
+func (b *directBackend) UsageSummary(
+	ctx context.Context, req UsageRequest,
+) (*UsageSummaryResult, error) {
+	f, err := UsageFilterFromRequest(req)
+	if err != nil {
+		return nil, err
+	}
+	// NoCache is a server-side concern: this path has no cache to bypass
+	// and always reads fresh.
+	result, err := b.db.GetDailyUsage(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	return BuildUsageSummary(f, result), nil
+}
+
+// UsagePairwiseComparison narrows one shared filter to two dimension
+// values and diffs them with the Phase 17 metric builder. Both
+// dimensions are validated before either side is queried, so an invalid
+// request costs no store work.
+func (b *directBackend) UsagePairwiseComparison(
+	ctx context.Context, req UsagePairwiseComparisonRequest,
+) (*PairwiseComparisonResponse, error) {
+	f, err := UsageFilterFromRequest(req.UsageRequest)
+	if err != nil {
+		return nil, err
+	}
+	leftDim, err := ParsePairwiseDimension(string(req.LeftDimension))
+	if err != nil {
+		return nil, err
+	}
+	rightDim, err := ParsePairwiseDimension(string(req.RightDimension))
+	if err != nil {
+		return nil, err
+	}
+	f.Breakdowns = false
+	leftFilter, leftEmpty := PairwiseFilter(f, leftDim, req.LeftValue)
+	rightFilter, rightEmpty := PairwiseFilter(f, rightDim, req.RightValue)
+	leftResult, err := b.pairwiseUsage(ctx, leftFilter, leftEmpty)
+	if err != nil {
+		return nil, err
+	}
+	rightResult, err := b.pairwiseUsage(ctx, rightFilter, rightEmpty)
+	if err != nil {
+		return nil, err
+	}
+	out := BuildPairwiseComparison(
+		PairwiseSide{
+			Dimension: leftDim, Value: req.LeftValue, Empty: leftEmpty,
+		}, leftResult,
+		PairwiseSide{
+			Dimension: rightDim, Value: req.RightValue, Empty: rightEmpty,
+		}, rightResult,
+	)
+	return &out, nil
+}
+
+// pairwiseUsage skips the store for a side whose value is excluded by
+// the shared filter. Querying it would drop the narrowing clause and
+// return the whole range instead of nothing.
+func (b *directBackend) pairwiseUsage(
+	ctx context.Context, f db.UsageFilter, empty bool,
+) (db.DailyUsageResult, error) {
+	if empty {
+		return EmptyUsageResult(), nil
+	}
+	return b.db.GetDailyUsage(ctx, f)
+}
+
 // SearchContent maps the transport-neutral request to a
 // db.ContentSearchFilter, calls the store, and redacts secret-shaped
 // spans from each snippet unless Reveal is set.

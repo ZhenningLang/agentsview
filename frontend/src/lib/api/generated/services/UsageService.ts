@@ -2,17 +2,17 @@
 /* istanbul ignore file */
 /* tslint:disable */
 /* eslint-disable */
-import type { Comparison } from '../models/Comparison';
 import type { DbTopSessionEntry } from '../models/DbTopSessionEntry';
+import type { ServiceComparison } from '../models/ServiceComparison';
 import type { ServicePairwiseComparisonResponse } from '../models/ServicePairwiseComparisonResponse';
-import type { UsageSummaryResponse } from '../models/UsageSummaryResponse';
+import type { ServiceUsageSummaryResult } from '../models/ServiceUsageSummaryResult';
 import type { CancelablePromise } from '../core/CancelablePromise';
 import { OpenAPI } from '../core/OpenAPI';
 import { request as __request } from '../core/request';
 export class UsageService {
   /**
    * Get usage comparison
-   * @returns Comparison OK
+   * @returns ServiceComparison OK
    * @throws ApiError
    */
   public static getApiV1UsageComparison({
@@ -102,7 +102,7 @@ export class UsageService {
      * Bypass the server-side usage cache and recompute
      */
     noCache?: boolean,
-  }): CancelablePromise<Comparison> {
+  }): CancelablePromise<ServiceComparison> {
     return __request(OpenAPI, {
       method: 'GET',
       url: '/api/v1/usage/comparison',
@@ -290,7 +290,7 @@ export class UsageService {
   }
   /**
    * Get usage summary
-   * @returns UsageSummaryResponse OK
+   * @returns ServiceUsageSummaryResult OK
    * @throws ApiError
    */
   public static getApiV1UsageSummary({
@@ -375,7 +375,7 @@ export class UsageService {
      * Bypass the server-side usage cache and recompute
      */
     noCache?: boolean,
-  }): CancelablePromise<UsageSummaryResponse> {
+  }): CancelablePromise<ServiceUsageSummaryResult> {
     return __request(OpenAPI, {
       method: 'GET',
       url: '/api/v1/usage/summary',
