@@ -57,6 +57,7 @@ func newRootCommand() *cobra.Command {
 	)
 
 	root.AddCommand(newServeCommand())
+	root.AddCommand(newDaemonCommand())
 	root.AddCommand(newSyncCommand())
 	root.AddCommand(newPruneCommand())
 	root.AddCommand(newUpdateCommand())
@@ -129,6 +130,15 @@ func newServeCommand() *cobra.Command {
 				fatal("loading config: %v", err)
 			}
 			runServeStop(cfg)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:          "restart",
+		Short:        "Restart the writable daemon",
+		SilenceUsage: true,
+		Args:         cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runDaemonRestartCommand(cmd)
 		},
 	})
 	return cmd
