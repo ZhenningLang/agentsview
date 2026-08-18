@@ -9,6 +9,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+// stillActiveExitCode is what GetExitCodeProcess reports for a process
+// that has not exited (STILL_ACTIVE). It is also a legal exit code, which
+// is why the wait below is the primary signal and this is only a
+// fallback.
+const stillActiveExitCode = 259
+
 // processIsRunning reports whether a PID belongs to a process that has
 // not exited yet.
 //
@@ -26,29 +32,58 @@ import (
 //
 // A process handle is a waitable object that becomes signalled when the
 // process exits, so a zero-timeout wait answers the real question no
-// matter how many handles are open. GetExitCodeProcess is deliberately
-// not used: a process that genuinely exits with code 259 is
-// indistinguishable from a running one under STILL_ACTIVE.
+// matter how many handles are open. That wait needs the SYNCHRONIZE
+// access right: asking only for PROCESS_QUERY_LIMITED_INFORMATION makes
+// WaitForSingleObject fail with access denied, and a check that treats a
+// failed wait as "still running" then reports every process as alive
+// forever. That was the first attempt at this function, and it is why
+// three Windows tests hung rather than two.
+//
+// GetExitCodeProcess is the fallback rather than the primary signal: a
+// process that genuinely exits with code 259 is indistinguishable from a
+// running one under STILL_ACTIVE, so it is only consulted when the wait
+// could not be performed at all.
 func processIsRunning(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
+
 	handle, err := windows.OpenProcess(
+		windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION,
+		false, uint32(pid),
+	)
+	if err == nil {
+		defer func() { _ = windows.CloseHandle(handle) }()
+		if state, waitErr := windows.WaitForSingleObject(handle, 0); waitErr == nil {
+			// WAIT_OBJECT_0 means the handle is signalled, which for a
+			// process handle means it has exited. WAIT_TIMEOUT means it
+			// is still running.
+			return state != windows.WAIT_OBJECT_0
+		}
+		return !processExited(handle)
+	}
+
+	// SYNCHRONIZE can be denied for a process owned by another user.
+	// A query-only handle still answers through the exit code.
+	handle, err = windows.OpenProcess(
 		windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid),
 	)
 	if err != nil {
-		// Access denied means the process exists and belongs to another
-		// user. Anything else means there is no such process.
+		// Access denied means the process exists and is someone else's.
+		// Anything else means there is no such process.
 		return errors.Is(err, syscall.ERROR_ACCESS_DENIED)
 	}
 	defer func() { _ = windows.CloseHandle(handle) }()
+	return !processExited(handle)
+}
 
-	state, err := windows.WaitForSingleObject(handle, 0)
-	if err != nil {
-		// The handle could not be waited on. Treat the process as
-		// running rather than reporting an exit that was never
-		// observed - a false "dead" would let a second writer start.
-		return true
+// processExited reports whether a process handle carries a real exit
+// code. An unreadable exit code answers "not exited": a false report of
+// death would let a second writer open the archive.
+func processExited(handle windows.Handle) bool {
+	var code uint32
+	if err := windows.GetExitCodeProcess(handle, &code); err != nil {
+		return false
 	}
-	return state != windows.WAIT_OBJECT_0
+	return code != stillActiveExitCode
 }
